@@ -9,6 +9,7 @@ use proc_macro::TokenStream;
 
 mod api_model;
 mod api_router;
+mod app_error;
 mod common;
 mod dependency;
 mod inject;
@@ -150,6 +151,29 @@ pub fn derive_resources(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Inject)]
 pub fn derive_inject(item: TokenStream) -> TokenStream {
     inject::expand(item)
+}
+
+/// Derives `From<Self> for tork::Error`, storing the value as a typed source.
+///
+/// This lets a user error convert into a framework error through `?` while
+/// preserving the original value, so a registered
+/// `exception_handler::<Self>()` can recover and map it. A type-level
+/// `#[status(...)]` attribute sets the default HTTP status (a status code such as
+/// `503`, or an `ErrorKind` variant name); it defaults to `500`. The type must
+/// implement `Display` and `std::error::Error`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(Debug, tork::AppError)]
+/// #[status(503)]
+/// pub enum DbError { Timeout }
+/// // impl Display + Error for DbError ...
+/// // `repo.query()?` now converts DbError into tork::Error.
+/// ```
+#[proc_macro_derive(AppError, attributes(status))]
+pub fn derive_app_error(item: TokenStream) -> TokenStream {
+    app_error::expand(item)
 }
 
 /// Turns an async function into a middleware layer.
