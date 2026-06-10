@@ -14,6 +14,7 @@ mod app;
 mod body;
 mod error;
 mod extract;
+mod hooks;
 mod lifespan;
 pub mod middleware;
 mod openapi;
@@ -34,6 +35,9 @@ pub use error::{Error, ErrorDetail, ErrorKind, Result};
 pub use extract::{
     BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, Valid,
     __extract_path_param,
+};
+pub use hooks::{
+    ErrorContext, ErrorEvent, RequestEvent, ResponseEvent, ValidationErrorEvent,
 };
 pub use openapi::OpenApiProvider;
 pub use response::{

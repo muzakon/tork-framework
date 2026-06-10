@@ -267,6 +267,14 @@ impl Error {
         self.code.unwrap_or_else(|| self.kind.code())
     }
 
+    /// Returns the machine-readable code as a `'static` string.
+    ///
+    /// The code is always either an override or a kind default, both of which are
+    /// `'static`; this lets a hook event hold the code without borrowing.
+    pub(crate) fn static_code(&self) -> &'static str {
+        self.code.unwrap_or_else(|| self.kind.code())
+    }
+
     /// Returns the field-level details, if any.
     pub fn details(&self) -> &[ErrorDetail] {
         &self.details
@@ -275,6 +283,18 @@ impl Error {
     /// Returns the client-facing message.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Returns the concrete type of the attached source, if any.
+    ///
+    /// Used to look up a typed exception handler registered for that type.
+    pub(crate) fn source_type(&self) -> Option<TypeId> {
+        self.source_type
+    }
+
+    /// Reports whether this is a request-body validation failure.
+    pub(crate) fn is_validation(&self) -> bool {
+        self.code() == VALIDATION_ERROR_CODE
     }
 
     /// Removes the attached source and returns it as `E`, if its concrete type
