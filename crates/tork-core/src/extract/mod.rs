@@ -113,6 +113,22 @@ impl RequestContext {
         self.state.as_ref()
     }
 
+    /// Clones a registered resource of type `T` out of the registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error (code `MISSING_RESOURCE`) if no resource of type `T` was
+    /// registered (for example, by a lifespan).
+    pub fn resource<T: Clone + Send + Sync + 'static>(&self) -> Result<T> {
+        self.state().get::<T>().map(|value| (*value).clone()).ok_or_else(|| {
+            Error::internal(format!(
+                "resource `{}` was not registered",
+                std::any::type_name::<T>()
+            ))
+            .with_code("MISSING_RESOURCE")
+        })
+    }
+
     /// Returns the captured path parameters.
     pub fn path_params(&self) -> &PathParams {
         &self.path_params
@@ -196,5 +212,17 @@ mod tests {
         assert!(ctx.take_body().is_ok());
         let error = ctx.take_body().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::BadRequest);
+    }
+
+    #[test]
+    fn resource_is_cloned_from_registry() {
+        let mut map = StateMap::new();
+        map.insert(42_i64);
+        let head = http::Request::new(()).into_parts().0;
+        let body = box_body(Full::new(Bytes::from_static(b"")));
+        let ctx = RequestContext::new(head, PathParams::new(), Arc::new(map), body);
+
+        assert_eq!(ctx.resource::<i64>().unwrap(), 42);
+        assert!(ctx.resource::<String>().is_err());
     }
 }
