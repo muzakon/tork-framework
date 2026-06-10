@@ -90,6 +90,9 @@ pub fn dependency(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `ge` / `le` — inclusive numeric bounds
 /// - `gt` / `lt` — exclusive numeric bounds
 /// - `title` / `description` — documentation metadata
+/// - `custom` — a custom validator function (may be repeated); the function
+///   performs the check and returns its own message, e.g.
+///   `#[field(custom = validate_password)]`
 ///
 /// # Example
 ///

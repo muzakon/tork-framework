@@ -12,9 +12,9 @@ use crate::response::{IntoResponse, Response, with_body};
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// Machine-readable code used for validation failures.
-const VALIDATION_FAILED_CODE: &str = "VALIDATION_FAILED";
+const VALIDATION_ERROR_CODE: &str = "VALIDATION_ERROR";
 /// Default top-level message for a validation failure.
-const VALIDATION_FAILED_MESSAGE: &str = "The submitted data failed validation.";
+const VALIDATION_ERROR_MESSAGE: &str = "The submitted data failed validation.";
 /// Issue code used for a field error that could not be classified.
 const GENERIC_ISSUE: &str = "INVALID";
 /// Prefix applied to generated trace identifiers.
@@ -76,7 +76,7 @@ impl ErrorKind {
             ErrorKind::Conflict => "CONFLICT",
             ErrorKind::Unprocessable => "UNPROCESSABLE_ENTITY",
             ErrorKind::TooManyRequests => "TOO_MANY_REQUESTS",
-            ErrorKind::Internal => "INTERNAL_ERROR",
+            ErrorKind::Internal => "INTERNAL_SERVER_ERROR",
             ErrorKind::ServiceUnavailable => "SERVICE_UNAVAILABLE",
         }
     }
@@ -225,8 +225,8 @@ impl Error {
                 ErrorDetail::new(path.to_string(), classify_issue(&message), message)
             })
             .collect();
-        Self::unprocessable(VALIDATION_FAILED_MESSAGE)
-            .with_code(VALIDATION_FAILED_CODE)
+        Self::unprocessable(VALIDATION_ERROR_MESSAGE)
+            .with_code(VALIDATION_ERROR_CODE)
             .with_details(details)
     }
 
@@ -285,7 +285,7 @@ fn slice_is_empty(details: &&[ErrorDetail]) -> bool {
 }
 
 /// Last-resort body used only if serializing the error body itself fails.
-const FALLBACK_ERROR_BODY: &[u8] = br#"{"status":500,"code":"INTERNAL_ERROR","title":"Internal Server Error","message":"Internal server error"}"#;
+const FALLBACK_ERROR_BODY: &[u8] = br#"{"status":500,"code":"INTERNAL_SERVER_ERROR","title":"Internal Server Error","message":"Internal server error"}"#;
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
         let body = body_json(response).await;
-        assert_eq!(body["code"], "INTERNAL_ERROR");
+        assert_eq!(body["code"], "INTERNAL_SERVER_ERROR");
         assert_eq!(body["message"], INTERNAL_ERROR_MESSAGE);
         assert!(
             !serde_json::to_string(&body).unwrap().contains("hunter2"),
@@ -443,8 +443,8 @@ mod tests {
 
     #[tokio::test]
     async fn validation_details_are_serialized() {
-        let response = Error::unprocessable(VALIDATION_FAILED_MESSAGE)
-            .with_code(VALIDATION_FAILED_CODE)
+        let response = Error::unprocessable(VALIDATION_ERROR_MESSAGE)
+            .with_code(VALIDATION_ERROR_CODE)
             .with_details(vec![ErrorDetail::new(
                 "price",
                 "TOO_SMALL",
@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
         let body = body_json(response).await;
-        assert_eq!(body["code"], "VALIDATION_FAILED");
+        assert_eq!(body["code"], "VALIDATION_ERROR");
         assert_eq!(body["details"][0]["field"], "price");
         assert_eq!(body["details"][0]["issue"], "TOO_SMALL");
         assert_eq!(body["details"][0]["message"], "must be greater than 0");
@@ -477,7 +477,7 @@ mod tests {
         .unwrap_err();
         let error = Error::from_garde_report(report);
 
-        assert_eq!(error.code(), "VALIDATION_FAILED");
+        assert_eq!(error.code(), "VALIDATION_ERROR");
         assert_eq!(error.details().len(), 1);
         assert_eq!(error.details()[0].field, "name");
         assert_eq!(error.details()[0].issue, "TOO_SHORT");

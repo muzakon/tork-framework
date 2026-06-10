@@ -57,6 +57,7 @@ struct FieldArgs {
     lt: Option<Expr>,
     title: Option<LitStr>,
     description: Option<LitStr>,
+    custom: Vec<Expr>,
 }
 
 impl Parse for FieldArgs {
@@ -74,6 +75,7 @@ impl Parse for FieldArgs {
                 "lt" => args.lt = Some(input.parse()?),
                 "title" => args.title = Some(input.parse()?),
                 "description" => args.description = Some(input.parse()?),
+                "custom" => args.custom.push(input.parse()?),
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
@@ -172,6 +174,12 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
             extra_fns.push(check_fn);
             garde_rules.push(quote!(custom(#call)));
             schemars_rules.push(quote!(extend("exclusiveMaximum" = #bound)));
+        }
+
+        // Custom validators (Pydantic-style): the referenced function performs
+        // the check and carries its own message. It does not affect the schema.
+        for custom in &field_args.custom {
+            garde_rules.push(quote!(custom(#custom)));
         }
 
         if let Some(title) = &field_args.title {

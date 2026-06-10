@@ -96,6 +96,22 @@ async fn creates_order_with_valid_body() {
 }
 
 #[tokio::test]
+async fn rejects_blank_name_via_custom_validator() {
+    // Passes min_length but fails the custom `not_blank` validator.
+    let body = r#"{"name":"   ","description":null,"price":9.99,"tax":null}"#;
+    let response = app()
+        .await
+        .dispatch(request_json(
+            Method::POST,
+            "/users/1/orders",
+            Some("ada-token"),
+            body,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
 async fn rejects_invalid_order_body() {
     // Blank name and non-positive price both violate the model constraints.
     let body = r#"{"name":"","description":null,"price":0.0,"tax":null}"#;

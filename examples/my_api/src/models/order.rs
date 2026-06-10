@@ -2,6 +2,18 @@
 
 use tork::api_model;
 
+/// Custom validator: rejects values that are empty once trimmed.
+///
+/// Demonstrates a Pydantic-style custom validator with its own message. garde
+/// passes the field by reference; `&String` coerces to `&str` here.
+fn not_blank(value: &str, _ctx: &()) -> garde::Result {
+    if value.trim().is_empty() {
+        Err(garde::Error::new("must not be blank"))
+    } else {
+        Ok(())
+    }
+}
+
 /// An order as returned by the API.
 #[api_model(rename_all = "camelCase")]
 pub struct OrderOut {
@@ -17,7 +29,7 @@ pub struct OrderOut {
 #[api_model(rename_all = "camelCase")]
 pub struct CreateOrderInput {
     /// Order name.
-    #[field(min_length = 1, max_length = 120)]
+    #[field(min_length = 1, max_length = 120, custom = not_blank)]
     pub name: String,
 
     /// Optional description.

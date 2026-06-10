@@ -64,6 +64,41 @@ fn rejects_non_positive_price() {
     assert!(error.to_string().contains("price"), "report: {error}");
 }
 
+fn reject_foo(value: &str, _ctx: &()) -> garde::Result {
+    if value == "foo" {
+        Err(garde::Error::new("value must not be foo"))
+    } else {
+        Ok(())
+    }
+}
+
+#[api_model]
+struct WithCustom {
+    #[field(custom = reject_foo)]
+    name: String,
+}
+
+#[test]
+fn custom_validator_runs_with_its_own_message() {
+    let error = WithCustom {
+        name: "foo".to_owned(),
+    }
+    .validate()
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("value must not be foo"),
+        "report: {error}"
+    );
+
+    assert!(
+        WithCustom {
+            name: "bar".to_owned()
+        }
+        .validate()
+        .is_ok()
+    );
+}
+
 #[test]
 fn produces_json_schema() {
     let schema = schemars::schema_for!(CreateOrderInput);
