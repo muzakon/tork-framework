@@ -7,7 +7,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, parse_macro_input};
+use syn::{Data, DeriveInput, Field, Fields, parse_macro_input};
 
 use crate::common::krate;
 
@@ -21,13 +21,15 @@ pub fn expand(item: TokenStream) -> TokenStream {
 }
 
 fn expand_derive(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
-    let fields = match &input.data {
+    let fields: Vec<&Field> = match &input.data {
         Data::Struct(data) => match &data.fields {
-            Fields::Named(named) => &named.named,
-            _ => {
+            Fields::Named(named) => named.named.iter().collect(),
+            // A container with no resources is allowed.
+            Fields::Unit => Vec::new(),
+            Fields::Unnamed(_) => {
                 return Err(syn::Error::new_spanned(
                     &input,
-                    "#[derive(Resources)] requires a struct with named fields",
+                    "#[derive(Resources)] requires named fields",
                 ));
             }
         },

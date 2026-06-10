@@ -198,17 +198,18 @@ impl App {
     /// Returns an error for a lifecycle misconfiguration, a failed startup, or a
     /// bind failure.
     pub async fn serve(self, addr: impl AsRef<str>) -> Result<()> {
-        self.serve_with_shutdown(addr.as_ref(), shutdown_signal())
-            .await
+        self.serve_with_shutdown(addr, shutdown_signal()).await
     }
 
     /// Runs the lifecycle, stopping the accept loop when `shutdown` resolves.
     ///
-    /// Factored out so the lifecycle can be driven by a test-controlled signal.
-    pub(crate) async fn serve_with_shutdown<S>(mut self, addr: &str, shutdown: S) -> Result<()>
+    /// Like [`serve`](App::serve) but driven by a caller-supplied future instead
+    /// of `SIGINT`/`SIGTERM`, for custom graceful shutdown (and for tests).
+    pub async fn serve_with_shutdown<S>(mut self, addr: impl AsRef<str>, shutdown: S) -> Result<()>
     where
         S: std::future::Future<Output = ()>,
     {
+        let addr = addr.as_ref();
         self.validate_lifecycle()
             .inspect_err(|error| eprintln!("{}", error.message()))?;
 

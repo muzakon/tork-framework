@@ -12,6 +12,7 @@ mod api_router;
 mod common;
 mod dependency;
 mod inject;
+mod lifespan;
 mod main_macro;
 mod middleware;
 mod resources;
@@ -109,6 +110,27 @@ pub fn dependency(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
     api_model::expand(attr, item)
+}
+
+/// Declares an application lifespan on a resource container.
+///
+/// Applied to `impl T { async fn startup(ctx) -> tork::Result<Self>; async fn
+/// shutdown(self) -> tork::Result<()> }`, it makes `T` a `Lifespan`. `shutdown`
+/// is optional. `T` must also derive `Resources`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[tork::lifespan]
+/// impl AppState {
+///     async fn startup(ctx: tork::LifespanContext) -> tork::Result<Self> { /* ... */ }
+///     async fn shutdown(self) -> tork::Result<()> { /* ... */ }
+/// }
+/// // App::new().lifespan::<AppState>()
+/// ```
+#[proc_macro_attribute]
+pub fn lifespan(attr: TokenStream, item: TokenStream) -> TokenStream {
+    lifespan::expand(attr, item)
 }
 
 /// Declares a resource container.
