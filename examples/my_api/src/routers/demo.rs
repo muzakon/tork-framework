@@ -1,6 +1,6 @@
 //! Routes that demonstrate the hooks and error-handling surface.
 
-use tork::{api_router, get};
+use tork::{RequestEvent, api_router, get};
 
 use crate::core::errors::RepoError;
 
@@ -9,7 +9,10 @@ pub mod demo_router {
     use super::*;
 
     /// Surfaces a typed `RepoError`, mapped by the registered exception handler.
-    #[get("/db-error", summary = "Trigger a typed error")]
+    ///
+    /// Carries a route-level `on_request` hook (the named function below), so it
+    /// runs in addition to the router-level audit hook.
+    #[get("/db-error", on_request = note_db_call, summary = "Trigger a typed error")]
     pub async fn db_error() -> tork::Result<i64> {
         // The `?` converts `RepoError` into `tork::Error`, carrying the typed source.
         let outcome: Result<i64, RepoError> = Err(RepoError::Unavailable);
@@ -23,7 +26,17 @@ pub mod demo_router {
     }
 }
 
-/// Builds the demo router.
+/// Router-level audit hook: runs for every route in the demo router.
+async fn audit_request(event: RequestEvent) {
+    println!("audit: demo request {} {}", event.method(), event.path());
+}
+
+/// Route-level hook: runs only for the `/demo/db-error` route.
+async fn note_db_call(event: RequestEvent) {
+    println!("audit: db-error route touched on {}", event.path());
+}
+
+/// Builds the demo router with a router-scoped audit hook.
 pub fn router() -> tork::Router {
-    demo_router::router()
+    demo_router::router().on_request(audit_request)
 }
