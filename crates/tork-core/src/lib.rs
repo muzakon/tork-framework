@@ -30,9 +30,11 @@ pub use extract::{
     __extract_path_param,
 };
 pub use openapi::OpenApiProvider;
-pub use response::{IntoResponse, Json, Response, __finish, bytes_response, json_response};
+pub use response::{
+    IntoResponse, Json, Response, __finish, __finish_into, bytes_response, json_response,
+};
 pub use router::matcher::{Match, Matcher};
-pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router};
+pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router, SchemaThunk};
 pub use state::{AppStateRef, State, StateMap};
 
 // Commonly used `http` types are re-exported so users do not need to depend on

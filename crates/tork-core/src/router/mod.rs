@@ -26,6 +26,11 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// statically dispatched.
 pub type HandlerFn = Arc<dyn Fn(RequestContext) -> BoxFuture<'static, Response> + Send + Sync>;
 
+/// Produces a JSON Schema for a type, recorded as a function pointer so that
+/// [`RouteMeta`] stays `Copy`-free of any concrete type while still describing
+/// request and response bodies.
+pub type SchemaThunk = fn(&mut schemars::SchemaGenerator) -> schemars::Schema;
+
 /// Introspection metadata for a route, used to build the OpenAPI document.
 #[derive(Clone, Debug)]
 pub struct RouteMeta {
@@ -39,6 +44,10 @@ pub struct RouteMeta {
     pub status_code: StatusCode,
     /// Name of the declared response model type, recorded for documentation.
     pub response_model: Option<&'static str>,
+    /// Schema generator for the request body, if the operation accepts one.
+    pub request_schema: Option<SchemaThunk>,
+    /// Schema generator for the success response body, if any.
+    pub response_schema: Option<SchemaThunk>,
 }
 
 impl Default for RouteMeta {
@@ -49,6 +58,8 @@ impl Default for RouteMeta {
             tags: Vec::new(),
             status_code: StatusCode::OK,
             response_model: None,
+            request_schema: None,
+            response_schema: None,
         }
     }
 }
@@ -106,6 +117,18 @@ impl Route {
     /// Records the response model type name for documentation.
     pub fn response_model<T: ?Sized>(mut self) -> Self {
         self.meta.response_model = Some(std::any::type_name::<T>());
+        self
+    }
+
+    /// Records the request body schema generator.
+    pub fn request_schema<T: schemars::JsonSchema>(mut self) -> Self {
+        self.meta.request_schema = Some(|generator| generator.subschema_for::<T>());
+        self
+    }
+
+    /// Records the success response body schema generator.
+    pub fn response_schema<T: schemars::JsonSchema>(mut self) -> Self {
+        self.meta.response_schema = Some(|generator| generator.subschema_for::<T>());
         self
     }
 
