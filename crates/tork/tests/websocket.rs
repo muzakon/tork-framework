@@ -1,6 +1,14 @@
-//! Confirms a `#[websocket]` handler compiles into a registrable route.
+//! Confirms a `#[websocket]` handler upgrades and echoes over a real connection,
+//! and that a failing dependency rejects the upgrade with an HTTP status.
 
-use tork::{App, Router, WebSocket, WsMessage, websocket};
+use std::sync::{Arc, Mutex};
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::oneshot;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::error::Error as WsClientError;
+use tork::{App, BearerToken, Router, WebSocket, WsMessage, websocket};
 
 #[websocket("/ws")]
 async fn echo(socket: WebSocket) -> tork::Result<()> {
@@ -16,10 +24,81 @@ async fn echo(socket: WebSocket) -> tork::Result<()> {
     Ok(())
 }
 
+/// A guarded endpoint: the bearer-token dependency fails without a token.
+#[websocket("/guarded")]
+async fn guarded(socket: WebSocket, _token: BearerToken) -> tork::Result<()> {
+    let _ = socket.accept().await?;
+    Ok(())
+}
+
 #[test]
 fn websocket_route_builds() {
     let app = App::new()
         .include_router(Router::new().route(__tork_route_echo()))
         .build();
     assert!(app.is_ok(), "the websocket route should register");
+}
+
+/// Starts the server and returns the bound address plus a shutdown handle.
+async fn start() -> (std::net::SocketAddr, oneshot::Sender<()>) {
+    let (addr_tx, addr_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let sender = Arc::new(Mutex::new(Some(addr_tx)));
+
+    let app = App::new()
+        .include_router(
+            Router::new()
+                .route(__tork_route_echo())
+                .route(__tork_route_guarded()),
+        )
+        .on_ready(move |ctx| {
+            let sender = sender.clone();
+            async move {
+                if let Some(tx) = sender.lock().unwrap().take() {
+                    let _ = tx.send(ctx.addr());
+                }
+                Ok(())
+            }
+        });
+
+    tokio::spawn(app.serve_with_shutdown("127.0.0.1:0", async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    (addr_rx.await.unwrap(), shutdown_tx)
+}
+
+#[tokio::test]
+async fn echoes_text_and_binary_over_a_real_connection() {
+    let (addr, shutdown) = start().await;
+
+    let (mut socket, _response) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
+
+    socket.send(Message::Text("hello".into())).await.unwrap();
+    let reply = socket.next().await.unwrap().unwrap();
+    assert_eq!(reply, Message::Text("hello".into()));
+
+    socket.send(Message::Binary(vec![1, 2, 3])).await.unwrap();
+    let reply = socket.next().await.unwrap().unwrap();
+    assert_eq!(reply, Message::Binary(vec![1, 2, 3]));
+
+    socket.close(None).await.unwrap();
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn upgrade_is_rejected_when_a_dependency_fails() {
+    let (addr, shutdown) = start().await;
+
+    // No Authorization header: the bearer-token dependency fails before accept.
+    let result = connect_async(format!("ws://{addr}/guarded")).await;
+
+    match result {
+        Err(WsClientError::Http(response)) => {
+            assert_eq!(response.status(), 401, "expected an unauthorized rejection");
+        }
+        other => panic!("expected an HTTP rejection, got {other:?}"),
+    }
+
+    let _ = shutdown.send(());
 }

@@ -891,6 +891,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tork-core",
  "tork-macros",
  "tork-openapi",
