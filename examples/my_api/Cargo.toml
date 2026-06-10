@@ -10,6 +10,8 @@ tork = { path = "../../crates/tork" }
 # Required because garde's derive references `::garde` directly (it has no
 # crate-path override); serde and schemars are routed through the tork facade.
 garde = { workspace = true }
+# Provides a stream source for the Server-Sent Events demo endpoint.
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

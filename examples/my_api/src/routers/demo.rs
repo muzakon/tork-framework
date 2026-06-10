@@ -1,8 +1,9 @@
-//! Routes that demonstrate the hooks and error-handling surface.
+//! Routes that demonstrate the hooks, error-handling, and streaming surface.
 
-use tork::{RequestEvent, api_router, get};
+use tork::{LastEventId, RequestEvent, Sse, SseEvent, api_router, get, sse};
 
 use crate::core::errors::RepoError;
+use crate::models::event::EventOut;
 
 #[api_router(prefix = "/demo", tags = ["demo"])]
 pub mod demo_router {
@@ -23,6 +24,34 @@ pub mod demo_router {
     #[get("/panic", summary = "Trigger a handler panic")]
     pub async fn boom() -> tork::Result<i64> {
         panic!("demo panic");
+    }
+
+    /// Streams a few events over Server-Sent Events.
+    ///
+    /// Honors `Last-Event-ID` so a reconnecting client resumes after the last
+    /// sequence number it saw.
+    #[sse(
+        "/stream",
+        event = "tick",
+        response_model = EventOut,
+        summary = "Stream demo events"
+    )]
+    pub async fn stream(last: LastEventId) -> tork::Result<Sse<EventOut>> {
+        let start = last
+            .as_str()
+            .and_then(|id| id.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        let events = futures_util::stream::iter((start + 1..=start + 3).map(|sequence| {
+            let out = EventOut {
+                sequence,
+                message: format!("event {sequence}"),
+            };
+            // Set the event id so a reconnecting client can resume from it.
+            Ok::<_, tork::Error>(SseEvent::new(out).id(sequence))
+        }));
+
+        Ok(Sse::events(events))
     }
 }
 

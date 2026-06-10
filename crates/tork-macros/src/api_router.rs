@@ -162,7 +162,7 @@ fn inject_prefix_hint(attr: &mut Attribute, prefix: &str) {
     }
 }
 
-/// Returns `true` if `attr` is one of the route macros.
+/// Returns `true` if `attr` is one of the route or SSE macros.
 ///
 /// Matches on the final path segment, so both `#[get]` and `#[tork::get]` are
 /// recognized.
@@ -173,7 +173,7 @@ fn is_route_attr(attr: &Attribute) -> bool {
         .map(|segment| {
             matches!(
                 segment.ident.to_string().as_str(),
-                "get" | "post" | "put" | "patch" | "delete"
+                "get" | "post" | "put" | "patch" | "delete" | "sse" | "post_sse"
             )
         })
         .unwrap_or(false)
