@@ -1,4 +1,4 @@
-# 9. Project structure
+# 10. Project structure
 
 Tork does not impose a layout, but the example application follows a structure
 that scales well. It separates HTTP concerns from business logic and data access.
