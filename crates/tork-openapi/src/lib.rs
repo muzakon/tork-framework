@@ -6,7 +6,9 @@
 //! OpenAPI support can be turned off behind a feature flag in the facade crate.
 #![forbid(unsafe_code)]
 
+mod asyncapi;
 mod docs;
 mod spec;
 
+pub use asyncapi::AsyncApi;
 pub use spec::OpenApi;

@@ -16,7 +16,7 @@ use crate::hooks::{
 };
 use crate::lifespan::{ErasedLifespan, Lifespan, LifespanCell, LifespanContext, ReadyContext};
 use crate::middleware::{Middleware, Next, Request, resolve_duplicates};
-use crate::openapi::OpenApiProvider;
+use crate::openapi::{AsyncApiProvider, OpenApiProvider};
 use crate::response::{IntoResponse, Response};
 use crate::router::matcher::Matcher;
 use crate::router::{
@@ -72,6 +72,7 @@ pub struct App {
     state: StateMap,
     routers: Vec<Router>,
     openapi: Option<Box<dyn OpenApiProvider>>,
+    asyncapi: Option<Box<dyn AsyncApiProvider>>,
     middleware: Vec<Arc<dyn Middleware>>,
     lifespan: Vec<Box<dyn ErasedLifespan>>,
     on_startup: Vec<Hook>,
@@ -102,6 +103,7 @@ impl App {
             state: StateMap::new(),
             routers: Vec::new(),
             openapi: None,
+            asyncapi: None,
             middleware: Vec::new(),
             lifespan: Vec::new(),
             on_startup: Vec::new(),
@@ -136,6 +138,12 @@ impl App {
     /// Configures OpenAPI document generation and the documentation UI.
     pub fn openapi<P: OpenApiProvider>(mut self, provider: P) -> Self {
         self.openapi = Some(Box::new(provider));
+        self
+    }
+
+    /// Configures AsyncAPI document generation for the SSE/WebSocket channels.
+    pub fn asyncapi<P: AsyncApiProvider>(mut self, provider: P) -> Self {
+        self.asyncapi = Some(Box::new(provider));
         self
     }
 
@@ -348,6 +356,7 @@ impl App {
             mut state,
             routers,
             openapi,
+            asyncapi,
             middleware,
             on_request,
             on_response,
@@ -380,6 +389,11 @@ impl App {
         }
 
         if let Some(provider) = openapi {
+            let documentation = provider.documentation_routes(&routes);
+            routes.extend(documentation);
+        }
+
+        if let Some(provider) = asyncapi {
             let documentation = provider.documentation_routes(&routes);
             routes.extend(documentation);
         }

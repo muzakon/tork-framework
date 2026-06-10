@@ -42,7 +42,7 @@ pub use extract::{
 pub use hooks::{
     ErrorContext, ErrorEvent, PanicEvent, RequestEvent, ResponseEvent, ValidationErrorEvent,
 };
-pub use openapi::OpenApiProvider;
+pub use openapi::{AsyncApiProvider, OpenApiProvider};
 pub use realtime::{Hub, Room};
 // Re-exported so WebSocket handlers can name a subscription without depending on
 // tokio directly.

@@ -13,3 +13,14 @@ pub trait OpenApiProvider: Send + Sync + 'static {
     /// the specification document and the documentation UI.
     fn documentation_routes(&self, registered: &[Route]) -> Vec<Route>;
 }
+
+/// Produces the routes that serve the AsyncAPI document.
+///
+/// The mirror of [`OpenApiProvider`] for the event-driven side: it describes the
+/// Server-Sent Events and WebSocket channels. Implemented by the OpenAPI crate
+/// and registered through [`App::asyncapi`](crate::App::asyncapi).
+pub trait AsyncApiProvider: Send + Sync + 'static {
+    /// Given the application's registered routes, returns extra routes that serve
+    /// the AsyncAPI document.
+    fn documentation_routes(&self, registered: &[Route]) -> Vec<Route>;
+}
