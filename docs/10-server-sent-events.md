@@ -115,6 +115,22 @@ pub async fn notifications(
 
 For this to work, set an id on each event (`SseEvent::new(..).id(..)`).
 
+When the id is a known type, `SseResume<T>` parses it for you (a missing or
+invalid value yields `None`):
+
+```rust
+use tork::{sse, Sse, SseResume};
+
+#[sse("/notifications")]
+pub async fn notifications(
+    resume: SseResume<i64>,
+    service: NotificationService,
+) -> tork::Result<Sse<NotificationOut>> {
+    let after = resume.last_id().copied().unwrap_or(0);
+    Ok(Sse::new(service.after(after)))
+}
+```
+
 ## Streaming over POST
 
 SSE is not limited to `GET`. Use `#[post_sse]` (or `#[sse(method = POST, ...)]`)

@@ -62,6 +62,109 @@ pub async fn chat(socket: WebSocket, room_id: String, user: CurrentUser) -> tork
 
 A malformed JSON payload is a `400` error from `receive_json`.
 
+## Validating messages
+
+`receive_valid::<T>()` deserializes the next message and then runs its `garde`
+validation, so each message is checked the way a request body is. An invalid
+message is a `422` error listing the offending fields:
+
+```rust
+#[api_model]
+pub struct ChatIn {
+    #[field(min_length = 1, max_length = 500)]
+    pub message: String,
+}
+
+while let Some(input) = socket.receive_valid::<ChatIn>().await? {
+    // `input` is deserialized and validated.
+}
+```
+
+## Limits and timeouts
+
+Set limits for the whole app with `App::websocket_config`, or per route with the
+`#[websocket(...)]` attributes (a route value overrides the app default):
+
+```rust
+use std::time::Duration;
+use tork::WebSocketConfig;
+
+App::new().websocket_config(
+    WebSocketConfig::new().max_message_size_kb(64).idle_timeout_secs(120),
+);
+
+#[websocket("/chat/{room}", max_message_size = "64KB", idle_timeout = "60s")]
+pub async fn chat(socket: WebSocket /* ... */) -> tork::Result<()> { /* ... */ }
+```
+
+`max_message_size` and `max_frame_size` bound incoming data; `idle_timeout` closes
+a connection that has been silent for too long (sizes accept `"64KB"`/`"1MB"`,
+durations accept `"500ms"`/`"60s"`/`"2m"`).
+
+## Lifecycle hooks
+
+Observe connections opening and closing with app-level hooks. `on_ws_connect`
+fires once the socket opens; `on_ws_disconnect` fires when it closes, carrying how
+long it was open and the close code:
+
+```rust
+App::new()
+    .on_ws_connect(|info| async move { tracing::info!("ws open {}", info.path()) })
+    .on_ws_disconnect(|info| async move {
+        tracing::info!("ws closed after {:?} ({:?})", info.duration(), info.close_code());
+    });
+```
+
+## Broadcasting with a hub
+
+For fan-out (chat rooms, live feeds), `Hub` holds named `Room`s, each a broadcast
+channel. A `Hub` is cheap to clone, so wrap it in a resource and inject it. A
+typical room handler selects between the socket and the room's subscription:
+
+```rust
+#[websocket("/chat/{room}", incoming = ChatIn, outgoing = ChatMessage)]
+pub async fn chat(socket: WebSocket, room: String, hub: ChatHub) -> tork::Result<()> {
+    let mut socket = socket.accept().await?;
+    let room = hub.0.room(room);
+    let mut receiver = room.subscribe();
+    loop {
+        tokio::select! {
+            incoming = socket.receive_valid::<ChatIn>() => match incoming? {
+                Some(input) => { room.broadcast(ChatMessage { from: "guest".into(), text: input.message }); }
+                None => break,
+            },
+            outgoing = receiver.recv() => match outgoing {
+                Ok(message) => socket.send_json(&message).await?,
+                Err(_) => break,
+            },
+        }
+    }
+    Ok(())
+}
+```
+
+`room.broadcast(message)` sends to every current subscriber and returns how many
+it reached. (Because `Hub` is a foreign type, wrap it in a local newtype to inject
+it as a resource: `#[derive(Clone)] pub struct ChatHub(pub Hub<ChatMessage>);`.)
+
+## Documenting channels with AsyncAPI
+
+WebSocket message contracts do not fit OpenAPI, so declare them with `incoming` and
+`outgoing` and serve an AsyncAPI document:
+
+```rust
+use tork::AsyncApi;
+
+#[websocket("/chat/{room}", incoming = ChatIn, outgoing = ChatMessage)]
+pub async fn chat(/* ... */) -> tork::Result<()> { /* ... */ }
+
+App::new().asyncapi(AsyncApi::new().title("Realtime API").version("1.0.0").json("/asyncapi.json"));
+```
+
+Each WebSocket route becomes a channel with `receive` (incoming) and `send`
+(outgoing) operations, and each SSE route a `send` channel, with the message
+payloads under `components.schemas`.
+
 ## Dependencies resolve before the upgrade
 
 Every parameter other than the `WebSocket` is a path parameter or a dependency,
