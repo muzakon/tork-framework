@@ -1,12 +1,16 @@
 //! Confirms the middleware surface is reachable through the facade crate, and
 //! that the `#[middleware]` macro produces a working layer.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use bytes::Bytes;
 use http::HeaderValue;
 use http_body_util::{BodyExt, Full};
 use tork::{
     App, BoxFuture, DuplicatePolicy, HandlerFn, Method, Middleware, Next, ReqBody, Request,
-    RequestContext, Response, Result, Router, StatusCode, box_body, bytes_response, middleware,
+    RequestContext, Response, Result, Route, Router, StatusCode, box_body, bytes_response,
+    middleware,
 };
 
 struct Noop;
@@ -92,6 +96,42 @@ async fn request_id_generates_when_absent() {
         .to_str()
         .unwrap();
     assert!(id.starts_with("req-"), "id: {id}");
+}
+
+fn slow_handler() -> HandlerFn {
+    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            bytes_response(StatusCode::OK, "text/plain; charset=utf-8", Bytes::from_static(b"slow"))
+        })
+    })
+}
+
+#[tokio::test]
+async fn timeout_returns_504_for_slow_handler() {
+    use tork::middleware::Timeout;
+    let app = Arc::new(
+        App::new()
+            .middleware(Timeout::millis(10))
+            .include_router(Router::new().route(Route::new(Method::GET, "/", slow_handler())))
+            .build()
+            .unwrap(),
+    );
+    let response = app.handle(request()).await;
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+}
+
+#[tokio::test]
+async fn body_limit_rejects_oversized_content_length() {
+    use tork::middleware::BodyLimit;
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/")
+        .header("content-length", "1000000")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+    let response = app_with(BodyLimit::bytes(10)).handle(req).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]

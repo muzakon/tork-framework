@@ -14,10 +14,14 @@ use crate::error::{Error, Result};
 use crate::response::Response;
 use crate::router::BoxFuture;
 
+pub mod body_limit;
 pub mod request_id;
+pub mod timeout;
 pub mod trace;
 
+pub use body_limit::BodyLimit;
 pub use request_id::RequestId;
+pub use timeout::Timeout;
 pub use trace::Trace;
 
 /// The request type threaded through the middleware chain.
