@@ -49,7 +49,7 @@ pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router, SchemaThunk};
 pub use sse::{Sse, SseEvent};
 pub use state::{AppStateRef, State, StateMap};
-pub use ws::{WebSocket, WebSocketConn, WsClose, WsCloseCode, WsError, WsMessage};
+pub use ws::{WebSocket, WebSocketConn, WsClose, WsCloseCode, WsError, WsMessage, __ws_handshake};
 
 // Commonly used `http` types are re-exported so users do not need to depend on
 // the `http` crate directly.

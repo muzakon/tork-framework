@@ -173,7 +173,7 @@ fn is_route_attr(attr: &Attribute) -> bool {
         .map(|segment| {
             matches!(
                 segment.ident.to_string().as_str(),
-                "get" | "post" | "put" | "patch" | "delete" | "sse" | "post_sse"
+                "get" | "post" | "put" | "patch" | "delete" | "sse" | "post_sse" | "websocket"
             )
         })
         .unwrap_or(false)

@@ -49,7 +49,7 @@ tokio = { version = "1.52", features = [
     "time",
 ] }
 # WebSocket protocol (handshake + framing); used over hyper's upgraded socket.
-tokio-tungstenite = { version = "0.24", default-features = false }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 http = "1"
 http-body = "1"
 http-body-util = "0.1.3"

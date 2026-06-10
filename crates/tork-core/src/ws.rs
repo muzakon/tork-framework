@@ -9,19 +9,32 @@
 
 use std::borrow::Cow;
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use http::header::{
+    CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE,
+};
+use http::{HeaderValue, StatusCode};
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use hyper_util::rt::TokioIo;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TgCloseCode;
 
+use crate::body::RespBody;
 use crate::error::{Error, Result};
 use crate::extract::RequestContext;
+use crate::response::Response;
+
+/// The supported WebSocket protocol version.
+const WEBSOCKET_VERSION: &str = "13";
+/// Error code used when a request is not a valid WebSocket upgrade.
+const NOT_A_WEBSOCKET: &str = "NOT_A_WEBSOCKET";
 
 /// A WebSocket close status code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +297,61 @@ impl WebSocketConn {
             .await
             .map_err(connection_error)
     }
+}
+
+/// Validates a WebSocket handshake and builds the `101 Switching Protocols`
+/// response.
+///
+/// This is generated-code support for `#[websocket]`, not part of the everyday
+/// API. A request that is not a valid WebSocket upgrade is rejected with a
+/// `400 Bad Request` (code `NOT_A_WEBSOCKET`), before the connection is opened.
+#[doc(hidden)]
+pub fn __ws_handshake(ctx: &RequestContext) -> Result<Response> {
+    let headers = ctx.headers();
+
+    let is_websocket = headers
+        .get(UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
+    if !is_websocket {
+        return Err(Error::bad_request("expected a WebSocket upgrade").with_code(NOT_A_WEBSOCKET));
+    }
+
+    let connection_upgrade = headers
+        .get(CONNECTION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("upgrade"));
+    if !connection_upgrade {
+        return Err(
+            Error::bad_request("WebSocket upgrade requires Connection: upgrade")
+                .with_code(NOT_A_WEBSOCKET),
+        );
+    }
+
+    let version_ok = headers
+        .get(SEC_WEBSOCKET_VERSION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == WEBSOCKET_VERSION);
+    if !version_ok {
+        return Err(
+            Error::bad_request("unsupported WebSocket version").with_code(NOT_A_WEBSOCKET)
+        );
+    }
+
+    let key = headers
+        .get(SEC_WEBSOCKET_KEY)
+        .ok_or_else(|| Error::bad_request("missing Sec-WebSocket-Key").with_code(NOT_A_WEBSOCKET))?;
+    let accept = derive_accept_key(key.as_bytes());
+    let accept = HeaderValue::from_str(&accept)
+        .map_err(|_| Error::internal("failed to build WebSocket accept header"))?;
+
+    let mut response = http::Response::new(RespBody::new(Bytes::new()));
+    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+    let headers = response.headers_mut();
+    headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+    headers.insert(CONNECTION, HeaderValue::from_static("upgrade"));
+    headers.insert(SEC_WEBSOCKET_ACCEPT, accept);
+    Ok(response)
 }
 
 /// Maps a framework message to a tungstenite message.

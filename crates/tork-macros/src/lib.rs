@@ -19,6 +19,7 @@ mod middleware;
 mod resources;
 mod route;
 mod sse;
+mod websocket;
 
 /// Marks the asynchronous entrypoint of a Tork application.
 ///
@@ -255,4 +256,26 @@ pub fn sse(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn post_sse(attr: TokenStream, item: TokenStream) -> TokenStream {
     sse::expand("POST", attr, item)
+}
+
+/// Declares a WebSocket endpoint.
+///
+/// The handler takes a `WebSocket` parameter (the upgrade handle) and returns
+/// `tork::Result<()>`. Other parameters are path parameters or dependencies,
+/// resolved before the upgrade. Attributes: path (first), `summary`,
+/// `description`, `tags`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[websocket("/ws")]
+/// pub async fn echo(socket: WebSocket) -> tork::Result<()> {
+///     let mut socket = socket.accept().await?;
+///     while let Some(message) = socket.recv().await? { /* ... */ }
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn websocket(attr: TokenStream, item: TokenStream) -> TokenStream {
+    websocket::expand(attr, item)
 }
