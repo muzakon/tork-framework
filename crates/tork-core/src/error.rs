@@ -22,6 +22,8 @@ pub enum ErrorKind {
     Forbidden,
     /// `404 Not Found`.
     NotFound,
+    /// `405 Method Not Allowed`.
+    MethodNotAllowed,
     /// `409 Conflict`.
     Conflict,
     /// `422 Unprocessable Entity`.
@@ -42,6 +44,7 @@ impl ErrorKind {
             ErrorKind::Unauthorized => StatusCode::UNAUTHORIZED,
             ErrorKind::Forbidden => StatusCode::FORBIDDEN,
             ErrorKind::NotFound => StatusCode::NOT_FOUND,
+            ErrorKind::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorKind::Conflict => StatusCode::CONFLICT,
             ErrorKind::Unprocessable => StatusCode::UNPROCESSABLE_ENTITY,
             ErrorKind::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
@@ -57,6 +60,7 @@ impl ErrorKind {
             ErrorKind::Unauthorized => "unauthorized",
             ErrorKind::Forbidden => "forbidden",
             ErrorKind::NotFound => "not_found",
+            ErrorKind::MethodNotAllowed => "method_not_allowed",
             ErrorKind::Conflict => "conflict",
             ErrorKind::Unprocessable => "unprocessable_entity",
             ErrorKind::TooManyRequests => "too_many_requests",
@@ -107,6 +111,11 @@ impl Error {
     /// Creates a `404 Not Found` error.
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::NotFound, message)
+    }
+
+    /// Creates a `405 Method Not Allowed` error.
+    pub fn method_not_allowed(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::MethodNotAllowed, message)
     }
 
     /// Creates a `409 Conflict` error.
