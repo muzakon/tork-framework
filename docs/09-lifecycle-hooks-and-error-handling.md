@@ -88,6 +88,67 @@ App::new()
 
 When no hook is registered, the request path does no extra work.
 
+## Scoping hooks to routers and routes
+
+The four observability hooks can also be attached to a single router or route, so
+a concern targets part of the API instead of every request. Scoped hooks run in
+addition to the app-global ones. (`exception_handler` and `catch_panics` stay
+app-level.)
+
+Attach to a router with the same builder methods; every route in the router (and
+any nested router) inherits them:
+
+```rust
+App::new()
+    .include_router(
+        admin::router()
+            .on_request(audit_request)   // every /admin route
+            .on_error(alert_on_error),
+    )
+    .include_router(public::router())     // unaffected
+    .serve("0.0.0.0:8000")
+    .await
+```
+
+Attach to a single route by naming a function in the route macro. An attribute
+cannot hold a closure, so the value is a function path; each kind is repeatable:
+
+```rust
+#[api_router(prefix = "/admin", tags = ["admin"])]
+pub mod admin_router {
+    use super::*;
+
+    #[get("/users", on_request = audit_request, on_response = record_latency)]
+    pub async fn list_users(repo: UserRepository) -> tork::Result<Vec<UserOut>> { /* ... */ }
+}
+
+// The named hook lives next to the routes (in the parent module):
+async fn audit_request(event: RequestEvent) {
+    println!("audit: {} {}", event.method(), event.path());
+}
+```
+
+A hand-built route uses the same builders:
+
+```rust
+Route::new(Method::GET, "/health", handler).on_response(record_latency);
+```
+
+Scoped hooks fire after routing (once the route is known), so a route-scoped
+`on_request` does not run when a middleware short-circuits or no route matches.
+They compose with the app-global hooks in this order:
+
+```
+app on_request                         (before middleware)
+  -> middleware
+       scoped on_request               (outer router -> inner router -> route)
+       handler
+       scoped on_error / on_validation_error  (after the app-global ones)
+       scoped on_response              (route -> inner -> outer router)
+  <- middleware unwind
+app on_response                        (after middleware)
+```
+
 ## Typed errors and exception handlers
 
 A handler often calls into code that fails with its own error type. Derive
