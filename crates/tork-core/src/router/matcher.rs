@@ -1,0 +1,172 @@
+//! Path matching over the flattened route table.
+//!
+//! One [`matchit::Router`] is built per HTTP method, mapping a path pattern to an
+//! index into the flat route table. A method-agnostic index of all paths is kept
+//! alongside so that a path which exists under a different method can be reported
+//! as `405 Method Not Allowed` rather than `404 Not Found`.
+
+use std::collections::HashMap;
+
+use http::Method;
+
+use crate::error::{Error, Result};
+use crate::extract::PathParams;
+use crate::router::Route;
+
+/// The outcome of matching a request against the route table.
+pub enum Match<'a> {
+    /// A route matched; the captured path parameters are included.
+    Found {
+        /// The matched route.
+        route: &'a Route,
+        /// Path parameters captured from the URL.
+        params: PathParams,
+    },
+    /// The path exists, but not for the requested method.
+    MethodNotAllowed,
+    /// No route matched the path.
+    NotFound,
+}
+
+/// Compiled, per-method path matcher over a flat route table.
+pub struct Matcher {
+    by_method: HashMap<Method, matchit::Router<usize>>,
+    all_paths: matchit::Router<()>,
+    routes: Vec<Route>,
+}
+
+impl Matcher {
+    /// Builds a matcher from fully-qualified routes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if a route path is not a valid pattern or if the
+    /// same method and path are registered twice.
+    pub fn build(routes: Vec<Route>) -> Result<Self> {
+        let mut by_method: HashMap<Method, matchit::Router<usize>> = HashMap::new();
+        let mut all_paths: matchit::Router<()> = matchit::Router::new();
+
+        for (index, route) in routes.iter().enumerate() {
+            let method_router = by_method
+                .entry(route.method().clone())
+                .or_insert_with(matchit::Router::new);
+
+            method_router.insert(route.path(), index).map_err(|error| {
+                Error::internal(format!(
+                    "failed to register route {} {}: {error}",
+                    route.method(),
+                    route.path()
+                ))
+            })?;
+
+            // The same path may legitimately appear under multiple methods, so a
+            // duplicate insert here is expected and ignored.
+            let _ = all_paths.insert(route.path(), ());
+        }
+
+        Ok(Self {
+            by_method,
+            all_paths,
+            routes,
+        })
+    }
+
+    /// Matches `method` and `path` against the route table.
+    pub fn find(&self, method: &Method, path: &str) -> Match<'_> {
+        let normalized = normalize_request_path(path);
+
+        if let Some(method_router) = self.by_method.get(method) {
+            if let Ok(matched) = method_router.at(&normalized) {
+                let mut params = PathParams::new();
+                for (name, value) in matched.params.iter() {
+                    params.push(name.to_owned(), value.to_owned());
+                }
+                return Match::Found {
+                    route: &self.routes[*matched.value],
+                    params,
+                };
+            }
+        }
+
+        if self.all_paths.at(&normalized).is_ok() {
+            Match::MethodNotAllowed
+        } else {
+            Match::NotFound
+        }
+    }
+
+    /// Returns the flat route table.
+    pub fn routes(&self) -> &[Route] {
+        &self.routes
+    }
+}
+
+/// Normalizes an incoming request path so it matches a registered pattern.
+///
+/// Registered paths drop their trailing slash (except the root), so incoming
+/// paths are normalized the same way before matching.
+fn normalize_request_path(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::response::{Response, empty};
+    use crate::router::{BoxFuture, HandlerFn};
+    use crate::extract::RequestContext;
+    use http::StatusCode;
+    use std::sync::Arc;
+
+    fn dummy_handler() -> HandlerFn {
+        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
+            Box::pin(async { empty(StatusCode::OK) })
+        })
+    }
+
+    fn matcher() -> Matcher {
+        Matcher::build(vec![Route::new(
+            Method::GET,
+            "/users/{user_id}",
+            dummy_handler(),
+        )])
+        .unwrap()
+    }
+
+    #[test]
+    fn matches_and_captures_params() {
+        match matcher().find(&Method::GET, "/users/42") {
+            Match::Found { params, .. } => assert_eq!(params.get("user_id"), Some("42")),
+            _ => panic!("expected a match"),
+        }
+    }
+
+    #[test]
+    fn trailing_slash_is_ignored() {
+        assert!(matches!(
+            matcher().find(&Method::GET, "/users/42/"),
+            Match::Found { .. }
+        ));
+    }
+
+    #[test]
+    fn wrong_method_is_method_not_allowed() {
+        assert!(matches!(
+            matcher().find(&Method::POST, "/users/42"),
+            Match::MethodNotAllowed
+        ));
+    }
+
+    #[test]
+    fn unknown_path_is_not_found() {
+        assert!(matches!(
+            matcher().find(&Method::GET, "/unknown"),
+            Match::NotFound
+        ));
+    }
+}

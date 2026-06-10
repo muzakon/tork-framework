@@ -14,6 +14,7 @@ mod body;
 mod error;
 mod extract;
 mod response;
+mod router;
 mod state;
 
 pub use body::{BoxError, ReqBody, RespBody, box_body};
@@ -22,6 +23,8 @@ pub use extract::{
     BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, __extract_path_param,
 };
 pub use response::{IntoResponse, Json, Response, json_response};
+pub use router::matcher::{Match, Matcher};
+pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router};
 pub use state::{AppStateRef, State, StateMap};
 
 // Commonly used `http` types are re-exported so users do not need to depend on
