@@ -24,7 +24,7 @@ mod state;
 pub use app::{App, AppInner};
 pub use server::TorkService;
 pub use body::{BoxError, ReqBody, RespBody, box_body};
-pub use error::{Error, ErrorKind, Result};
+pub use error::{Error, ErrorDetail, ErrorKind, Result};
 pub use extract::{
     BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, __extract_path_param,
 };

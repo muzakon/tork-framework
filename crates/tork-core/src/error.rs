@@ -81,6 +81,16 @@ pub struct Error {
     kind: ErrorKind,
     message: String,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    details: Vec<ErrorDetail>,
+}
+
+/// A single field-level error, included in validation (`422`) responses.
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorDetail {
+    /// Dotted path to the offending field.
+    pub field: String,
+    /// Human-readable description of the problem.
+    pub message: String,
 }
 
 impl Error {
@@ -90,6 +100,7 @@ impl Error {
             kind,
             message: message.into(),
             source: None,
+            details: Vec::new(),
         }
     }
 
@@ -157,9 +168,34 @@ impl Error {
         self
     }
 
+    /// Attaches field-level details, surfaced in the response body for `4xx`.
+    pub fn with_details(mut self, details: Vec<ErrorDetail>) -> Self {
+        self.details = details;
+        self
+    }
+
+    /// Builds a `422 Unprocessable Entity` error from a `garde` validation report.
+    ///
+    /// Each reported field path and message becomes an [`ErrorDetail`].
+    pub fn from_garde_report(report: garde::error::Report) -> Self {
+        let details = report
+            .iter()
+            .map(|(path, error)| ErrorDetail {
+                field: path.to_string(),
+                message: error.to_string(),
+            })
+            .collect();
+        Self::unprocessable("validation failed").with_details(details)
+    }
+
     /// Returns the error category.
     pub fn kind(&self) -> ErrorKind {
         self.kind
+    }
+
+    /// Returns the field-level details, if any.
+    pub fn details(&self) -> &[ErrorDetail] {
+        &self.details
     }
 
     /// Returns the client-facing message.
@@ -192,6 +228,13 @@ struct ErrorEnvelope<'a> {
 struct ErrorBody<'a> {
     code: &'a str,
     message: &'a str,
+    #[serde(skip_serializing_if = "slice_is_empty")]
+    details: &'a [ErrorDetail],
+}
+
+/// Skips the `details` field when there are no field-level errors.
+fn slice_is_empty(details: &&[ErrorDetail]) -> bool {
+    details.is_empty()
 }
 
 /// Last-resort body used only if serializing the error envelope itself fails.
@@ -211,10 +254,19 @@ impl IntoResponse for Error {
             &self.message
         };
 
+        // Field-level details are only surfaced for client errors; server errors
+        // never expose internal detail.
+        let details: &[ErrorDetail] = if status.is_server_error() {
+            &[]
+        } else {
+            &self.details
+        };
+
         let envelope = ErrorEnvelope {
             error: ErrorBody {
                 code: self.kind.code(),
                 message,
+                details,
             },
         };
 
@@ -280,5 +332,44 @@ mod tests {
         let body = body_to_string(response).await;
         assert!(!body.contains("hunter2"), "internal detail must not leak");
         assert!(body.contains(INTERNAL_ERROR_MESSAGE), "generic message expected");
+    }
+
+    #[tokio::test]
+    async fn validation_details_are_serialized() {
+        let response = Error::unprocessable("validation failed")
+            .with_details(vec![ErrorDetail {
+                field: "price".to_owned(),
+                message: "must be greater than 0".to_owned(),
+            }])
+            .into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = body_to_string(response).await;
+        assert!(body.contains("details"), "details should be present: {body}");
+        assert!(body.contains("price"), "field name should be present: {body}");
+    }
+
+    #[tokio::test]
+    async fn plain_error_omits_details_field() {
+        let body = body_to_string(Error::forbidden("nope").into_response()).await;
+        assert!(!body.contains("details"), "details should be omitted: {body}");
+    }
+
+    #[test]
+    fn from_garde_report_collects_field_errors() {
+        use garde::Validate;
+
+        #[derive(garde::Validate)]
+        struct Sample {
+            #[garde(range(min = 1))]
+            count: i64,
+        }
+
+        let report = Sample { count: 0 }.validate().unwrap_err();
+        let error = Error::from_garde_report(report);
+
+        assert_eq!(error.kind(), ErrorKind::Unprocessable);
+        assert_eq!(error.details().len(), 1);
+        assert_eq!(error.details()[0].field, "count");
     }
 }
