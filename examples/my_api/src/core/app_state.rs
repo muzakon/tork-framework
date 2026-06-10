@@ -8,10 +8,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tork::{Error, LifespanContext, Resources, Result};
+use tork::{Error, Hub, LifespanContext, Resources, Result};
 
+use crate::models::chat::ChatMessage;
 use crate::models::order::OrderOut;
 use crate::models::user::UserOut;
+
+/// Broadcast hub for the chat demo, injected as a resource.
+///
+/// A local newtype around [`Hub`] so a `FromRequest` can be generated for it
+/// (the orphan rule forbids implementing it for the foreign `Hub` directly).
+#[derive(Clone)]
+pub struct ChatHub(pub Hub<ChatMessage>);
 
 /// In-memory data store, injected as a resource.
 ///
@@ -106,6 +114,8 @@ pub struct AppState {
     pub store: UserStore,
     #[resource]
     pub config: Config,
+    #[resource]
+    pub chat: ChatHub,
 }
 
 #[tork::lifespan]
@@ -116,6 +126,7 @@ impl AppState {
         Ok(AppState {
             store: UserStore::seed(),
             config: Config { service_name },
+            chat: ChatHub(Hub::new()),
         })
     }
 

@@ -2,7 +2,9 @@
 
 use tork::{LastEventId, RequestEvent, Sse, SseEvent, WebSocket, WsMessage, api_router, get, sse, websocket};
 
+use crate::core::app_state::ChatHub;
 use crate::core::errors::RepoError;
+use crate::models::chat::{ChatIn, ChatMessage};
 use crate::models::event::EventOut;
 
 #[api_router(prefix = "/demo", tags = ["demo"])]
@@ -64,6 +66,38 @@ pub mod demo_router {
                 WsMessage::Binary(bytes) => socket.send_binary(bytes).await?,
                 WsMessage::Close(_) => break,
                 _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// A typed broadcast chat room: validated input is fanned out to everyone in
+    /// the room through the injected [`ChatHub`].
+    #[websocket(
+        "/chat/{room}",
+        incoming = ChatIn,
+        outgoing = ChatMessage,
+        summary = "Broadcast chat room"
+    )]
+    pub async fn chat(socket: WebSocket, room: String, hub: ChatHub) -> tork::Result<()> {
+        let mut socket = socket.accept().await?;
+        let room = hub.0.room(room);
+        let mut receiver = room.subscribe();
+        loop {
+            tokio::select! {
+                incoming = socket.receive_valid::<ChatIn>() => match incoming? {
+                    Some(input) => {
+                        room.broadcast(ChatMessage {
+                            from: "guest".to_owned(),
+                            text: input.message,
+                        });
+                    }
+                    None => break,
+                },
+                outgoing = receiver.recv() => match outgoing {
+                    Ok(message) => socket.send_json(&message).await?,
+                    Err(_) => break,
+                },
             }
         }
         Ok(())

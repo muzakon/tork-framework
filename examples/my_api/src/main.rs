@@ -2,8 +2,9 @@
 
 use tork::middleware::{Compression, Cors, RequestId, Trace};
 use tork::{
-    App, ErrorContext, HeaderName, HeaderValue, IntoResponse, Next, OpenApi, PanicEvent, Request,
-    RequestEvent, Response, ResponseEvent, Result, middleware,
+    App, AsyncApi, ErrorContext, HeaderName, HeaderValue, IntoResponse, Next, OpenApi, PanicEvent,
+    Request, RequestEvent, Response, ResponseEvent, Result, WebSocketConfig, WsConnectInfo,
+    WsDisconnectInfo, middleware,
 };
 
 use my_api::core::app_state::AppState;
@@ -36,6 +37,22 @@ async fn main() -> tork::Result<()> {
     App::new()
         .lifespan::<AppState>()
         .catch_panics()
+        .websocket_config(
+            WebSocketConfig::new()
+                .max_message_size_kb(64)
+                .idle_timeout_secs(300),
+        )
+        .on_ws_connect(|info: WsConnectInfo| async move {
+            println!("ws connect {}", info.path());
+        })
+        .on_ws_disconnect(|info: WsDisconnectInfo| async move {
+            println!(
+                "ws disconnect {} after {:.1?} ({:?})",
+                info.path(),
+                info.duration(),
+                info.close_code()
+            );
+        })
         .middleware(RequestId::new())
         .middleware(Trace::new())
         .middleware(add_process_time)
@@ -71,6 +88,12 @@ async fn main() -> tork::Result<()> {
                 .version("1.0.0")
                 .json("/openapi.json")
                 .docs("/docs"),
+        )
+        .asyncapi(
+            AsyncApi::new()
+                .title("My API (realtime)")
+                .version("1.0.0")
+                .json("/asyncapi.json"),
         )
         .on_ready(|ctx| async move {
             println!("my_api listening on {}", ctx.addr());

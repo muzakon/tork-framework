@@ -12,6 +12,8 @@ tork = { path = "../../crates/tork" }
 garde = { workspace = true }
 # Provides a stream source for the Server-Sent Events demo endpoint.
 futures-util = { workspace = true }
+# `tokio::select!` for the bidirectional chat WebSocket loop.
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
