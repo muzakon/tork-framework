@@ -18,3 +18,5 @@ bytes.workspace = true
 matchit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+garde.workspace = true
+schemars.workspace = true
