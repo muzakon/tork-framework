@@ -1,32 +1,32 @@
-//! Shared application state.
+//! Application resources and lifespan.
+//!
+//! `AppState` is only a resource container produced by the lifespan. Its
+//! resources (the store and the config) are registered by type and injected
+//! directly into services and handlers, so no code reaches through a state
+//! object.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tork::{Error, Result};
+use tork::{Error, LifespanContext, Resources, Result};
 
 use crate::models::order::OrderOut;
 use crate::models::user::UserOut;
 
-/// The application's shared state.
+/// In-memory data store, injected as a resource.
 ///
-/// State must be cheap to clone, because the [`State`](tork::State) extractor
-/// clones it on each request. Here every store is held behind an `Arc`, so a
-/// clone is just a few reference-count bumps. In a real service this would hold
-/// connection pools and other handles.
+/// Held behind `Arc`s so cloning (which happens on each injection) is cheap. In
+/// a real service this would wrap connection pools.
 #[derive(Clone)]
-pub struct AppState {
+pub struct UserStore {
     users: Arc<HashMap<i64, UserOut>>,
     orders: Arc<HashMap<i64, Vec<OrderOut>>>,
     tokens: Arc<HashMap<String, i64>>,
 }
 
-impl AppState {
-    /// Boots the application state.
-    ///
-    /// This stands in for the asynchronous setup a real service performs, such
-    /// as opening a database pool. Here it seeds an in-memory data set.
-    pub async fn boot() -> Result<Self> {
+impl UserStore {
+    /// Builds the store with a seeded in-memory data set.
+    pub fn seed() -> Self {
         let users = HashMap::from([
             (
                 1,
@@ -62,22 +62,16 @@ impl AppState {
             ],
         )]);
 
-        // Maps an opaque bearer token to a user id. A real service would verify a
-        // signed token or look up a session instead.
         let tokens = HashMap::from([("ada-token".to_owned(), 1), ("alan-token".to_owned(), 2)]);
 
-        Ok(Self {
+        Self {
             users: Arc::new(users),
             orders: Arc::new(orders),
             tokens: Arc::new(tokens),
-        })
+        }
     }
 
     /// Looks up a user by id.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `404 Not Found` error if no user has the given id.
     pub fn get_user(&self, id: i64) -> Result<UserOut> {
         self.users
             .get(&id)
@@ -91,14 +85,43 @@ impl AppState {
     }
 
     /// Resolves a bearer token to the authenticated user's id.
-    ///
-    /// # Errors
-    ///
-    /// Returns `401 Unauthorized` if the token is not recognized.
     pub fn authenticate(&self, token: &str) -> Result<i64> {
         self.tokens
             .get(token)
             .copied()
             .ok_or_else(|| Error::unauthorized("invalid token"))
+    }
+}
+
+/// Application configuration, injected as a resource.
+#[derive(Clone)]
+pub struct Config {
+    pub service_name: String,
+}
+
+/// The application's resource container.
+#[derive(Clone, Resources)]
+pub struct AppState {
+    #[resource]
+    pub store: UserStore,
+    #[resource]
+    pub config: Config,
+}
+
+#[tork::lifespan]
+impl AppState {
+    /// Acquires the application's resources at startup.
+    async fn startup(ctx: LifespanContext) -> Result<Self> {
+        let service_name = ctx.env("SERVICE_NAME").unwrap_or_else(|_| "my_api".to_owned());
+        Ok(AppState {
+            store: UserStore::seed(),
+            config: Config { service_name },
+        })
+    }
+
+    /// Releases the application's resources at shutdown.
+    async fn shutdown(self) -> Result<()> {
+        eprintln!("my_api: application stopped");
+        Ok(())
     }
 }

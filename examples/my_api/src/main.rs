@@ -4,7 +4,7 @@ use tork::middleware::{Compression, Cors, RequestId, Trace};
 use tork::{App, HeaderName, HeaderValue, Next, OpenApi, Request, Response, Result, middleware};
 
 use my_api::core::app_state::AppState;
-use my_api::routers::users;
+use my_api::routers::{health, users};
 
 /// Custom middleware: records how long the request took to process.
 #[middleware]
@@ -23,10 +23,8 @@ async fn add_process_time(req: Request, next: Next) -> Result<Response> {
 
 #[tork::main]
 async fn main() -> tork::Result<()> {
-    let state = AppState::boot().await?;
-
     App::new()
-        .state(state)
+        .lifespan::<AppState>()
         .middleware(RequestId::new())
         .middleware(Trace::new())
         .middleware(add_process_time)
@@ -38,6 +36,7 @@ async fn main() -> tork::Result<()> {
         )
         .middleware(Compression::new().gzip().minimum_size(256))
         .include_router(users::router())
+        .include_router(health::router())
         .openapi(
             OpenApi::new()
                 .title("My API")
@@ -45,6 +44,10 @@ async fn main() -> tork::Result<()> {
                 .json("/openapi.json")
                 .docs("/docs"),
         )
+        .on_ready(|ctx| async move {
+            println!("my_api listening on {}", ctx.addr());
+            Ok(())
+        })
         .serve("0.0.0.0:8000")
         .await
 }
