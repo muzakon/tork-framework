@@ -15,14 +15,20 @@ use crate::response::Response;
 use crate::router::BoxFuture;
 
 pub mod body_limit;
+pub mod https_redirect;
+pub mod proxy_headers;
 pub mod request_id;
 pub mod timeout;
 pub mod trace;
+pub mod trusted_host;
 
 pub use body_limit::BodyLimit;
+pub use https_redirect::HttpsRedirect;
+pub use proxy_headers::ProxyHeaders;
 pub use request_id::RequestId;
 pub use timeout::Timeout;
 pub use trace::Trace;
+pub use trusted_host::TrustedHost;
 
 /// The request type threaded through the middleware chain.
 pub type Request = http::Request<ReqBody>;

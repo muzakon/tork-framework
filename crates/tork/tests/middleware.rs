@@ -134,6 +134,72 @@ async fn body_limit_rejects_oversized_content_length() {
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
+fn get_with_headers(headers: &[(&str, &str)]) -> http::Request<ReqBody> {
+    let mut builder = http::Request::builder().method(Method::GET).uri("/");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    builder.body(box_body(Full::new(Bytes::new()))).unwrap()
+}
+
+#[tokio::test]
+async fn trusted_host_allows_and_rejects() {
+    use tork::middleware::TrustedHost;
+
+    let allowed = app_with(TrustedHost::new(["example.com", "*.example.com"]))
+        .handle(get_with_headers(&[("host", "app.example.com")]))
+        .await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+
+    let rejected = app_with(TrustedHost::new(["example.com"]))
+        .handle(get_with_headers(&[("host", "evil.com")]))
+        .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn https_redirect_redirects_plain_http() {
+    use tork::middleware::HttpsRedirect;
+
+    let response = app_with(HttpsRedirect::new())
+        .handle(get_with_headers(&[("host", "example.com")]))
+        .await;
+    assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(
+        response.headers().get("location").unwrap(),
+        "https://example.com/"
+    );
+
+    // Already HTTPS (per the proxy header) passes through.
+    let passed = app_with(HttpsRedirect::new())
+        .handle(get_with_headers(&[("x-forwarded-proto", "https")]))
+        .await;
+    assert_eq!(passed.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn proxy_headers_rewrites_host_for_trusted_host() {
+    use tork::middleware::{ProxyHeaders, TrustedHost};
+
+    let app = Arc::new(
+        App::new()
+            .middleware(ProxyHeaders::new())
+            .middleware(TrustedHost::new(["real.example.com"]))
+            .include_router(Router::new().route(Route::new(Method::GET, "/", ok_handler())))
+            .build()
+            .unwrap(),
+    );
+
+    // The direct Host is untrusted, but X-Forwarded-Host carries the real one.
+    let response = app
+        .handle(get_with_headers(&[
+            ("host", "proxy.internal"),
+            ("x-forwarded-host", "real.example.com"),
+        ]))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn request_id_propagates_incoming() {
     use tork::middleware::RequestId;
