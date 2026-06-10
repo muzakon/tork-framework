@@ -13,3 +13,4 @@ tork-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 http.workspace = true
+bytes.workspace = true

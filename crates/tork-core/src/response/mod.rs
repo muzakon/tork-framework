@@ -36,6 +36,14 @@ pub(crate) fn with_body(status: StatusCode, content_type: &'static str, body: By
     response
 }
 
+/// Builds a response from a pre-serialized body and an explicit content type.
+///
+/// Useful for serving content that is generated once and cached, such as the
+/// OpenAPI document or a static documentation asset.
+pub fn bytes_response(status: StatusCode, content_type: &'static str, body: Bytes) -> Response {
+    with_body(status, content_type, body)
+}
+
 /// Builds an empty-bodied response carrying only a status code.
 pub(crate) fn empty(status: StatusCode) -> Response {
     let mut response = http::Response::new(RespBody::new(Bytes::new()));

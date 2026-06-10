@@ -21,12 +21,7 @@
 #![forbid(unsafe_code)]
 
 pub use tork_core::*;
-
-// These globs are intentionally empty until later commits populate the macro and
-// OpenAPI crates; the allow keeps intermediate builds warning-free.
-#[allow(unused_imports)]
 pub use tork_macros::*;
 
 #[cfg(feature = "openapi")]
-#[allow(unused_imports)]
 pub use tork_openapi::*;

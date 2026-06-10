@@ -29,7 +29,7 @@ pub use extract::{
     BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, __extract_path_param,
 };
 pub use openapi::OpenApiProvider;
-pub use response::{IntoResponse, Json, Response, __finish, json_response};
+pub use response::{IntoResponse, Json, Response, __finish, bytes_response, json_response};
 pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router};
 pub use state::{AppStateRef, State, StateMap};
