@@ -26,6 +26,7 @@ openapi = ["dep:tork-openapi"]
 
 [dev-dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }

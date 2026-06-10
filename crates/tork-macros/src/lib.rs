@@ -7,6 +7,7 @@
 
 use proc_macro::TokenStream;
 
+mod api_model;
 mod api_router;
 mod common;
 mod dependency;
@@ -75,6 +76,33 @@ pub fn api_router(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn dependency(attr: TokenStream, item: TokenStream) -> TokenStream {
     dependency::expand(attr, item)
+}
+
+/// Turns a struct into a validated, documented API model.
+///
+/// Derives serde (de)serialization, `garde` validation, and `schemars` JSON
+/// Schema, and translates `#[field(...)]` constraints into the matching `garde`
+/// and `schemars` attributes.
+///
+/// # Supported `#[field(...)]` constraints
+///
+/// - `min_length` / `max_length` — string length bounds
+/// - `ge` / `le` — inclusive numeric bounds
+/// - `gt` / `lt` — exclusive numeric bounds
+/// - `title` / `description` — documentation metadata
+///
+/// # Example
+///
+/// ```ignore
+/// #[api_model(rename_all = "camelCase")]
+/// pub struct CreateOrderInput {
+///     #[field(min_length = 1, max_length = 120)] pub name: String,
+///     #[field(gt = 0, description = "The price must be greater than zero")] pub price: f64,
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
+    api_model::expand(attr, item)
 }
 
 /// Declares a `GET` route. See [`macro@get`] and the other method macros for the
