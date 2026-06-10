@@ -12,6 +12,7 @@ mod api_router;
 mod common;
 mod dependency;
 mod main_macro;
+mod middleware;
 mod route;
 
 /// Marks the asynchronous entrypoint of a Tork application.
@@ -106,6 +107,27 @@ pub fn dependency(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
     api_model::expand(attr, item)
+}
+
+/// Turns an async function into a middleware layer.
+///
+/// The function must be `async fn(request, next) -> tork::Result<tork::Response>`.
+/// It is rewritten into a unit struct of the same name implementing the
+/// `Middleware` trait, so it can be passed to `App::middleware`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[middleware]
+/// pub async fn add_process_time_header(req: Request, next: Next) -> Result<Response> {
+///     let mut res = next.run(req).await?;
+///     // ...set a header on res...
+///     Ok(res)
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn middleware(attr: TokenStream, item: TokenStream) -> TokenStream {
+    middleware::expand(attr, item)
 }
 
 /// Declares a `GET` route. See [`macro@get`] and the other method macros for the
