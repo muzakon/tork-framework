@@ -8,11 +8,13 @@
 //! `tokio-tungstenite`, which users never see directly.
 
 use std::borrow::Cow;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use garde::Validate;
+use http::Method;
 use http::header::{
     CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE,
 };
@@ -33,11 +35,14 @@ use crate::body::RespBody;
 use crate::error::{Error, Result};
 use crate::extract::RequestContext;
 use crate::response::Response;
+use crate::router::BoxFuture;
 
 /// The supported WebSocket protocol version.
 const WEBSOCKET_VERSION: &str = "13";
 /// Error code used when a request is not a valid WebSocket upgrade.
 const NOT_A_WEBSOCKET: &str = "NOT_A_WEBSOCKET";
+/// Header consulted to correlate a connection with a request identifier.
+const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// A WebSocket close status code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,10 +256,101 @@ impl WebSocketConfig {
 #[derive(Clone)]
 pub(crate) struct AppWsConfig(pub(crate) WebSocketConfig);
 
+/// Connection metadata shared by the lifecycle events.
+#[derive(Clone)]
+pub(crate) struct WsConnInfo {
+    method: Method,
+    path: String,
+    request_id: Option<String>,
+}
+
+/// Context for [`on_ws_connect`](crate::App::on_ws_connect): a socket opened.
+pub struct WsConnectInfo {
+    info: WsConnInfo,
+}
+
+impl WsConnectInfo {
+    pub(crate) fn new(info: WsConnInfo) -> Self {
+        Self { info }
+    }
+
+    /// The HTTP method of the upgrade request.
+    pub fn method(&self) -> &Method {
+        &self.info.method
+    }
+
+    /// The request path.
+    pub fn path(&self) -> &str {
+        &self.info.path
+    }
+
+    /// The request identifier (the `x-request-id` value), if present.
+    pub fn request_id(&self) -> Option<&str> {
+        self.info.request_id.as_deref()
+    }
+}
+
+/// Context for [`on_ws_disconnect`](crate::App::on_ws_disconnect): a socket closed.
+pub struct WsDisconnectInfo {
+    info: WsConnInfo,
+    duration: Duration,
+    close_code: Option<WsCloseCode>,
+}
+
+impl WsDisconnectInfo {
+    pub(crate) fn new(info: WsConnInfo, duration: Duration, close_code: Option<WsCloseCode>) -> Self {
+        Self {
+            info,
+            duration,
+            close_code,
+        }
+    }
+
+    /// The HTTP method of the upgrade request.
+    pub fn method(&self) -> &Method {
+        &self.info.method
+    }
+
+    /// The request path.
+    pub fn path(&self) -> &str {
+        &self.info.path
+    }
+
+    /// The request identifier (the `x-request-id` value), if present.
+    pub fn request_id(&self) -> Option<&str> {
+        self.info.request_id.as_deref()
+    }
+
+    /// How long the connection was open.
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    /// The close code, if the connection closed with one.
+    pub fn close_code(&self) -> Option<WsCloseCode> {
+        self.close_code
+    }
+}
+
+/// An observe-only `on_ws_connect` hook.
+pub(crate) type WsConnectHook = Box<dyn Fn(WsConnectInfo) -> BoxFuture<'static, ()> + Send + Sync>;
+/// An observe-only `on_ws_disconnect` hook.
+pub(crate) type WsDisconnectHook =
+    Box<dyn Fn(WsDisconnectInfo) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// The application's WebSocket lifecycle hooks, stored in the state map.
+#[derive(Default)]
+pub(crate) struct WsHooks {
+    pub(crate) connect: Vec<WsConnectHook>,
+    pub(crate) disconnect: Vec<WsDisconnectHook>,
+}
+
 /// A WebSocket upgrade handle: call [`accept`](WebSocket::accept) to open it.
 pub struct WebSocket {
     upgrade: OnUpgrade,
     config: WebSocketConfig,
+    hooks: Arc<WsHooks>,
+    info: WsConnInfo,
 }
 
 impl WebSocket {
@@ -272,13 +368,31 @@ impl WebSocket {
             .get::<AppWsConfig>()
             .map(|config| config.0.clone())
             .unwrap_or_default();
+        let hooks = ctx
+            .state()
+            .get::<WsHooks>()
+            .unwrap_or_else(|| Arc::new(WsHooks::default()));
+        let request_id = ctx
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let info = WsConnInfo {
+            method: ctx.method().clone(),
+            path: ctx.uri().path().to_owned(),
+            request_id,
+        };
         Ok(Self {
             upgrade,
             config: route.merge(&app_default),
+            hooks,
+            info,
         })
     }
 
     /// Completes the upgrade and returns the live connection.
+    ///
+    /// Fires the `on_ws_connect` hooks once the socket is open.
     pub async fn accept(self) -> Result<WebSocketConn> {
         let idle_timeout = self.config.idle_timeout;
         let upgraded = self
@@ -291,9 +405,18 @@ impl WebSocket {
             self.config.to_tungstenite(),
         )
         .await;
+
+        for hook in self.hooks.connect.iter() {
+            hook(WsConnectInfo::new(self.info.clone())).await;
+        }
+
         Ok(WebSocketConn {
             stream,
             idle_timeout,
+            hooks: self.hooks,
+            info: self.info,
+            started: Instant::now(),
+            close_code: None,
         })
     }
 }
@@ -302,6 +425,31 @@ impl WebSocket {
 pub struct WebSocketConn {
     stream: WebSocketStream<TokioIo<Upgraded>>,
     idle_timeout: Option<Duration>,
+    hooks: Arc<WsHooks>,
+    info: WsConnInfo,
+    started: Instant,
+    close_code: Option<WsCloseCode>,
+}
+
+impl Drop for WebSocketConn {
+    fn drop(&mut self) {
+        if self.hooks.disconnect.is_empty() {
+            return;
+        }
+        // Fire the disconnect hooks on a detached task (Drop cannot be async).
+        // Skipped when there is no current runtime, so non-server use is safe.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let hooks = self.hooks.clone();
+            let info = self.info.clone();
+            let duration = self.started.elapsed();
+            let close_code = self.close_code;
+            handle.spawn(async move {
+                for hook in hooks.disconnect.iter() {
+                    hook(WsDisconnectInfo::new(info.clone(), duration, close_code)).await;
+                }
+            });
+        }
+    }
 }
 
 impl WebSocketConn {
@@ -322,6 +470,9 @@ impl WebSocketConn {
             match next {
                 Some(Ok(message)) => {
                     if let Some(message) = from_tungstenite(message) {
+                        if let WsMessage::Close(Some(close)) = &message {
+                            self.close_code = Some(close.code);
+                        }
                         return Ok(Some(message));
                     }
                 }
@@ -411,6 +562,7 @@ impl WebSocketConn {
 
     /// Closes the connection with a status code and reason.
     pub async fn close(&mut self, code: WsCloseCode, reason: impl Into<String>) -> Result<()> {
+        self.close_code = Some(code);
         self.send(WsMessage::Close(Some(WsClose {
             code,
             reason: reason.into(),
@@ -582,6 +734,24 @@ mod tests {
         let error: Error = WsError::policy_violation("no token").into();
         assert_eq!(error.kind(), crate::ErrorKind::Forbidden);
         assert_eq!(error.code(), "WS_REJECTED");
+    }
+
+    #[test]
+    fn disconnect_info_exposes_duration_and_close_code() {
+        let info = WsConnInfo {
+            method: Method::GET,
+            path: "/ws".to_owned(),
+            request_id: Some("req-1".to_owned()),
+        };
+        let event = WsDisconnectInfo::new(
+            info,
+            Duration::from_secs(3),
+            Some(WsCloseCode::NormalClosure),
+        );
+        assert_eq!(event.path(), "/ws");
+        assert_eq!(event.request_id(), Some("req-1"));
+        assert_eq!(event.duration(), Duration::from_secs(3));
+        assert_eq!(event.close_code(), Some(WsCloseCode::NormalClosure));
     }
 
     #[derive(serde::Deserialize, garde::Validate)]

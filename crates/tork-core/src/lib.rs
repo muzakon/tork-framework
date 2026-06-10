@@ -50,8 +50,8 @@ pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router, SchemaThunk};
 pub use sse::{Sse, SseEvent};
 pub use state::{AppStateRef, State, StateMap};
 pub use ws::{
-    WebSocket, WebSocketConfig, WebSocketConn, WsClose, WsCloseCode, WsError, WsMessage,
-    __ws_handshake,
+    WebSocket, WebSocketConfig, WebSocketConn, WsClose, WsCloseCode, WsConnectInfo,
+    WsDisconnectInfo, WsError, WsMessage, __ws_handshake,
 };
 
 // Commonly used `http` types are re-exported so users do not need to depend on

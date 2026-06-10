@@ -23,7 +23,10 @@ use crate::router::{
     BoxFuture, Route, Router, SharedErrorHook, SharedRequestHook, SharedResponseHook,
     SharedValidationErrorHook,
 };
-use crate::ws::{AppWsConfig, WebSocketConfig};
+use crate::ws::{
+    AppWsConfig, WebSocketConfig, WsConnectHook, WsConnectInfo, WsDisconnectHook, WsDisconnectInfo,
+    WsHooks,
+};
 use crate::server::{run_with_shutdown, shutdown_signal};
 use crate::state::{AppStateRef, StateMap};
 
@@ -82,6 +85,8 @@ pub struct App {
     catch_panics: bool,
     exception_handlers: HashMap<TypeId, ExceptionHandlerFn>,
     ws_config: Option<WebSocketConfig>,
+    on_ws_connect: Vec<WsConnectHook>,
+    on_ws_disconnect: Vec<WsDisconnectHook>,
 }
 
 impl Default for App {
@@ -110,6 +115,8 @@ impl App {
             catch_panics: false,
             exception_handlers: HashMap::new(),
             ws_config: None,
+            on_ws_connect: Vec::new(),
+            on_ws_disconnect: Vec::new(),
         }
     }
 
@@ -256,6 +263,28 @@ impl App {
         self
     }
 
+    /// Registers an observe-only hook that runs when a WebSocket opens.
+    pub fn on_ws_connect<F, Fut>(mut self, hook: F) -> Self
+    where
+        F: Fn(WsConnectInfo) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.on_ws_connect.push(Box::new(move |info| Box::pin(hook(info))));
+        self
+    }
+
+    /// Registers an observe-only hook that runs when a WebSocket closes.
+    ///
+    /// The event carries how long the connection was open and the close code.
+    pub fn on_ws_disconnect<F, Fut>(mut self, hook: F) -> Self
+    where
+        F: Fn(WsDisconnectInfo) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.on_ws_disconnect.push(Box::new(move |info| Box::pin(hook(info))));
+        self
+    }
+
     /// Enables the panic boundary: a panic in a handler is caught and turned into
     /// a `500` response instead of dropping the connection.
     ///
@@ -328,12 +357,21 @@ impl App {
             catch_panics,
             exception_handlers,
             ws_config,
+            on_ws_connect,
+            on_ws_disconnect,
             ..
         } = self;
 
         // Make the default WebSocket config available to websocket handlers.
         if let Some(config) = ws_config {
             state.insert(AppWsConfig(config));
+        }
+        // Make the WebSocket lifecycle hooks available to websocket handlers.
+        if !on_ws_connect.is_empty() || !on_ws_disconnect.is_empty() {
+            state.insert(WsHooks {
+                connect: on_ws_connect,
+                disconnect: on_ws_disconnect,
+            });
         }
 
         let mut routes = Vec::new();
