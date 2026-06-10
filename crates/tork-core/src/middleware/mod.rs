@@ -254,4 +254,59 @@ mod tests {
         let response = app.handle(request()).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
+
+    /// A middleware with a configurable name and duplicate policy.
+    struct Policy {
+        name: &'static str,
+        policy: DuplicatePolicy,
+    }
+    impl Middleware for Policy {
+        fn handle(&self, request: Request, next: Next) -> BoxFuture<'static, Result<Response>> {
+            next.run(request)
+        }
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn duplicate_policy(&self) -> DuplicatePolicy {
+            self.policy
+        }
+    }
+
+    fn policy(name: &'static str, policy: DuplicatePolicy) -> std::sync::Arc<dyn Middleware> {
+        std::sync::Arc::new(Policy { name, policy })
+    }
+
+    #[test]
+    fn resolve_duplicates_applies_each_policy() {
+        // Allow keeps every registration.
+        let allowed =
+            resolve_duplicates(vec![policy("a", DuplicatePolicy::Allow), policy("a", DuplicatePolicy::Allow)])
+                .unwrap();
+        assert_eq!(allowed.len(), 2);
+
+        // Replace keeps only the most recent.
+        let replaced = resolve_duplicates(vec![
+            policy("b", DuplicatePolicy::Replace),
+            policy("b", DuplicatePolicy::Replace),
+        ])
+        .unwrap();
+        assert_eq!(replaced.len(), 1);
+
+        // Reject fails the configuration.
+        assert!(
+            resolve_duplicates(vec![
+                policy("c", DuplicatePolicy::Reject),
+                policy("c", DuplicatePolicy::Reject)
+            ])
+            .is_err()
+        );
+
+        // Distinct names never collide.
+        let distinct = resolve_duplicates(vec![
+            policy("x", DuplicatePolicy::Reject),
+            policy("y", DuplicatePolicy::Reject),
+        ])
+        .unwrap();
+        assert_eq!(distinct.len(), 2);
+    }
 }

@@ -306,6 +306,27 @@ async fn compression_skips_without_accept_encoding() {
     assert!(response.headers().get("content-encoding").is_none());
 }
 
+#[test]
+fn duplicate_singleton_middleware_is_rejected_at_build() {
+    use tork::middleware::Cors;
+
+    let result = App::new()
+        .middleware(Cors::new())
+        .middleware(Cors::new())
+        .build();
+
+    let error = result.err().expect("duplicate Cors should be rejected");
+    let message = error.message();
+    assert!(
+        message.contains("Duplicate middleware detected: Cors"),
+        "message: {message}"
+    );
+    assert!(
+        message.contains("can only be registered once per scope"),
+        "message: {message}"
+    );
+}
+
 #[tokio::test]
 async fn request_id_propagates_incoming() {
     use tork::middleware::RequestId;
