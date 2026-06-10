@@ -746,9 +746,11 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "flate2",
+ "futures-core",
  "futures-util",
  "garde",
  "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",
