@@ -34,7 +34,7 @@ pub use server::TorkService;
 pub use body::{BoxError, ReqBody, RespBody, box_body};
 pub use error::{Error, ErrorDetail, ErrorKind, Result};
 pub use extract::{
-    BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, Valid,
+    BearerToken, FromPathParam, FromRequest, LastEventId, PathParams, RequestContext, Valid,
     __extract_path_param,
 };
 pub use hooks::{

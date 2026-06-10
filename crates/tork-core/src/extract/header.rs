@@ -1,10 +1,13 @@
 //! Header-based extractors.
 
-use http::header::AUTHORIZATION;
+use http::header::{AUTHORIZATION, HeaderName};
 
 use crate::constants::BEARER_PREFIX;
 use crate::error::{Error, Result};
 use crate::extract::{FromRequest, RequestContext};
+
+/// Header carrying the id of the last Server-Sent Event a client received.
+const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 
 /// A bearer token extracted from the `Authorization` header.
 ///
@@ -31,6 +34,37 @@ impl FromRequest for BearerToken {
     }
 }
 
+/// The `Last-Event-ID` header sent by a client resuming an SSE stream.
+///
+/// Resolving this extractor never fails: a missing header yields `None`. Use it
+/// to resume a stream from where the client left off.
+pub struct LastEventId(Option<String>);
+
+impl LastEventId {
+    /// Returns the last event id, if the client sent one.
+    pub fn as_str(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+
+    /// Consumes the extractor, returning the last event id if present.
+    pub fn into_inner(self) -> Option<String> {
+        self.0
+    }
+}
+
+impl FromRequest for LastEventId {
+    fn from_request(
+        ctx: &RequestContext,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send {
+        let id = ctx
+            .headers()
+            .get(HeaderName::from_static(LAST_EVENT_ID_HEADER))
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        async move { Ok(LastEventId(id)) }
+    }
+}
+
 /// Parses the bearer token out of the request's `Authorization` header.
 fn resolve(ctx: &RequestContext) -> Result<BearerToken> {
     let header = ctx
@@ -47,4 +81,39 @@ fn resolve(ctx: &RequestContext) -> Result<BearerToken> {
         .ok_or_else(|| Error::unauthorized("expected a bearer token"))?;
 
     Ok(BearerToken(token.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::body::box_body;
+    use crate::extract::PathParams;
+    use crate::state::StateMap;
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use std::sync::Arc;
+
+    fn context_with(header: Option<(&'static str, &'static str)>) -> RequestContext {
+        let mut builder = http::Request::builder();
+        if let Some((name, value)) = header {
+            builder = builder.header(name, value);
+        }
+        let head = builder.body(()).unwrap().into_parts().0;
+        let body = box_body(Full::new(Bytes::new()));
+        RequestContext::new(head, PathParams::new(), Arc::new(StateMap::new()), body)
+    }
+
+    #[tokio::test]
+    async fn last_event_id_reads_the_header() {
+        let ctx = context_with(Some(("last-event-id", "42")));
+        let id = LastEventId::from_request(&ctx).await.unwrap();
+        assert_eq!(id.as_str(), Some("42"));
+    }
+
+    #[tokio::test]
+    async fn last_event_id_is_none_when_absent() {
+        let ctx = context_with(None);
+        let id = LastEventId::from_request(&ctx).await.unwrap();
+        assert_eq!(id.into_inner(), None);
+    }
 }
