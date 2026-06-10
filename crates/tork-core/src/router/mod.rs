@@ -12,12 +12,80 @@ use http::{Method, StatusCode};
 
 use crate::error::Result;
 use crate::extract::RequestContext;
+use crate::hooks::{ErrorEvent, RequestEvent, ResponseEvent, ValidationErrorEvent};
 use crate::response::Response;
 
 pub mod matcher;
 
 /// A boxed, sendable future of a request handler's response.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// A scoped, observe-only `on_request` hook, shared across the routes it covers.
+///
+/// Scoped hooks are `Arc`-shared (one set fans out to every route in a router),
+/// unlike the single-owner app-global hooks on [`App`](crate::App).
+pub(crate) type SharedRequestHook =
+    Arc<dyn Fn(RequestEvent) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// A scoped, observe-only `on_response` hook.
+pub(crate) type SharedResponseHook =
+    Arc<dyn Fn(ResponseEvent) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// A scoped, observe-only `on_error` hook.
+pub(crate) type SharedErrorHook =
+    Arc<dyn Fn(ErrorEvent) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// A scoped, observe-only `on_validation_error` hook.
+pub(crate) type SharedValidationErrorHook =
+    Arc<dyn Fn(ValidationErrorEvent) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// Generates the four scoped-hook builder methods for a type carrying the
+/// matching hook fields (`Route` and `Router`).
+macro_rules! scoped_hook_builders {
+    () => {
+        /// Registers a scoped, observe-only `on_request` hook.
+        ///
+        /// Scoped hooks run in addition to the app-global ones, after routing.
+        pub fn on_request<F, Fut>(mut self, hook: F) -> Self
+        where
+            F: Fn(RequestEvent) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            self.request_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self
+        }
+
+        /// Registers a scoped, observe-only `on_response` hook.
+        pub fn on_response<F, Fut>(mut self, hook: F) -> Self
+        where
+            F: Fn(ResponseEvent) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            self.response_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self
+        }
+
+        /// Registers a scoped, observe-only `on_error` hook (non-validation errors).
+        pub fn on_error<F, Fut>(mut self, hook: F) -> Self
+        where
+            F: Fn(ErrorEvent) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            self.error_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self
+        }
+
+        /// Registers a scoped, observe-only `on_validation_error` hook.
+        pub fn on_validation_error<F, Fut>(mut self, hook: F) -> Self
+        where
+            F: Fn(ValidationErrorEvent) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            self.validation_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self
+        }
+    };
+}
 
 /// A type-erased request handler.
 ///
@@ -81,6 +149,10 @@ pub struct Route {
     path: String,
     handler: HandlerFn,
     meta: RouteMeta,
+    request_hooks: Vec<SharedRequestHook>,
+    response_hooks: Vec<SharedResponseHook>,
+    error_hooks: Vec<SharedErrorHook>,
+    validation_hooks: Vec<SharedValidationErrorHook>,
 }
 
 impl Route {
@@ -91,8 +163,14 @@ impl Route {
             path: path.into(),
             handler,
             meta: RouteMeta::default(),
+            request_hooks: Vec::new(),
+            response_hooks: Vec::new(),
+            error_hooks: Vec::new(),
+            validation_hooks: Vec::new(),
         }
     }
+
+    scoped_hook_builders!();
 
     /// Sets the operation summary.
     pub fn summary(mut self, summary: impl Into<String>) -> Self {
@@ -159,6 +237,34 @@ impl Route {
         &self.handler
     }
 
+    /// Returns the scoped `on_request` hooks, in firing order (outer to inner).
+    pub(crate) fn request_hooks(&self) -> &[SharedRequestHook] {
+        &self.request_hooks
+    }
+
+    /// Returns the scoped `on_response` hooks, in registration order.
+    pub(crate) fn response_hooks(&self) -> &[SharedResponseHook] {
+        &self.response_hooks
+    }
+
+    /// Returns the scoped `on_error` hooks, in firing order.
+    pub(crate) fn error_hooks(&self) -> &[SharedErrorHook] {
+        &self.error_hooks
+    }
+
+    /// Returns the scoped `on_validation_error` hooks, in firing order.
+    pub(crate) fn validation_hooks(&self) -> &[SharedValidationErrorHook] {
+        &self.validation_hooks
+    }
+
+    /// Reports whether any scoped hook is attached to this route.
+    pub(crate) fn has_hooks(&self) -> bool {
+        !self.request_hooks.is_empty()
+            || !self.response_hooks.is_empty()
+            || !self.error_hooks.is_empty()
+            || !self.validation_hooks.is_empty()
+    }
+
     /// Prepends `prefix` to the route's path, normalizing the result.
     fn prepend_prefix(mut self, prefix: &str) -> Self {
         self.path = join_paths(prefix, &self.path);
@@ -174,6 +280,25 @@ impl Route {
         }
         self
     }
+
+    /// Prepends an enclosing router's scoped hooks ahead of this route's own.
+    ///
+    /// Inner routers flatten first, so prepending the current (more enclosing)
+    /// router's hooks keeps each list ordered outermost to innermost, with the
+    /// route's own hooks last.
+    fn prepend_hooks(
+        mut self,
+        request: &[SharedRequestHook],
+        response: &[SharedResponseHook],
+        error: &[SharedErrorHook],
+        validation: &[SharedValidationErrorHook],
+    ) -> Self {
+        self.request_hooks.splice(0..0, request.iter().cloned());
+        self.response_hooks.splice(0..0, response.iter().cloned());
+        self.error_hooks.splice(0..0, error.iter().cloned());
+        self.validation_hooks.splice(0..0, validation.iter().cloned());
+        self
+    }
 }
 
 /// A group of routes sharing a path prefix and a set of tags.
@@ -182,6 +307,10 @@ pub struct Router {
     prefix: String,
     tags: Vec<String>,
     routes: Vec<Route>,
+    request_hooks: Vec<SharedRequestHook>,
+    response_hooks: Vec<SharedResponseHook>,
+    error_hooks: Vec<SharedErrorHook>,
+    validation_hooks: Vec<SharedValidationErrorHook>,
 }
 
 impl Router {
@@ -189,6 +318,8 @@ impl Router {
     pub fn new() -> Self {
         Self::default()
     }
+
+    scoped_hook_builders!();
 
     /// Sets the path prefix applied to every route in this router.
     pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
@@ -226,10 +357,24 @@ impl Router {
             prefix,
             tags,
             routes,
+            request_hooks,
+            response_hooks,
+            error_hooks,
+            validation_hooks,
         } = self;
         routes
             .into_iter()
-            .map(|route| route.prepend_prefix(&prefix).inherit_tags(&tags))
+            .map(|route| {
+                route
+                    .prepend_prefix(&prefix)
+                    .inherit_tags(&tags)
+                    .prepend_hooks(
+                        &request_hooks,
+                        &response_hooks,
+                        &error_hooks,
+                        &validation_hooks,
+                    )
+            })
             .collect()
     }
 
@@ -321,5 +466,37 @@ mod tests {
             routes[0].meta().tags,
             vec!["orders".to_owned(), "users".to_owned()]
         );
+    }
+
+    #[tokio::test]
+    async fn router_hooks_propagate_to_routes_outer_to_inner() {
+        use crate::hooks::{RequestEvent, RequestInfo};
+        use std::sync::Mutex;
+
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let outer_log = log.clone();
+        let inner_log = log.clone();
+
+        let inner = Router::new().route(get("/x")).on_request(move |_event| {
+            let log = inner_log.clone();
+            async move { log.lock().unwrap().push("inner") }
+        });
+        let outer = Router::new()
+            .on_request(move |_event| {
+                let log = outer_log.clone();
+                async move { log.lock().unwrap().push("outer") }
+            })
+            .include(inner);
+
+        let routes = outer.into_routes();
+        assert_eq!(routes.len(), 1);
+        let hooks = routes[0].request_hooks();
+        assert_eq!(hooks.len(), 2, "both router hooks attach to the route");
+
+        let info = RequestInfo::new(Method::GET, "/x".to_owned(), Some("/x".to_owned()), None);
+        for hook in hooks {
+            hook(RequestEvent::new(info.clone())).await;
+        }
+        assert_eq!(*log.lock().unwrap(), ["outer", "inner"]);
     }
 }

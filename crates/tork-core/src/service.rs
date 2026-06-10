@@ -2,11 +2,12 @@
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
+use std::time::Instant;
 
 use futures_util::FutureExt;
 use http::Request;
 
-use crate::app::{AppInner, request_info};
+use crate::app::{AppInner, fire_request_hooks, fire_response_hooks, request_info};
 use crate::body::ReqBody;
 use crate::error::Error;
 use crate::extract::RequestContext;
@@ -29,9 +30,18 @@ impl AppInner {
         match self.matcher().find(&head.method, &path) {
             Match::Found { route, params } => {
                 let handler = route.handler().clone();
-                let info = needs_info.then(|| {
+                // Build metadata when an app-global hook or this route's scoped
+                // hooks need it.
+                let info = (needs_info || route.has_hooks()).then(|| {
                     request_info(&head.method, &head.uri, &head.headers, Some(route.path().to_owned()))
                 });
+
+                // Scoped on_request fires after routing, before the handler.
+                if let Some(info) = &info {
+                    fire_request_hooks(route.request_hooks(), info).await;
+                }
+
+                let started = info.as_ref().map(|_| Instant::now());
                 let ctx = RequestContext::new(head, params, self.state().clone(), body);
                 let future = handler(ctx);
 
@@ -51,10 +61,22 @@ impl AppInner {
                     future.await
                 };
 
-                match result {
+                let response = match result {
                     Ok(response) => response,
-                    Err(error) => self.finish_error(error, info).await,
+                    Err(error) => match &info {
+                        Some(info) => self.render_error(error, info, Some(route)).await,
+                        None => error.into_response(),
+                    },
+                };
+
+                // Scoped on_response fires before unwinding back through middleware.
+                if let Some(info) = &info {
+                    let elapsed = started.map(|start| start.elapsed()).unwrap_or_default();
+                    fire_response_hooks(route.response_hooks(), info, response.status(), elapsed)
+                        .await;
                 }
+
+                response
             }
             Match::MethodNotAllowed => {
                 let info =
@@ -71,10 +93,11 @@ impl AppInner {
         }
     }
 
-    /// Renders an error, running the error hooks when request metadata is present.
+    /// Renders a routing error (no matched route), running the app-global hooks
+    /// when request metadata is present.
     async fn finish_error(&self, error: Error, info: Option<RequestInfo>) -> Response {
         match info {
-            Some(info) => self.render_error(error, &info).await,
+            Some(info) => self.render_error(error, &info, None).await,
             None => error.into_response(),
         }
     }

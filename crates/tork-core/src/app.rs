@@ -4,9 +4,9 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use http::{HeaderMap, Method, Uri};
+use http::{HeaderMap, Method, StatusCode, Uri};
 use tokio::net::TcpListener;
 
 use crate::error::{Error, Result};
@@ -19,7 +19,10 @@ use crate::middleware::{Middleware, Next, Request, resolve_duplicates};
 use crate::openapi::OpenApiProvider;
 use crate::response::{IntoResponse, Response};
 use crate::router::matcher::Matcher;
-use crate::router::{BoxFuture, Router};
+use crate::router::{
+    BoxFuture, Route, Router, SharedErrorHook, SharedRequestHook, SharedResponseHook,
+    SharedValidationErrorHook,
+};
 use crate::server::{run_with_shutdown, shutdown_signal};
 use crate::state::{AppStateRef, StateMap};
 
@@ -486,9 +489,10 @@ impl AppInner {
         let next = Next::new(self.clone(), self.middleware.clone());
         let response = match next.run(request).await {
             Ok(response) => response,
-            // A middleware-level error is rendered here, after the chain.
+            // A middleware-level error is rendered here, after the chain. No route
+            // matched at this point, so only the app-global hooks apply.
             Err(error) => match &info {
-                Some(info) => self.render_error(error, info).await,
+                Some(info) => self.render_error(error, info, None).await,
                 None => error.into_response(),
             },
         };
@@ -533,26 +537,35 @@ impl AppInner {
     /// exception handler first.
     ///
     /// A validation failure fires `on_validation_error`; every other error fires
-    /// `on_error`. If the error carries a typed source with a registered
-    /// exception handler, that handler produces the response; otherwise the
-    /// default problem-details rendering is used.
-    pub(crate) async fn render_error(&self, error: Error, info: &RequestInfo) -> Response {
+    /// `on_error`. The app-global hooks run first, then the matched route's scoped
+    /// hooks (when `route` is `Some`). If the error carries a typed source with a
+    /// registered exception handler, that handler produces the response; otherwise
+    /// the default problem-details rendering is used.
+    pub(crate) async fn render_error(
+        &self,
+        error: Error,
+        info: &RequestInfo,
+        route: Option<&Route>,
+    ) -> Response {
         if error.is_validation() {
-            if !self.on_validation_error.is_empty() {
-                for hook in self.on_validation_error.iter() {
-                    let event = ValidationErrorEvent::new(info.clone(), error.details().to_vec());
-                    hook(event).await;
-                }
+            for hook in self.on_validation_error.iter() {
+                hook(ValidationErrorEvent::new(info.clone(), error.details().to_vec())).await;
+            }
+            if let Some(route) = route {
+                fire_validation_hooks(route.validation_hooks(), info, &error).await;
             }
         } else {
             for hook in self.on_error.iter() {
-                let event = ErrorEvent::new(
+                hook(ErrorEvent::new(
                     info.clone(),
                     error.kind().status(),
                     error.static_code(),
                     error.message().to_owned(),
-                );
-                hook(event).await;
+                ))
+                .await;
+            }
+            if let Some(route) = route {
+                fire_error_hooks(route.error_hooks(), info, &error).await;
             }
         }
 
@@ -563,6 +576,49 @@ impl AppInner {
         }
 
         error.into_response()
+    }
+}
+
+/// Fires a slice of scoped `on_request` hooks in order.
+pub(crate) async fn fire_request_hooks(hooks: &[SharedRequestHook], info: &RequestInfo) {
+    for hook in hooks {
+        hook(RequestEvent::new(info.clone())).await;
+    }
+}
+
+/// Fires a slice of scoped `on_response` hooks in reverse (innermost first).
+pub(crate) async fn fire_response_hooks(
+    hooks: &[SharedResponseHook],
+    info: &RequestInfo,
+    status: StatusCode,
+    elapsed: Duration,
+) {
+    for hook in hooks.iter().rev() {
+        hook(ResponseEvent::new(info.clone(), status, elapsed)).await;
+    }
+}
+
+/// Fires a slice of scoped `on_error` hooks in order.
+async fn fire_error_hooks(hooks: &[SharedErrorHook], info: &RequestInfo, error: &Error) {
+    for hook in hooks {
+        hook(ErrorEvent::new(
+            info.clone(),
+            error.kind().status(),
+            error.static_code(),
+            error.message().to_owned(),
+        ))
+        .await;
+    }
+}
+
+/// Fires a slice of scoped `on_validation_error` hooks in order.
+async fn fire_validation_hooks(
+    hooks: &[SharedValidationErrorHook],
+    info: &RequestInfo,
+    error: &Error,
+) {
+    for hook in hooks {
+        hook(ValidationErrorEvent::new(info.clone(), error.details().to_vec())).await;
     }
 }
 
@@ -679,12 +735,14 @@ mod hook_tests {
         Router::new().route(Route::new(Method::GET, "/", handler))
     }
 
+    fn ok_handler() -> HandlerFn {
+        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async { Ok(empty(StatusCode::OK)) })
+        })
+    }
+
     fn ok_route() -> Router {
-        let handler: HandlerFn =
-            Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-                Box::pin(async { Ok(empty(StatusCode::OK)) })
-            });
-        Router::new().route(Route::new(Method::GET, "/", handler))
+        Router::new().route(Route::new(Method::GET, "/", ok_handler()))
     }
 
     fn panicking_route() -> Router {
@@ -826,5 +884,71 @@ mod hook_tests {
     async fn without_catch_panics_a_panic_propagates() {
         let app = App::new().include_router(panicking_route()).build().unwrap();
         let _ = app.dispatch(request(Method::GET, "/")).await;
+    }
+
+    #[tokio::test]
+    async fn scoped_on_request_fires_only_for_its_router() {
+        let seen = log();
+        let recorder = seen.clone();
+        let scoped = Router::new()
+            .route(Route::new(Method::GET, "/a", ok_handler()))
+            .on_request(move |_event| {
+                let recorder = recorder.clone();
+                async move { recorder.lock().unwrap().push("a".to_owned()) }
+            });
+        let plain = Router::new().route(Route::new(Method::GET, "/b", ok_handler()));
+        let app = App::new()
+            .include_router(scoped)
+            .include_router(plain)
+            .build()
+            .unwrap();
+
+        let _ = app.dispatch(request(Method::GET, "/a")).await;
+        let _ = app.dispatch(request(Method::GET, "/b")).await;
+        assert_eq!(entries(&seen), vec!["a".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn scoped_on_error_runs_after_the_global_hook() {
+        let seen = log();
+        let global = seen.clone();
+        let scoped = seen.clone();
+
+        let router = failing_route(|| Error::not_found("missing")).on_error(move |_event| {
+            let scoped = scoped.clone();
+            async move { scoped.lock().unwrap().push("scoped".to_owned()) }
+        });
+        let app = App::new()
+            .on_error(move |_event| {
+                let global = global.clone();
+                async move { global.lock().unwrap().push("global".to_owned()) }
+            })
+            .include_router(router)
+            .build()
+            .unwrap();
+
+        let _ = app.dispatch(request(Method::GET, "/")).await;
+        assert_eq!(entries(&seen), vec!["global".to_owned(), "scoped".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn scoped_on_response_hooks_fire_in_reverse() {
+        let seen = log();
+        let first = seen.clone();
+        let second = seen.clone();
+        let router = Router::new()
+            .route(Route::new(Method::GET, "/", ok_handler()))
+            .on_response(move |_event| {
+                let first = first.clone();
+                async move { first.lock().unwrap().push("first".to_owned()) }
+            })
+            .on_response(move |_event| {
+                let second = second.clone();
+                async move { second.lock().unwrap().push("second".to_owned()) }
+            });
+        let app = App::new().include_router(router).build().unwrap();
+
+        let _ = app.dispatch(request(Method::GET, "/")).await;
+        assert_eq!(entries(&seen), vec!["second".to_owned(), "first".to_owned()]);
     }
 }
