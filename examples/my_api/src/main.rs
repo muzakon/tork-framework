@@ -1,10 +1,14 @@
 //! Binary entrypoint for the example application.
 
 use tork::middleware::{Compression, Cors, RequestId, Trace};
-use tork::{App, HeaderName, HeaderValue, Next, OpenApi, Request, Response, Result, middleware};
+use tork::{
+    App, ErrorContext, HeaderName, HeaderValue, IntoResponse, Next, OpenApi, PanicEvent, Request,
+    RequestEvent, Response, ResponseEvent, Result, middleware,
+};
 
 use my_api::core::app_state::AppState;
-use my_api::routers::{health, users};
+use my_api::core::errors::RepoError;
+use my_api::routers::{demo, health, users};
 
 /// Custom middleware: records how long the request took to process.
 #[middleware]
@@ -21,10 +25,17 @@ async fn add_process_time(req: Request, next: Next) -> Result<Response> {
     Ok(response)
 }
 
+/// Maps a `RepoError` into a tailored response.
+async fn handle_repo_error(error: RepoError, ctx: ErrorContext) -> Response {
+    eprintln!("my_api: repo error on {}: {error}", ctx.path());
+    tork::Error::service_unavailable("the data store is temporarily unavailable").into_response()
+}
+
 #[tork::main]
 async fn main() -> tork::Result<()> {
     App::new()
         .lifespan::<AppState>()
+        .catch_panics()
         .middleware(RequestId::new())
         .middleware(Trace::new())
         .middleware(add_process_time)
@@ -37,6 +48,23 @@ async fn main() -> tork::Result<()> {
         .middleware(Compression::new().gzip().minimum_size(256))
         .include_router(users::router())
         .include_router(health::router())
+        .include_router(demo::router())
+        .exception_handler::<RepoError, _, _>(handle_repo_error)
+        .on_request(|event: RequestEvent| async move {
+            println!("--> {} {}", event.method(), event.path());
+        })
+        .on_response(|event: ResponseEvent| async move {
+            println!(
+                "<-- {} {} {} ({:.1?})",
+                event.method(),
+                event.path(),
+                event.status(),
+                event.elapsed()
+            );
+        })
+        .on_panic(|event: PanicEvent| async move {
+            eprintln!("my_api: handler panicked on {}: {}", event.path(), event.message());
+        })
         .openapi(
             OpenApi::new()
                 .title("My API")
