@@ -7,6 +7,7 @@
 
 use proc_macro::TokenStream;
 
+mod api_router;
 mod common;
 mod main_macro;
 mod route;
@@ -28,6 +29,30 @@ mod route;
 #[proc_macro_attribute]
 pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     main_macro::expand(attr, item)
+}
+
+/// Turns an inline module into a router.
+///
+/// Discovers the functions annotated with a route macro and generates a
+/// `router()` function that mounts them under the given `prefix` and `tags`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[api_router(prefix = "/users", tags = ["users"])]
+/// pub mod users_router {
+///     use super::*;
+///
+///     #[get("/{user_id}", response_model = UserOut)]
+///     pub async fn get_user(user_id: i64, service: UserService) -> tork::Result<UserOut> {
+///         service.get_user(user_id).await
+///     }
+/// }
+/// // `users_router::router()` is now available.
+/// ```
+#[proc_macro_attribute]
+pub fn api_router(attr: TokenStream, item: TokenStream) -> TokenStream {
+    api_router::expand(attr, item)
 }
 
 /// Declares a `GET` route. See [`macro@get`] and the other method macros for the
