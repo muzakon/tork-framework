@@ -19,14 +19,15 @@ the previous one and ends with working code.
 7. [OpenAPI and docs](07-openapi-and-docs.md)
 8. [Middleware](08-middleware.md)
 9. [Lifecycle hooks and error handling](09-lifecycle-hooks-and-error-handling.md)
-10. [Project structure](10-project-structure.md)
+10. [Server-Sent Events](10-server-sent-events.md)
+11. [Project structure](11-project-structure.md)
 
 ## Status
 
 The framework is built in phases. The runtime, routing, dependency injection,
-validation and serialization, OpenAPI, the middleware layer, and the lifecycle
-hooks and error handling are in place. The ORM and CLI are planned for later
-phases.
+validation and serialization, OpenAPI, the middleware layer, the lifecycle hooks
+and error handling, and Server-Sent Events are in place. WebSocket, an ORM, and a
+CLI are planned for later phases.
 
 ## Conventions in this guide
 
