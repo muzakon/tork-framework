@@ -1,9 +1,9 @@
 //! Order models.
 
-use serde::Serialize;
+use tork::api_model;
 
 /// An order as returned by the API.
-#[derive(Clone, Serialize)]
+#[api_model(rename_all = "camelCase")]
 pub struct OrderOut {
     /// Unique identifier.
     pub id: i64,

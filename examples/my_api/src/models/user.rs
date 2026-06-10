@@ -1,9 +1,9 @@
 //! User-facing models.
 
-use serde::Serialize;
+use tork::api_model;
 
 /// A user as returned by the API.
-#[derive(Clone, Serialize)]
+#[api_model]
 pub struct UserOut {
     /// Unique identifier.
     pub id: i64,

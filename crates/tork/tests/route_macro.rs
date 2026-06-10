@@ -5,7 +5,7 @@ use http_body_util::{BodyExt, Full};
 use serde::Serialize;
 use tork::{App, Method, ReqBody, Router, StatusCode, box_body, get};
 
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 struct Pong {
     id: i64,
     ok: bool,

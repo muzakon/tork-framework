@@ -8,7 +8,10 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Expr, ExprLit, FnArg, Ident, ItemFn, Lit, LitStr, Pat, Token, Type, bracketed};
+use syn::{
+    Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitStr, Pat, PathArguments,
+    ReturnType, Token, Type, bracketed,
+};
 
 use crate::common::{krate, path_param_names};
 
@@ -117,9 +120,11 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     };
     let placeholders = path_param_names(&full_path);
 
-    // Build one binding per handler parameter, plus the call argument list.
+    // Build one binding per handler parameter, plus the call argument list. Also
+    // detect a request-body parameter (`Valid<T>` / `Json<T>`) for the schema.
     let mut bindings = Vec::new();
     let mut call_args = Vec::new();
+    let mut request_body: Option<Type> = None;
 
     for input in &func.sig.inputs {
         let pat_type = match input {
@@ -154,6 +159,15 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
                 };
             });
         } else {
+            if let Some(body) = body_inner_type(ty) {
+                if request_body.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        ty,
+                        "a handler may declare at most one request body",
+                    ));
+                }
+                request_body = Some(body.clone());
+            }
             bindings.push(quote! {
                 let #ident = match <#ty as #krate::FromRequest>::from_request(&ctx).await {
                     ::core::result::Result::Ok(value) => value,
@@ -168,6 +182,14 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     }
 
     let status_code = status_code_tokens(&krate, args.status_code.as_ref());
+
+    // The response schema comes from the declared response model, or otherwise
+    // from the handler's `Result<T>` inner type.
+    let return_inner = result_ok_type(&func.sig.output);
+    let response_schema_ty = args
+        .response_model
+        .clone()
+        .or_else(|| return_inner.clone());
 
     // Builder chain for the route's metadata.
     let mut builder = quote! {
@@ -186,6 +208,22 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     if let Some(response_model) = &args.response_model {
         builder = quote! { #builder.response_model::<#response_model>() };
     }
+    if let Some(body) = &request_body {
+        builder = quote! { #builder.request_schema::<#body>() };
+    }
+    if let Some(schema_ty) = &response_schema_ty {
+        builder = quote! { #builder.response_schema::<#schema_ty>() };
+    }
+
+    // When a response model is declared, convert the handler's value into it
+    // before serializing; otherwise serialize the value as-is.
+    let call = quote! { #fn_name(#(#call_args),*).await };
+    let finish = match &args.response_model {
+        Some(response_model) => {
+            quote! { #krate::__finish_into::<_, #response_model, _>(#call, #status_code) }
+        }
+        None => quote! { #krate::__finish(#call, #status_code) },
+    };
 
     Ok(quote! {
         #func
@@ -196,12 +234,44 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
                 |ctx: #krate::RequestContext| -> #krate::BoxFuture<'static, #krate::Response> {
                     ::std::boxed::Box::pin(async move {
                         #(#bindings)*
-                        #krate::__finish(#fn_name(#(#call_args),*).await, #status_code)
+                        #finish
                     })
                 },
             );
             #builder
         }
+    })
+}
+
+/// Returns the `T` in a `Result<T>` / `tork::Result<T>` return type.
+fn result_ok_type(output: &ReturnType) -> Option<Type> {
+    let ReturnType::Type(_, ty) = output else {
+        return None;
+    };
+    first_generic_arg(ty, &["Result"]).cloned()
+}
+
+/// Returns the inner `T` of a `Valid<T>` or `Json<T>` parameter type.
+fn body_inner_type(ty: &Type) -> Option<&Type> {
+    first_generic_arg(ty, &["Valid", "Json"])
+}
+
+/// Returns the first generic type argument of a path type whose final segment
+/// matches one of `idents` (e.g. `Result`, `Valid`, `Json`).
+fn first_generic_arg<'a>(ty: &'a Type, idents: &[&str]) -> Option<&'a Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if !idents.iter().any(|name| segment.ident == name) {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        GenericArgument::Type(inner) => Some(inner),
+        _ => None,
     })
 }
 

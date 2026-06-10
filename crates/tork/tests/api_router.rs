@@ -3,7 +3,7 @@
 use serde::Serialize;
 use tork::{Method, api_router, get};
 
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 struct Widget {
     id: i64,
 }

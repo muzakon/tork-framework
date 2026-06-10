@@ -269,9 +269,9 @@ name = "my_api"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "garde",
  "http",
  "http-body-util",
- "serde",
  "tokio",
  "tork",
 ]
