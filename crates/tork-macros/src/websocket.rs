@@ -22,6 +22,8 @@ struct WsArgs {
     max_message_size: Option<usize>,
     max_frame_size: Option<usize>,
     idle_timeout_ms: Option<u64>,
+    incoming: Option<Type>,
+    outgoing: Option<Type>,
     /// Enclosing router prefix, injected by `#[api_router]`.
     prefix_hint: Option<LitStr>,
 }
@@ -43,6 +45,8 @@ impl Parse for WsArgs {
             max_message_size: None,
             max_frame_size: None,
             idle_timeout_ms: None,
+            incoming: None,
+            outgoing: None,
             prefix_hint: None,
         };
 
@@ -71,6 +75,8 @@ impl Parse for WsArgs {
                     let value: LitStr = input.parse()?;
                     args.idle_timeout_ms = Some(parse_duration_ms(&value)?);
                 }
+                "incoming" => args.incoming = Some(input.parse()?),
+                "outgoing" => args.outgoing = Some(input.parse()?),
                 "tags" => {
                     let content;
                     bracketed!(content in input);
@@ -197,6 +203,15 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
     }
     for tag in &args.tags {
         builder = quote! { #builder.tag(#tag) };
+    }
+    // Mark the route as a WebSocket channel and record its message schemas for
+    // AsyncAPI documentation.
+    builder = quote! { #builder.websocket() };
+    if let Some(incoming) = &args.incoming {
+        builder = quote! { #builder.ws_incoming::<#incoming>() };
+    }
+    if let Some(outgoing) = &args.outgoing {
+        builder = quote! { #builder.ws_outgoing::<#outgoing>() };
     }
 
     Ok(quote! {

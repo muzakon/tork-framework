@@ -126,6 +126,13 @@ pub struct RouteMeta {
     /// Whether the response is a stream (Server-Sent Events), documented as
     /// `text/event-stream` rather than `application/json`.
     pub streaming: bool,
+    /// Whether this route is a WebSocket endpoint, documented as an AsyncAPI
+    /// channel rather than an HTTP operation.
+    pub websocket: bool,
+    /// Schema generator for the messages a WebSocket receives, if declared.
+    pub ws_incoming: Option<SchemaThunk>,
+    /// Schema generator for the messages a WebSocket sends, if declared.
+    pub ws_outgoing: Option<SchemaThunk>,
 }
 
 impl Default for RouteMeta {
@@ -139,6 +146,9 @@ impl Default for RouteMeta {
             request_schema: None,
             response_schema: None,
             streaming: false,
+            websocket: false,
+            ws_incoming: None,
+            ws_outgoing: None,
         }
     }
 }
@@ -224,6 +234,24 @@ impl Route {
     /// Marks the response as a stream (documented as `text/event-stream`).
     pub fn streaming(mut self) -> Self {
         self.meta.streaming = true;
+        self
+    }
+
+    /// Marks the route as a WebSocket endpoint (documented as an AsyncAPI channel).
+    pub fn websocket(mut self) -> Self {
+        self.meta.websocket = true;
+        self
+    }
+
+    /// Records the schema of messages the WebSocket receives.
+    pub fn ws_incoming<T: schemars::JsonSchema>(mut self) -> Self {
+        self.meta.ws_incoming = Some(|generator| generator.subschema_for::<T>());
+        self
+    }
+
+    /// Records the schema of messages the WebSocket sends.
+    pub fn ws_outgoing<T: schemars::JsonSchema>(mut self) -> Self {
+        self.meta.ws_outgoing = Some(|generator| generator.subschema_for::<T>());
         self
     }
 
