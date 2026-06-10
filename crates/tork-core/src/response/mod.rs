@@ -1,0 +1,75 @@
+//! Response types and the [`IntoResponse`] conversion trait.
+
+use bytes::Bytes;
+use http::StatusCode;
+use http::header::{CONTENT_TYPE, HeaderValue};
+
+use crate::body::RespBody;
+
+pub mod json;
+
+pub use json::{Json, json_response};
+
+/// The concrete HTTP response type used throughout the framework.
+pub type Response = http::Response<RespBody>;
+
+/// Converts a value into an HTTP [`Response`].
+///
+/// Implemented by the response building blocks ([`Json`], [`Error`], status
+/// codes) and by [`Result`], so handlers can return high-level values and have
+/// them rendered into a proper HTTP response by the generated route glue.
+///
+/// [`Error`]: crate::Error
+/// [`Result`]: core::result::Result
+pub trait IntoResponse {
+    /// Consumes `self` and produces the HTTP response to send to the client.
+    fn into_response(self) -> Response;
+}
+
+/// Builds a response with the given status, `Content-Type`, and body.
+pub(crate) fn with_body(status: StatusCode, content_type: &'static str, body: Bytes) -> Response {
+    let mut response = http::Response::new(RespBody::new(body));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+}
+
+/// Builds an empty-bodied response carrying only a status code.
+pub(crate) fn empty(status: StatusCode) -> Response {
+    let mut response = http::Response::new(RespBody::new(Bytes::new()));
+    *response.status_mut() = status;
+    response
+}
+
+impl IntoResponse for Response {
+    fn into_response(self) -> Response {
+        self
+    }
+}
+
+impl IntoResponse for StatusCode {
+    fn into_response(self) -> Response {
+        empty(self)
+    }
+}
+
+impl IntoResponse for () {
+    fn into_response(self) -> Response {
+        empty(StatusCode::OK)
+    }
+}
+
+impl<T, E> IntoResponse for core::result::Result<T, E>
+where
+    T: IntoResponse,
+    E: Into<crate::error::Error>,
+{
+    fn into_response(self) -> Response {
+        match self {
+            Ok(value) => value.into_response(),
+            Err(error) => error.into().into_response(),
+        }
+    }
+}
