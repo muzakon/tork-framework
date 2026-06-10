@@ -18,9 +18,9 @@ const DEFAULT_JSON_PATH: &str = "/openapi.json";
 
 /// Configures OpenAPI document generation.
 ///
-/// In this phase the document describes paths, methods, summaries, descriptions,
-/// tags, and path parameters. Request and response body schemas are not yet
-/// generated.
+/// The document describes paths, methods, summaries, descriptions, tags, path
+/// parameters, and — for routes whose handlers use `#[api_model]` bodies and
+/// return types — request and response body schemas under `components.schemas`.
 pub struct OpenApi {
     title: String,
     version: String,
@@ -108,6 +108,9 @@ fn spec_route(path: &str, body: Bytes) -> Route {
 
 /// Assembles the OpenAPI document from the route table.
 fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
+    // A single generator collects every model schema; with the OpenAPI 3 settings
+    // its `$ref`s already point at `#/components/schemas/...`.
+    let mut generator = schemars::generate::SchemaSettings::openapi3().into_generator();
     let mut paths: Map<String, Value> = Map::new();
 
     for route in routes {
@@ -142,11 +145,31 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
             operation.insert("parameters".to_owned(), json!(parameters));
         }
 
+        if let Some(request_schema) = meta.request_schema {
+            let schema = request_schema(&mut generator).as_value().clone();
+            operation.insert(
+                "requestBody".to_owned(),
+                json!({
+                    "required": true,
+                    "content": { "application/json": { "schema": schema } },
+                }),
+            );
+        }
+
         let status = meta.status_code.as_u16().to_string();
         let reason = meta.status_code.canonical_reason().unwrap_or("Response");
+        let mut response = Map::new();
+        response.insert("description".to_owned(), json!(reason));
+        if let Some(response_schema) = meta.response_schema {
+            let schema = response_schema(&mut generator).as_value().clone();
+            response.insert(
+                "content".to_owned(),
+                json!({ "application/json": { "schema": schema } }),
+            );
+        }
         operation.insert(
             "responses".to_owned(),
-            json!({ status: { "description": reason } }),
+            json!({ status: Value::Object(response) }),
         );
 
         let entry = paths
@@ -164,11 +187,19 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
         info.insert("description".to_owned(), json!(description));
     }
 
-    json!({
+    let mut document = json!({
         "openapi": OPENAPI_VERSION,
         "info": Value::Object(info),
         "paths": Value::Object(paths),
-    })
+    });
+
+    // Emit every collected model schema under components.schemas.
+    let definitions = generator.take_definitions(true);
+    if !definitions.is_empty() {
+        document["components"] = json!({ "schemas": Value::Object(definitions) });
+    }
+
+    document
 }
 
 /// Derives a stable `operationId` from the method and path.
@@ -237,5 +268,36 @@ mod tests {
         assert_eq!(operation["parameters"][0]["name"], "user_id");
         assert_eq!(operation["parameters"][0]["in"], "path");
         assert!(operation["responses"]["200"].is_object());
+    }
+
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct Sample {
+        id: i64,
+        label: String,
+    }
+
+    #[test]
+    fn document_includes_component_schemas() {
+        let routes = vec![
+            Route::new(Method::POST, "/samples", dummy_handler())
+                .request_schema::<Sample>()
+                .response_schema::<Sample>(),
+        ];
+
+        let document = OpenApi::new().build_document(&routes);
+
+        // The model is registered once under components.schemas.
+        assert!(
+            document["components"]["schemas"]["Sample"].is_object(),
+            "document: {document}"
+        );
+
+        let operation = &document["paths"]["/samples"]["post"];
+        let request_ref = &operation["requestBody"]["content"]["application/json"]["schema"]["$ref"];
+        let response_ref =
+            &operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+        assert_eq!(request_ref, "#/components/schemas/Sample");
+        assert_eq!(response_ref, "#/components/schemas/Sample");
     }
 }
