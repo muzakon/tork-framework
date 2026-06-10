@@ -24,6 +24,24 @@ fn request(method: Method, uri: &str, bearer: Option<&str>) -> http::Request<Req
     builder.body(box_body(Full::new(Bytes::new()))).unwrap()
 }
 
+fn request_json(
+    method: Method,
+    uri: &str,
+    bearer: Option<&str>,
+    json: &'static str,
+) -> http::Request<ReqBody> {
+    let mut builder = http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(token) = bearer {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    builder
+        .body(box_body(Full::new(Bytes::from_static(json.as_bytes()))))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn resolves_user_through_dependency_chain() {
     // UserService -> UserRepository -> State<AppState>
@@ -60,4 +78,35 @@ async fn rejects_unauthenticated_orders_request() {
         .dispatch(request(Method::GET, "/users/1/orders/", None))
         .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn creates_order_with_valid_body() {
+    let body = r#"{"name":"Widget","description":null,"price":9.99,"tax":null}"#;
+    let response = app()
+        .await
+        .dispatch(request_json(
+            Method::POST,
+            "/users/1/orders",
+            Some("ada-token"),
+            body,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn rejects_invalid_order_body() {
+    // Blank name and non-positive price both violate the model constraints.
+    let body = r#"{"name":"","description":null,"price":0.0,"tax":null}"#;
+    let response = app()
+        .await
+        .dispatch(request_json(
+            Method::POST,
+            "/users/1/orders",
+            Some("ada-token"),
+            body,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
