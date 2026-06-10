@@ -1,0 +1,20 @@
+[package]
+name = "tork-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core runtime for the Tork web framework: HTTP server, routing, dependency injection, responses, and errors, built on Hyper and Tokio."
+
+[dependencies]
+hyper.workspace = true
+hyper-util.workspace = true
+tokio.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+matchit.workspace = true
+serde.workspace = true
+serde_json.workspace = true

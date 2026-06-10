@@ -1,0 +1,15 @@
+[package]
+name = "tork-openapi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenAPI specification generation and an embedded API documentation UI for the Tork web framework."
+
+[dependencies]
+tork-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+http.workspace = true

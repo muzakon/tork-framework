@@ -1,0 +1,5 @@
+# Pin the toolchain so native `async fn` in traits (RPITIT) is available and the
+# framework builds reproducibly across machines.
+[toolchain]
+channel = "1.96"
+components = ["rustfmt", "clippy"]

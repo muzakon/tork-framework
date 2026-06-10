@@ -1,0 +1,19 @@
+[package]
+name = "tork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A FastAPI-style backend web framework for Rust, built on Hyper and Tokio. Annotation-based routers, dependency injection, and OpenAPI out of the box."
+
+[dependencies]
+tork-core.workspace = true
+tork-macros.workspace = true
+tork-openapi = { workspace = true, optional = true }
+
+[features]
+default = ["openapi"]
+# Enables OpenAPI specification generation and the embedded documentation UI.
+openapi = ["dep:tork-openapi"]
