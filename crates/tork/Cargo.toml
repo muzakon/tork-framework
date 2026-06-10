@@ -17,3 +17,10 @@ tork-openapi = { workspace = true, optional = true }
 default = ["openapi"]
 # Enables OpenAPI specification generation and the embedded documentation UI.
 openapi = ["dep:tork-openapi"]
+
+[dev-dependencies]
+serde = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }

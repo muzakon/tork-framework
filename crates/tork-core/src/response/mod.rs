@@ -73,3 +73,21 @@ where
         }
     }
 }
+
+/// Renders a handler's result into a response, serializing the success value to
+/// JSON with the given status code.
+///
+/// This is generated-code support, not part of the user-facing API. Handlers
+/// return `Result<T>` where `T` is serializable; the route macro feeds that
+/// result and the declared success status here.
+#[doc(hidden)]
+pub fn __finish<T, E>(result: core::result::Result<T, E>, status: StatusCode) -> Response
+where
+    T: serde::Serialize,
+    E: Into<crate::error::Error>,
+{
+    match result {
+        Ok(value) => json::json_response(status, &value),
+        Err(error) => error.into().into_response(),
+    }
+}

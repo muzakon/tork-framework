@@ -29,7 +29,7 @@ pub use extract::{
     BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, __extract_path_param,
 };
 pub use openapi::OpenApiProvider;
-pub use response::{IntoResponse, Json, Response, json_response};
+pub use response::{IntoResponse, Json, Response, __finish, json_response};
 pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router};
 pub use state::{AppStateRef, State, StateMap};
@@ -37,3 +37,18 @@ pub use state::{AppStateRef, State, StateMap};
 // Commonly used `http` types are re-exported so users do not need to depend on
 // the `http` crate directly.
 pub use http::{Method, StatusCode};
+
+/// Runtime support for the `#[tork::main]` macro.
+///
+/// This is generated-code support, not part of the user-facing API.
+#[doc(hidden)]
+pub mod __rt {
+    /// Builds a multi-threaded Tokio runtime and blocks on `future` to completion.
+    pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build the Tokio runtime")
+            .block_on(future)
+    }
+}
