@@ -22,3 +22,4 @@ garde.workspace = true
 schemars.workspace = true
 uuid.workspace = true
 time.workspace = true
+flate2.workspace = true

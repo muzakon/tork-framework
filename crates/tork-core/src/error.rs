@@ -35,6 +35,8 @@ pub enum ErrorKind {
     MethodNotAllowed,
     /// `409 Conflict`.
     Conflict,
+    /// `413 Payload Too Large`.
+    PayloadTooLarge,
     /// `422 Unprocessable Entity`.
     Unprocessable,
     /// `429 Too Many Requests`.
@@ -43,6 +45,8 @@ pub enum ErrorKind {
     Internal,
     /// `503 Service Unavailable`.
     ServiceUnavailable,
+    /// `504 Gateway Timeout`.
+    GatewayTimeout,
 }
 
 impl ErrorKind {
@@ -55,10 +59,12 @@ impl ErrorKind {
             ErrorKind::NotFound => StatusCode::NOT_FOUND,
             ErrorKind::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorKind::Conflict => StatusCode::CONFLICT,
+            ErrorKind::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorKind::Unprocessable => StatusCode::UNPROCESSABLE_ENTITY,
             ErrorKind::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             ErrorKind::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ErrorKind::GatewayTimeout => StatusCode::GATEWAY_TIMEOUT,
         }
     }
 
@@ -74,10 +80,12 @@ impl ErrorKind {
             ErrorKind::NotFound => "NOT_FOUND",
             ErrorKind::MethodNotAllowed => "METHOD_NOT_ALLOWED",
             ErrorKind::Conflict => "CONFLICT",
+            ErrorKind::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             ErrorKind::Unprocessable => "UNPROCESSABLE_ENTITY",
             ErrorKind::TooManyRequests => "TOO_MANY_REQUESTS",
             ErrorKind::Internal => "INTERNAL_SERVER_ERROR",
             ErrorKind::ServiceUnavailable => "SERVICE_UNAVAILABLE",
+            ErrorKind::GatewayTimeout => "GATEWAY_TIMEOUT",
         }
     }
 }
@@ -171,6 +179,11 @@ impl Error {
         Self::new(ErrorKind::Unprocessable, message)
     }
 
+    /// Creates a `413 Payload Too Large` error.
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::PayloadTooLarge, message)
+    }
+
     /// Creates a `429 Too Many Requests` error.
     pub fn too_many_requests(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::TooManyRequests, message)
@@ -186,6 +199,11 @@ impl Error {
     /// Creates a `503 Service Unavailable` error.
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::ServiceUnavailable, message)
+    }
+
+    /// Creates a `504 Gateway Timeout` error.
+    pub fn gateway_timeout(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::GatewayTimeout, message)
     }
 
     /// Overrides the machine-readable code (otherwise derived from the kind).
@@ -405,6 +423,11 @@ mod tests {
         assert_eq!(ErrorKind::Forbidden.status(), StatusCode::FORBIDDEN);
         assert_eq!(ErrorKind::NotFound.status(), StatusCode::NOT_FOUND);
         assert_eq!(ErrorKind::Internal.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            ErrorKind::PayloadTooLarge.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(ErrorKind::GatewayTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
     }
 
     #[tokio::test]
