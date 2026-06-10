@@ -13,10 +13,9 @@ use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
 
-use crate::app::{App, AppInner};
+use crate::app::AppInner;
 use crate::body::{RespBody, box_body};
 use crate::constants::GRACEFUL_SHUTDOWN_TIMEOUT;
-use crate::error::{Error, Result};
 
 /// A Hyper [`Service`] that hands each request to the application.
 ///
@@ -51,40 +50,11 @@ impl Service<Request<Incoming>> for TorkService {
     }
 }
 
-impl App {
-    /// Builds the application and serves it on `addr` until a shutdown signal.
-    ///
-    /// Listens for `SIGINT` (Ctrl-C) and, on Unix, `SIGTERM`, then stops
-    /// accepting new connections and drains in-flight ones, bounded by
-    /// [`GRACEFUL_SHUTDOWN_TIMEOUT`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the route table is invalid or the address cannot be
-    /// bound.
-    pub async fn serve(self, addr: impl AsRef<str>) -> Result<()> {
-        // Surface configuration errors (such as a rejected duplicate middleware)
-        // cleanly to stderr before exiting.
-        let app = Arc::new(self.build().inspect_err(|error| eprintln!("{}", error.message()))?);
-        run(app, addr.as_ref()).await
-    }
-}
-
-/// Binds `addr` and serves until a shutdown signal arrives.
-async fn run(app: Arc<AppInner>, addr: &str) -> Result<()> {
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|error| Error::internal(format!("failed to bind {addr}: {error}")))?;
-
-    run_with_shutdown(app, listener, shutdown_signal()).await;
-    Ok(())
-}
-
 /// Runs the accept loop on `listener`, stopping when `shutdown` resolves.
 ///
-/// Factored out from [`run`] so the loop can be driven by a test-controlled
-/// shutdown future.
-async fn run_with_shutdown<S>(app: Arc<AppInner>, listener: TcpListener, shutdown: S)
+/// The application lifecycle around this loop (startup, bind, readiness, drain,
+/// shutdown) lives in [`App::serve`](crate::App::serve).
+pub(crate) async fn run_with_shutdown<S>(app: Arc<AppInner>, listener: TcpListener, shutdown: S)
 where
     S: Future<Output = ()>,
 {
@@ -125,7 +95,7 @@ where
 }
 
 /// Resolves when the process receives an interrupt or termination signal.
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     let interrupt = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -150,6 +120,7 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
     use crate::extract::RequestContext;
     use crate::response::Response as TorkResponse;
     use crate::router::{BoxFuture, HandlerFn, Route, Router};
