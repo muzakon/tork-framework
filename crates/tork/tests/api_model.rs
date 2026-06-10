@@ -108,3 +108,70 @@ fn produces_json_schema() {
     assert!(props.get("name").is_some(), "schema: {value}");
     assert!(props.get("price").is_some(), "schema: {value}");
 }
+
+// --- Nested models ---
+
+#[api_model]
+struct Image {
+    #[field(min_length = 1)]
+    url: String,
+    name: String,
+}
+
+#[api_model(rename_all = "camelCase")]
+struct Item {
+    #[field(min_length = 1)]
+    name: String,
+    description: Option<String>,
+    price: f64,
+    #[field(default)]
+    tags: std::collections::HashSet<String>,
+    #[field(nested)]
+    image: Option<Image>,
+}
+
+#[test]
+fn nested_model_round_trips_and_defaults() {
+    // `tags` is absent and falls back to its default; `image` is nested.
+    let json = r#"{"name":"Widget","description":null,"price":9.99,
+        "image":{"url":"http://x/y.png","name":"y"}}"#;
+    let item: Item = serde_json::from_str(json).unwrap();
+    assert!(item.tags.is_empty());
+    assert_eq!(item.image.as_ref().unwrap().url, "http://x/y.png");
+}
+
+#[test]
+fn nested_schema_defines_inner_model() {
+    let value = serde_json::to_value(schemars::schema_for!(Item)).unwrap();
+    // The nested model is emitted as its own definition and referenced.
+    let text = value.to_string();
+    assert!(text.contains("Image"), "schema should define Image: {value}");
+    assert!(text.contains("url"), "nested field should appear: {value}");
+}
+
+#[test]
+fn nested_validation_recurses() {
+    let invalid = Item {
+        name: "ok".to_owned(),
+        description: None,
+        price: 1.0,
+        tags: Default::default(),
+        image: Some(Image {
+            url: String::new(), // violates the nested url min_length
+            name: "n".to_owned(),
+        }),
+    };
+    assert!(invalid.validate().is_err(), "nested constraint should fail");
+
+    let valid = Item {
+        name: "ok".to_owned(),
+        description: None,
+        price: 1.0,
+        tags: Default::default(),
+        image: Some(Image {
+            url: "u".to_owned(),
+            name: "n".to_owned(),
+        }),
+    };
+    assert!(valid.validate().is_ok());
+}

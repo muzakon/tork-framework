@@ -277,6 +277,28 @@ mod tests {
         label: String,
     }
 
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct Inner {
+        value: String,
+    }
+
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct Outer {
+        inner: Inner,
+    }
+
+    #[test]
+    fn nested_models_are_registered_as_components() {
+        let routes =
+            vec![Route::new(Method::GET, "/outer", dummy_handler()).response_schema::<Outer>()];
+
+        let schemas = &OpenApi::new().build_document(&routes)["components"]["schemas"];
+        assert!(schemas["Outer"].is_object(), "outer missing: {schemas}");
+        assert!(schemas["Inner"].is_object(), "nested inner missing: {schemas}");
+    }
+
     #[test]
     fn document_includes_component_schemas() {
         let routes = vec![

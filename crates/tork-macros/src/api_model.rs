@@ -58,6 +58,10 @@ struct FieldArgs {
     title: Option<LitStr>,
     description: Option<LitStr>,
     custom: Vec<Expr>,
+    /// Recurse into a nested model / collection during validation (garde dive).
+    nested: bool,
+    /// Use the type's `Default` when the field is absent (serde default).
+    default: bool,
 }
 
 impl Parse for FieldArgs {
@@ -65,22 +69,30 @@ impl Parse for FieldArgs {
         let mut args = FieldArgs::default();
         while !input.is_empty() {
             let key: Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            match key.to_string().as_str() {
-                "min_length" => args.min_length = Some(input.parse()?),
-                "max_length" => args.max_length = Some(input.parse()?),
-                "ge" => args.ge = Some(input.parse()?),
-                "le" => args.le = Some(input.parse()?),
-                "gt" => args.gt = Some(input.parse()?),
-                "lt" => args.lt = Some(input.parse()?),
-                "title" => args.title = Some(input.parse()?),
-                "description" => args.description = Some(input.parse()?),
-                "custom" => args.custom.push(input.parse()?),
-                other => {
-                    return Err(syn::Error::new(
-                        key.span(),
-                        format!("unknown field constraint `{other}`"),
-                    ));
+            let name = key.to_string();
+            match name.as_str() {
+                // Bare flags (no `= value`).
+                "nested" => args.nested = true,
+                "default" => args.default = true,
+                _ => {
+                    input.parse::<Token![=]>()?;
+                    match name.as_str() {
+                        "min_length" => args.min_length = Some(input.parse()?),
+                        "max_length" => args.max_length = Some(input.parse()?),
+                        "ge" => args.ge = Some(input.parse()?),
+                        "le" => args.le = Some(input.parse()?),
+                        "gt" => args.gt = Some(input.parse()?),
+                        "lt" => args.lt = Some(input.parse()?),
+                        "title" => args.title = Some(input.parse()?),
+                        "description" => args.description = Some(input.parse()?),
+                        "custom" => args.custom.push(input.parse()?),
+                        other => {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                format!("unknown field constraint `{other}`"),
+                            ));
+                        }
+                    }
                 }
             }
             if input.is_empty() {
@@ -182,6 +194,12 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
             garde_rules.push(quote!(custom(#custom)));
         }
 
+        // Nested models / collections: recurse into the inner `Validate` type.
+        // (de)serialization and schema generation already recurse on their own.
+        if field_args.nested {
+            garde_rules.push(quote!(dive));
+        }
+
         if let Some(title) = &field_args.title {
             schemars_rules.push(quote!(title = #title));
         }
@@ -201,10 +219,17 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
         } else {
             quote!(#[schemars(#(#schemars_rules),*)])
         };
+        // Absent fields fall back to `Default` when requested.
+        let serde_attr = if field_args.default {
+            quote!(#[serde(default)])
+        } else {
+            quote!()
+        };
 
         let field_vis = &field.vis;
         field_tokens.push(quote! {
             #(#preserved)*
+            #serde_attr
             #garde_attr
             #schemars_attr
             #field_vis #field_ident: #field_ty,
