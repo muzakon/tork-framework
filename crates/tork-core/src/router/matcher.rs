@@ -47,9 +47,7 @@ impl Matcher {
         let mut all_paths: matchit::Router<()> = matchit::Router::new();
 
         for (index, route) in routes.iter().enumerate() {
-            let method_router = by_method
-                .entry(route.method().clone())
-                .or_insert_with(matchit::Router::new);
+            let method_router = by_method.entry(route.method().clone()).or_default();
 
             method_router.insert(route.path(), index).map_err(|error| {
                 Error::internal(format!(

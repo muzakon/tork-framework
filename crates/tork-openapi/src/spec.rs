@@ -26,6 +26,7 @@ pub struct OpenApi {
     version: String,
     description: Option<String>,
     json_path: String,
+    docs_path: Option<String>,
 }
 
 impl Default for OpenApi {
@@ -42,6 +43,7 @@ impl OpenApi {
             version: "0.1.0".to_owned(),
             description: None,
             json_path: DEFAULT_JSON_PATH.to_owned(),
+            docs_path: None,
         }
     }
 
@@ -69,6 +71,12 @@ impl OpenApi {
         self
     }
 
+    /// Enables the documentation UI, served at `path`.
+    pub fn docs(mut self, path: impl Into<String>) -> Self {
+        self.docs_path = Some(path.into());
+        self
+    }
+
     /// Builds the OpenAPI document for the given routes as a JSON value.
     pub fn build_document(&self, routes: &[Route]) -> Value {
         build_document(self, routes)
@@ -79,7 +87,12 @@ impl OpenApiProvider for OpenApi {
     fn documentation_routes(&self, registered: &[Route]) -> Vec<Route> {
         let document = build_document(self, registered);
         let body = serde_json::to_vec(&document).unwrap_or_default();
-        vec![spec_route(&self.json_path, Bytes::from(body))]
+
+        let mut routes = vec![spec_route(&self.json_path, Bytes::from(body))];
+        if let Some(docs_path) = &self.docs_path {
+            routes.push(crate::docs::docs_route(docs_path, &self.title, &self.json_path));
+        }
+        routes
     }
 }
 

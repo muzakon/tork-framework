@@ -16,7 +16,8 @@ async fn main() -> tork::Result<()> {
             OpenApi::new()
                 .title("My API")
                 .version("1.0.0")
-                .json("/openapi.json"),
+                .json("/openapi.json")
+                .docs("/docs"),
         )
         .serve("0.0.0.0:8000")
         .await
