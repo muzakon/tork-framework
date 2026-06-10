@@ -14,6 +14,12 @@ use crate::error::{Error, Result};
 use crate::response::Response;
 use crate::router::BoxFuture;
 
+pub mod request_id;
+pub mod trace;
+
+pub use request_id::RequestId;
+pub use trace::Trace;
+
 /// The request type threaded through the middleware chain.
 pub type Request = http::Request<ReqBody>;
 

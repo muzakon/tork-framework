@@ -70,3 +70,42 @@ async fn custom_middleware_macro_runs() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&body[..], b"ok");
 }
+
+fn app_with<M: Middleware>(mw: M) -> std::sync::Arc<tork::AppInner> {
+    std::sync::Arc::new(
+        App::new()
+            .middleware(mw)
+            .include_router(Router::new().route(tork::Route::new(Method::GET, "/", ok_handler())))
+            .build()
+            .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn request_id_generates_when_absent() {
+    use tork::middleware::RequestId;
+    let response = app_with(RequestId::new()).handle(request()).await;
+    let id = response
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(id.starts_with("req-"), "id: {id}");
+}
+
+#[tokio::test]
+async fn request_id_propagates_incoming() {
+    use tork::middleware::RequestId;
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/")
+        .header("x-request-id", "req-supplied")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+    let response = app_with(RequestId::new()).handle(req).await;
+    assert_eq!(
+        response.headers().get("x-request-id").unwrap(),
+        "req-supplied"
+    );
+}
