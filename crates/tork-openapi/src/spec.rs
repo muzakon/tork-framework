@@ -158,15 +158,29 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
         }
 
         let status = meta.status_code.as_u16().to_string();
-        let reason = meta.status_code.canonical_reason().unwrap_or("Response");
         let mut response = Map::new();
-        response.insert("description".to_owned(), json!(reason));
-        if let Some(response_schema) = meta.response_schema {
-            let schema = response_schema(&mut generator).as_value().clone();
-            response.insert(
-                "content".to_owned(),
-                json!({ "application/json": { "schema": schema } }),
-            );
+        let schema = meta
+            .response_schema
+            .map(|thunk| thunk(&mut generator).as_value().clone());
+        if meta.streaming {
+            // A Server-Sent Events stream: each message carries a JSON-encoded
+            // value of this schema in its `data:` field.
+            response.insert("description".to_owned(), json!("Server-Sent Events stream"));
+            if let Some(schema) = schema {
+                response.insert(
+                    "content".to_owned(),
+                    json!({ "text/event-stream": { "schema": schema } }),
+                );
+            }
+        } else {
+            let reason = meta.status_code.canonical_reason().unwrap_or("Response");
+            response.insert("description".to_owned(), json!(reason));
+            if let Some(schema) = schema {
+                response.insert(
+                    "content".to_owned(),
+                    json!({ "application/json": { "schema": schema } }),
+                );
+            }
         }
         operation.insert(
             "responses".to_owned(),
@@ -322,5 +336,27 @@ mod tests {
             &operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
         assert_eq!(request_ref, "#/components/schemas/Sample");
         assert_eq!(response_ref, "#/components/schemas/Sample");
+    }
+
+    #[test]
+    fn streaming_route_documents_event_stream() {
+        let routes = vec![
+            Route::new(Method::GET, "/stream", dummy_handler())
+                .response_schema::<Sample>()
+                .streaming(),
+        ];
+
+        let document = OpenApi::new().build_document(&routes);
+        let response = &document["paths"]["/stream"]["get"]["responses"]["200"];
+
+        assert_eq!(response["description"], "Server-Sent Events stream");
+        assert_eq!(
+            response["content"]["text/event-stream"]["schema"]["$ref"],
+            "#/components/schemas/Sample"
+        );
+        assert!(
+            response["content"]["application/json"].is_null(),
+            "streaming response must not be JSON: {response}"
+        );
     }
 }

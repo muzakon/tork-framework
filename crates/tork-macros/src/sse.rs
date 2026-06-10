@@ -9,7 +9,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Ident, ItemFn, LitStr, Token, bracketed};
+use syn::{Ident, ItemFn, LitStr, Token, Type, bracketed};
 
 use crate::common::krate;
 use crate::route::{HandlerParts, build_handler_parts};
@@ -19,6 +19,7 @@ struct SseArgs {
     path: LitStr,
     method: Option<Ident>,
     event: Option<LitStr>,
+    response_model: Option<Type>,
     summary: Option<LitStr>,
     description: Option<LitStr>,
     tags: Vec<LitStr>,
@@ -39,6 +40,7 @@ impl Parse for SseArgs {
             path,
             method: None,
             event: None,
+            response_model: None,
             summary: None,
             description: None,
             tags: Vec::new(),
@@ -57,6 +59,7 @@ impl Parse for SseArgs {
             match key.to_string().as_str() {
                 "method" => args.method = Some(input.parse()?),
                 "event" => args.event = Some(input.parse()?),
+                "response_model" => args.response_model = Some(input.parse()?),
                 "summary" => args.summary = Some(input.parse()?),
                 "description" => args.description = Some(input.parse()?),
                 "__prefix" => args.prefix_hint = Some(input.parse()?),
@@ -135,6 +138,11 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
     }
     for tag in &args.tags {
         builder = quote! { #builder.tag(#tag) };
+    }
+    // SSE responses are documented as a `text/event-stream` of the data type.
+    builder = quote! { #builder.streaming() };
+    if let Some(response_model) = &args.response_model {
+        builder = quote! { #builder.response_schema::<#response_model>() };
     }
 
     // The `event` attribute sets the stream's default event name.

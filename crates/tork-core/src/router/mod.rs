@@ -123,6 +123,9 @@ pub struct RouteMeta {
     pub request_schema: Option<SchemaThunk>,
     /// Schema generator for the success response body, if any.
     pub response_schema: Option<SchemaThunk>,
+    /// Whether the response is a stream (Server-Sent Events), documented as
+    /// `text/event-stream` rather than `application/json`.
+    pub streaming: bool,
 }
 
 impl Default for RouteMeta {
@@ -135,6 +138,7 @@ impl Default for RouteMeta {
             response_model: None,
             request_schema: None,
             response_schema: None,
+            streaming: false,
         }
     }
 }
@@ -214,6 +218,12 @@ impl Route {
     /// Records the success response body schema generator.
     pub fn response_schema<T: schemars::JsonSchema>(mut self) -> Self {
         self.meta.response_schema = Some(|generator| generator.subschema_for::<T>());
+        self
+    }
+
+    /// Marks the response as a stream (documented as `text/event-stream`).
+    pub fn streaming(mut self) -> Self {
+        self.meta.streaming = true;
         self
     }
 
