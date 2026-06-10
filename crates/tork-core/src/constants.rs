@@ -17,6 +17,9 @@ pub const TEXT_HTML_UTF8: &str = "text/html; charset=utf-8";
 /// `Content-Type` value for UTF-8 JavaScript sources.
 pub const APPLICATION_JAVASCRIPT_UTF8: &str = "application/javascript; charset=utf-8";
 
+/// `Content-Type` value for a Server-Sent Events stream.
+pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
+
 /// Prefix of an `Authorization` header value that carries a bearer token.
 pub const BEARER_PREFIX: &str = "Bearer ";
 

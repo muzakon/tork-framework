@@ -23,6 +23,7 @@ mod response;
 mod router;
 mod server;
 mod service;
+mod sse;
 mod state;
 
 pub use app::{App, AppInner};
@@ -45,6 +46,7 @@ pub use response::{
 };
 pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router, SchemaThunk};
+pub use sse::{Sse, SseEvent};
 pub use state::{AppStateRef, State, StateMap};
 
 // Commonly used `http` types are re-exported so users do not need to depend on
