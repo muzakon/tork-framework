@@ -201,6 +201,56 @@ async fn proxy_headers_rewrites_host_for_trusted_host() {
 }
 
 #[tokio::test]
+async fn cors_answers_preflight() {
+    use tork::middleware::Cors;
+
+    let app = app_with(
+        Cors::new()
+            .allow_origin("https://app.example.com")
+            .allow_methods(["GET", "POST"])
+            .allow_headers(["Authorization", "Content-Type"]),
+    );
+    let preflight = http::Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/")
+        .header("origin", "https://app.example.com")
+        .header("access-control-request-method", "POST")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+
+    let response = app.handle(preflight).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response.headers().get("access-control-allow-origin").unwrap(),
+        "https://app.example.com"
+    );
+    assert_eq!(
+        response.headers().get("access-control-allow-methods").unwrap(),
+        "GET, POST"
+    );
+}
+
+#[tokio::test]
+async fn cors_annotates_actual_request() {
+    use tork::middleware::Cors;
+
+    let app = app_with(Cors::new().allow_origin("*").expose_headers(["X-Request-Id"]));
+    let response = app
+        .handle(get_with_headers(&[("origin", "https://anywhere.test")]))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("access-control-allow-origin").unwrap(),
+        "*"
+    );
+    assert_eq!(
+        response.headers().get("access-control-expose-headers").unwrap(),
+        "X-Request-Id"
+    );
+}
+
+#[tokio::test]
 async fn request_id_propagates_incoming() {
     use tork::middleware::RequestId;
     let req = http::Request::builder()
