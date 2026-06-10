@@ -1,5 +1,7 @@
 //! Error type and HTTP error responses.
 
+use std::any::TypeId;
+
 use bytes::Bytes;
 use http::StatusCode;
 use serde::Serialize;
@@ -102,6 +104,9 @@ pub struct Error {
     code: Option<&'static str>,
     message: String,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    /// Concrete type of `source`, recorded so a typed exception handler can be
+    /// located and the source downcast back to it (see [`Error::take_source`]).
+    source_type: Option<TypeId>,
     details: Vec<ErrorDetail>,
 }
 
@@ -140,6 +145,7 @@ impl Error {
             code: None,
             message: message.into(),
             source: None,
+            source_type: None,
             details: Vec::new(),
         }
     }
@@ -215,12 +221,15 @@ impl Error {
     /// Attaches an underlying error as the cause, for server-side diagnostics.
     ///
     /// The cause is logged for server errors but is never serialized into a
-    /// response body.
+    /// response body. Its concrete type is recorded so that a typed
+    /// [`exception_handler`](crate::App::exception_handler) for `E` can be located
+    /// and the cause recovered via [`take_source`](Error::take_source).
     pub fn with_source<E>(mut self, source: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
     {
         self.source = Some(Box::new(source));
+        self.source_type = Some(TypeId::of::<E>());
         self
     }
 
@@ -266,6 +275,33 @@ impl Error {
     /// Returns the client-facing message.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Removes the attached source and returns it as `E`, if its concrete type
+    /// matches.
+    ///
+    /// Returns `None` (leaving the source in place) when no source is attached or
+    /// its type differs. This is how a typed
+    /// [`exception_handler`](crate::App::exception_handler) recovers the original
+    /// error value it was registered for.
+    pub fn take_source<E>(&mut self) -> Option<E>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        if self.source_type != Some(TypeId::of::<E>()) {
+            return None;
+        }
+        let source = self.source.take()?;
+        self.source_type = None;
+        match source.downcast::<E>() {
+            Ok(typed) => Some(*typed),
+            Err(restored) => {
+                // Type id matched but the downcast did not: restore and bail.
+                self.source = Some(restored);
+                self.source_type = Some(TypeId::of::<E>());
+                None
+            }
+        }
     }
 }
 
@@ -481,6 +517,54 @@ mod tests {
         assert_eq!(body["details"][0]["field"], "price");
         assert_eq!(body["details"][0]["issue"], "TOO_SMALL");
         assert_eq!(body["details"][0]["message"], "must be greater than 0");
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct SampleCause(&'static str);
+    impl std::fmt::Display for SampleCause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for SampleCause {}
+
+    #[derive(Debug)]
+    struct OtherCause;
+    impl std::fmt::Display for OtherCause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("other")
+        }
+    }
+    impl std::error::Error for OtherCause {}
+
+    #[test]
+    fn with_source_records_the_type() {
+        let error = Error::internal("boom").with_source(SampleCause("cause"));
+        assert_eq!(error.source_type, Some(TypeId::of::<SampleCause>()));
+    }
+
+    #[test]
+    fn take_source_round_trips_the_typed_cause() {
+        let mut error = Error::internal("boom").with_source(SampleCause("cause"));
+        assert_eq!(error.take_source::<SampleCause>(), Some(SampleCause("cause")));
+        // The source is consumed: a second take yields nothing.
+        assert_eq!(error.take_source::<SampleCause>(), None);
+        assert_eq!(error.source_type, None);
+    }
+
+    #[test]
+    fn take_source_rejects_a_mismatched_type() {
+        let mut error = Error::internal("boom").with_source(SampleCause("cause"));
+        assert!(error.take_source::<OtherCause>().is_none());
+        // The original source is left intact for the correct type.
+        assert_eq!(error.source_type, Some(TypeId::of::<SampleCause>()));
+        assert_eq!(error.take_source::<SampleCause>(), Some(SampleCause("cause")));
+    }
+
+    #[test]
+    fn take_source_is_none_without_a_source() {
+        let mut error = Error::internal("boom");
+        assert!(error.take_source::<SampleCause>().is_none());
     }
 
     #[test]
