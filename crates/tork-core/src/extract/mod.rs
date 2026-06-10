@@ -18,9 +18,11 @@ use crate::state::{AppStateRef, StateMap};
 pub mod body;
 pub mod header;
 pub mod path;
+pub mod valid;
 
 pub use header::BearerToken;
 pub use path::{FromPathParam, __extract_path_param};
+pub use valid::Valid;
 
 /// Raw path parameters captured by the router, in match order.
 #[derive(Debug, Default, Clone)]

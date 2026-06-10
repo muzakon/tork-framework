@@ -42,7 +42,7 @@ where
 ///
 /// The cap is enforced incrementally as frames arrive, so an oversized payload
 /// is rejected without buffering all of it first.
-async fn read_body_capped(mut body: ReqBody) -> Result<Bytes> {
+pub(crate) async fn read_body_capped(mut body: ReqBody) -> Result<Bytes> {
     let mut buffer = BytesMut::new();
 
     while let Some(frame) = body.frame().await {

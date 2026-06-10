@@ -26,7 +26,8 @@ pub use server::TorkService;
 pub use body::{BoxError, ReqBody, RespBody, box_body};
 pub use error::{Error, ErrorDetail, ErrorKind, Result};
 pub use extract::{
-    BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, __extract_path_param,
+    BearerToken, FromPathParam, FromRequest, PathParams, RequestContext, Valid,
+    __extract_path_param,
 };
 pub use openapi::OpenApiProvider;
 pub use response::{IntoResponse, Json, Response, __finish, bytes_response, json_response};
