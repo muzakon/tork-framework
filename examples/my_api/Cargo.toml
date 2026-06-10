@@ -1,0 +1,10 @@
+[package]
+name = "my_api"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Example application demonstrating the Tork web framework."
+
+[dependencies]
+tork = { path = "../../crates/tork" }
+serde = { workspace = true }

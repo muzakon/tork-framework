@@ -10,6 +10,7 @@ members = [
     "crates/tork-core",
     "crates/tork-macros",
     "crates/tork-openapi",
+    "examples/my_api",
 ]
 
 # Shared metadata inherited by every crate via `field.workspace = true`.
