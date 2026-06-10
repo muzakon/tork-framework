@@ -1,5 +1,9 @@
 //! Request dispatch: turning an HTTP request into a response.
 
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
+
+use futures_util::FutureExt;
 use http::Request;
 
 use crate::app::{AppInner, request_info};
@@ -29,7 +33,25 @@ impl AppInner {
                     request_info(&head.method, &head.uri, &head.headers, Some(route.path().to_owned()))
                 });
                 let ctx = RequestContext::new(head, params, self.state().clone(), body);
-                match handler(ctx).await {
+                let future = handler(ctx);
+
+                // With the panic boundary enabled, a handler panic becomes a 500
+                // (and fires the panic hooks) instead of tearing down the task.
+                let result = if self.catch_panics() {
+                    match AssertUnwindSafe(future).catch_unwind().await {
+                        Ok(result) => result,
+                        Err(payload) => {
+                            if let Some(info) = &info {
+                                self.fire_panic(info, &panic_message(payload.as_ref())).await;
+                            }
+                            return Error::internal("handler panicked").into_response();
+                        }
+                    }
+                } else {
+                    future.await
+                };
+
+                match result {
                     Ok(response) => response,
                     Err(error) => self.finish_error(error, info).await,
                 }
@@ -55,6 +77,21 @@ impl AppInner {
             Some(info) => self.render_error(error, &info).await,
             None => error.into_response(),
         }
+    }
+}
+
+/// Renders a caught panic payload as text for the [`on_panic`](crate::App::on_panic)
+/// hooks.
+///
+/// A panic payload is typically a `&str` or `String`; anything else is reported
+/// generically.
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic".to_owned()
     }
 }
 

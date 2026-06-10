@@ -52,6 +52,7 @@ http = "1"
 http-body-util = "0.1.3"
 bytes = "1"
 matchit = "0.9"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # Serialization.
 serde = { version = "1", features = ["derive"] }

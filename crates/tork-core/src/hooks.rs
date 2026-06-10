@@ -175,6 +175,26 @@ impl ValidationErrorEvent {
 
 shared_accessors!(ValidationErrorEvent);
 
+/// Context for [`on_panic`](crate::App::on_panic): a handler panicked and the
+/// panic was caught by the panic boundary.
+pub struct PanicEvent {
+    info: RequestInfo,
+    message: String,
+}
+
+impl PanicEvent {
+    pub(crate) fn new(info: RequestInfo, message: String) -> Self {
+        Self { info, message }
+    }
+
+    /// The panic payload rendered as text.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+shared_accessors!(PanicEvent);
+
 /// Context passed to an [`exception_handler`](crate::App::exception_handler)
 /// alongside the recovered typed error.
 pub struct ErrorContext {
@@ -234,6 +254,12 @@ mod tests {
         );
         assert_eq!(event.details().len(), 1);
         assert_eq!(event.details()[0].field, "name");
+    }
+
+    #[test]
+    fn panic_event_carries_message() {
+        let event = PanicEvent::new(info(), "boom".to_owned());
+        assert_eq!(event.message(), "boom");
     }
 
     #[test]

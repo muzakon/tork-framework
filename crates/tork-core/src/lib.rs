@@ -37,7 +37,7 @@ pub use extract::{
     __extract_path_param,
 };
 pub use hooks::{
-    ErrorContext, ErrorEvent, RequestEvent, ResponseEvent, ValidationErrorEvent,
+    ErrorContext, ErrorEvent, PanicEvent, RequestEvent, ResponseEvent, ValidationErrorEvent,
 };
 pub use openapi::OpenApiProvider;
 pub use response::{

@@ -11,7 +11,8 @@ use tokio::net::TcpListener;
 
 use crate::error::{Error, Result};
 use crate::hooks::{
-    ErrorContext, ErrorEvent, RequestEvent, RequestInfo, ResponseEvent, ValidationErrorEvent,
+    ErrorContext, ErrorEvent, PanicEvent, RequestEvent, RequestInfo, ResponseEvent,
+    ValidationErrorEvent,
 };
 use crate::lifespan::{ErasedLifespan, Lifespan, LifespanCell, LifespanContext, ReadyContext};
 use crate::middleware::{Middleware, Next, Request, resolve_duplicates};
@@ -40,6 +41,9 @@ type ErrorHook = Box<dyn Fn(ErrorEvent) -> BoxFuture<'static, ()> + Send + Sync>
 /// An observe-only hook fired for a request-body validation failure.
 type ValidationErrorHook =
     Box<dyn Fn(ValidationErrorEvent) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// An observe-only hook fired when a handler panic is caught.
+type PanicHook = Box<dyn Fn(PanicEvent) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// Maps a recovered typed error into a response.
 type ExceptionHandlerFn =
@@ -70,6 +74,8 @@ pub struct App {
     on_response: Vec<ResponseHook>,
     on_error: Vec<ErrorHook>,
     on_validation_error: Vec<ValidationErrorHook>,
+    on_panic: Vec<PanicHook>,
+    catch_panics: bool,
     exception_handlers: HashMap<TypeId, ExceptionHandlerFn>,
 }
 
@@ -95,6 +101,8 @@ impl App {
             on_response: Vec::new(),
             on_error: Vec::new(),
             on_validation_error: Vec::new(),
+            on_panic: Vec::new(),
+            catch_panics: false,
             exception_handlers: HashMap::new(),
         }
     }
@@ -221,6 +229,30 @@ impl App {
         self
     }
 
+    /// Registers an observe-only hook that runs when a handler panic is caught.
+    ///
+    /// Has no effect unless the panic boundary is enabled with
+    /// [`catch_panics`](App::catch_panics).
+    pub fn on_panic<F, Fut>(mut self, hook: F) -> Self
+    where
+        F: Fn(PanicEvent) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.on_panic.push(Box::new(move |event| Box::pin(hook(event))));
+        self
+    }
+
+    /// Enables the panic boundary: a panic in a handler is caught and turned into
+    /// a `500` response instead of dropping the connection.
+    ///
+    /// Disabled by default. When enabled, a caught panic fires the
+    /// [`on_panic`](App::on_panic) hooks. The boundary has no effect when the
+    /// process is built with `panic = "abort"`.
+    pub fn catch_panics(mut self) -> Self {
+        self.catch_panics = true;
+        self
+    }
+
     /// Registers a handler that maps a typed error `E` into a response.
     ///
     /// When an error carries a source of type `E` (for example one produced by a
@@ -278,6 +310,8 @@ impl App {
             on_response,
             on_error,
             on_validation_error,
+            on_panic,
+            catch_panics,
             exception_handlers,
             ..
         } = self;
@@ -303,6 +337,8 @@ impl App {
             on_response: on_response.into(),
             on_error: on_error.into(),
             on_validation_error: on_validation_error.into(),
+            on_panic: on_panic.into(),
+            catch_panics,
             exception_handlers: Arc::new(exception_handlers),
         })
     }
@@ -411,6 +447,8 @@ pub struct AppInner {
     on_response: Arc<[ResponseHook]>,
     on_error: Arc<[ErrorHook]>,
     on_validation_error: Arc<[ValidationErrorHook]>,
+    on_panic: Arc<[PanicHook]>,
+    catch_panics: bool,
     exception_handlers: Arc<HashMap<TypeId, ExceptionHandlerFn>>,
 }
 
@@ -475,7 +513,20 @@ impl AppInner {
             || !self.on_response.is_empty()
             || !self.on_error.is_empty()
             || !self.on_validation_error.is_empty()
+            || !self.on_panic.is_empty()
             || !self.exception_handlers.is_empty()
+    }
+
+    /// Reports whether the panic boundary is enabled.
+    pub(crate) fn catch_panics(&self) -> bool {
+        self.catch_panics
+    }
+
+    /// Runs the panic hooks for a caught handler panic.
+    pub(crate) async fn fire_panic(&self, info: &RequestInfo, message: &str) {
+        for hook in self.on_panic.iter() {
+            hook(PanicEvent::new(info.clone(), message.to_owned())).await;
+        }
     }
 
     /// Renders an error into a response, running the error hooks and any matching
@@ -636,6 +687,14 @@ mod hook_tests {
         Router::new().route(Route::new(Method::GET, "/", handler))
     }
 
+    fn panicking_route() -> Router {
+        let handler: HandlerFn =
+            Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async { panic!("handler boom") })
+            });
+        Router::new().route(Route::new(Method::GET, "/", handler))
+    }
+
     #[tokio::test]
     async fn on_error_fires_for_a_missing_route() {
         let seen = log();
@@ -740,5 +799,32 @@ mod hook_tests {
         let response = app.handle(request(Method::GET, "/")).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(entries(&seen), vec!["first".to_owned(), "second".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn catch_panics_converts_a_panic_into_a_500() {
+        let seen = log();
+        let recorder = seen.clone();
+        let app = App::new()
+            .include_router(panicking_route())
+            .catch_panics()
+            .on_panic(move |event| {
+                let recorder = recorder.clone();
+                let message = event.message().to_owned();
+                async move { recorder.lock().unwrap().push(message) }
+            })
+            .build()
+            .unwrap();
+
+        let response = app.dispatch(request(Method::GET, "/")).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(entries(&seen), vec!["handler boom".to_owned()]);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "handler boom")]
+    async fn without_catch_panics_a_panic_propagates() {
+        let app = App::new().include_router(panicking_route()).build().unwrap();
+        let _ = app.dispatch(request(Method::GET, "/")).await;
     }
 }
