@@ -132,68 +132,11 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
         Some(prefix) => format!("{}{}", prefix.value(), args.path.value()),
         None => args.path.value(),
     };
-    let placeholders = path_param_names(&full_path);
-
-    // Build one binding per handler parameter, plus the call argument list. Also
-    // detect a request-body parameter (`Valid<T>` / `Json<T>`) for the schema.
-    let mut bindings = Vec::new();
-    let mut call_args = Vec::new();
-    let mut request_body: Option<Type> = None;
-
-    for input in &func.sig.inputs {
-        let pat_type = match input {
-            FnArg::Typed(pat_type) => pat_type,
-            FnArg::Receiver(receiver) => {
-                return Err(syn::Error::new_spanned(
-                    receiver,
-                    "route handlers cannot take `self`",
-                ));
-            }
-        };
-
-        let ident = match pat_type.pat.as_ref() {
-            Pat::Ident(pat_ident) => pat_ident.ident.clone(),
-            other => {
-                return Err(syn::Error::new_spanned(
-                    other,
-                    "route handler parameters must be simple identifiers",
-                ));
-            }
-        };
-        let ty = pat_type.ty.as_ref();
-        let name = ident.to_string();
-
-        if placeholders.contains(&name) {
-            bindings.push(quote! {
-                let #ident: #ty = match #krate::__extract_path_param(&ctx, #name) {
-                    ::core::result::Result::Ok(value) => value,
-                    ::core::result::Result::Err(error) => {
-                        return ::core::result::Result::Err(error);
-                    }
-                };
-            });
-        } else {
-            if let Some(body) = body_inner_type(ty) {
-                if request_body.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        ty,
-                        "a handler may declare at most one request body",
-                    ));
-                }
-                request_body = Some(body.clone());
-            }
-            bindings.push(quote! {
-                let #ident = match <#ty as #krate::FromRequest>::from_request(&ctx).await {
-                    ::core::result::Result::Ok(value) => value,
-                    ::core::result::Result::Err(error) => {
-                        return ::core::result::Result::Err(error);
-                    }
-                };
-            });
-        }
-
-        call_args.push(ident);
-    }
+    let HandlerParts {
+        bindings,
+        call_args,
+        request_body,
+    } = build_handler_parts(&krate, &func, &full_path)?;
 
     let status_code = status_code_tokens(&krate, args.status_code.as_ref());
 
@@ -269,6 +212,93 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
             );
             #builder
         }
+    })
+}
+
+/// The pieces of a generated handler closure: per-parameter bindings, the call
+/// argument list, and the detected request-body type (if any).
+pub(crate) struct HandlerParts {
+    pub bindings: Vec<TokenStream>,
+    pub call_args: Vec<Ident>,
+    pub request_body: Option<Type>,
+}
+
+/// Builds the handler bindings shared by the route and SSE macros.
+///
+/// Each parameter becomes a binding: a path parameter when its name matches a
+/// `{placeholder}` in `full_path`, otherwise a dependency resolved through
+/// `FromRequest`. A `Valid<T>` / `Json<T>` parameter is recorded as the request
+/// body. Errors propagate as `Err` so the dispatch boundary renders them.
+pub(crate) fn build_handler_parts(
+    krate: &TokenStream,
+    func: &ItemFn,
+    full_path: &str,
+) -> syn::Result<HandlerParts> {
+    let placeholders = path_param_names(full_path);
+
+    let mut bindings = Vec::new();
+    let mut call_args = Vec::new();
+    let mut request_body: Option<Type> = None;
+
+    for input in &func.sig.inputs {
+        let pat_type = match input {
+            FnArg::Typed(pat_type) => pat_type,
+            FnArg::Receiver(receiver) => {
+                return Err(syn::Error::new_spanned(
+                    receiver,
+                    "route handlers cannot take `self`",
+                ));
+            }
+        };
+
+        let ident = match pat_type.pat.as_ref() {
+            Pat::Ident(pat_ident) => pat_ident.ident.clone(),
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    "route handler parameters must be simple identifiers",
+                ));
+            }
+        };
+        let ty = pat_type.ty.as_ref();
+        let name = ident.to_string();
+
+        if placeholders.contains(&name) {
+            bindings.push(quote! {
+                let #ident: #ty = match #krate::__extract_path_param(&ctx, #name) {
+                    ::core::result::Result::Ok(value) => value,
+                    ::core::result::Result::Err(error) => {
+                        return ::core::result::Result::Err(error);
+                    }
+                };
+            });
+        } else {
+            if let Some(body) = body_inner_type(ty) {
+                if request_body.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        ty,
+                        "a handler may declare at most one request body",
+                    ));
+                }
+                request_body = Some(body.clone());
+            }
+            bindings.push(quote! {
+                let #ident = match <#ty as #krate::FromRequest>::from_request(&ctx).await {
+                    ::core::result::Result::Ok(value) => value,
+                    ::core::result::Result::Err(error) => {
+                        return ::core::result::Result::Err(error);
+                    }
+                };
+            });
+        }
+
+        call_args.push(ident);
+    }
+
+    Ok(HandlerParts {
+        bindings,
+        call_args,
+        request_body,
     })
 }
 

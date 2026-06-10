@@ -18,6 +18,7 @@ mod main_macro;
 mod middleware;
 mod resources;
 mod route;
+mod sse;
 
 /// Marks the asynchronous entrypoint of a Tork application.
 ///
@@ -227,4 +228,31 @@ pub fn patch(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn delete(attr: TokenStream, item: TokenStream) -> TokenStream {
     route::route_impl("DELETE", attr, item)
+}
+
+/// Declares a Server-Sent Events endpoint (default `GET`).
+///
+/// The handler returns `tork::Result<Sse<T>>`. Attributes: path (first), `method`,
+/// `event` (default event name), `summary`, `description`, `tags`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[sse("/items/stream", event = "item_update")]
+/// pub async fn stream_items(service: ItemService) -> tork::Result<Sse<ItemOut>> {
+///     Ok(Sse::new(service.item_stream()))
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn sse(attr: TokenStream, item: TokenStream) -> TokenStream {
+    sse::expand("GET", attr, item)
+}
+
+/// Declares a Server-Sent Events endpoint served over `POST`.
+///
+/// Shorthand for [`macro@sse`] with `method = POST`; useful for streaming a
+/// response to a request that carries a body.
+#[proc_macro_attribute]
+pub fn post_sse(attr: TokenStream, item: TokenStream) -> TokenStream {
+    sse::expand("POST", attr, item)
 }
