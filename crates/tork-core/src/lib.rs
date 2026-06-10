@@ -14,6 +14,7 @@ mod app;
 mod body;
 mod error;
 mod extract;
+pub mod middleware;
 mod openapi;
 mod response;
 mod router;
@@ -22,6 +23,7 @@ mod service;
 mod state;
 
 pub use app::{App, AppInner};
+pub use middleware::{DuplicatePolicy, Middleware, Next, Request};
 pub use server::TorkService;
 pub use body::{BoxError, ReqBody, RespBody, box_body};
 pub use error::{Error, ErrorDetail, ErrorKind, Result};

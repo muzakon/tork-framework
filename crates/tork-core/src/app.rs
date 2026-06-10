@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::middleware::{Middleware, Next, Request, resolve_duplicates};
 use crate::openapi::OpenApiProvider;
+use crate::response::{IntoResponse, Response};
 use crate::router::Router;
 use crate::router::matcher::Matcher;
 use crate::state::{AppStateRef, StateMap};
@@ -21,6 +23,7 @@ pub struct App {
     state: StateMap,
     routers: Vec<Router>,
     openapi: Option<Box<dyn OpenApiProvider>>,
+    middleware: Vec<Arc<dyn Middleware>>,
 }
 
 impl Default for App {
@@ -36,6 +39,7 @@ impl App {
             state: StateMap::new(),
             routers: Vec::new(),
             openapi: None,
+            middleware: Vec::new(),
         }
     }
 
@@ -58,6 +62,15 @@ impl App {
         self
     }
 
+    /// Registers a middleware layer.
+    ///
+    /// Layers run in registration order, outermost first. Some middlewares may
+    /// only be registered once; see [`DuplicatePolicy`](crate::DuplicatePolicy).
+    pub fn middleware<M: Middleware>(mut self, middleware: M) -> Self {
+        self.middleware.push(Arc::new(middleware));
+        self
+    }
+
     /// Finalizes the application into its request-handling core.
     ///
     /// Routers are flattened into a single route table, OpenAPI documentation
@@ -71,6 +84,7 @@ impl App {
             state,
             routers,
             openapi,
+            middleware,
         } = self;
 
         let mut routes = Vec::new();
@@ -84,10 +98,12 @@ impl App {
         }
 
         let matcher = Matcher::build(routes)?;
+        let middleware = resolve_duplicates(middleware)?;
 
         Ok(AppInner {
             state: Arc::new(state),
             matcher,
+            middleware: middleware.into(),
         })
     }
 }
@@ -100,6 +116,7 @@ impl App {
 pub struct AppInner {
     state: AppStateRef,
     matcher: Matcher,
+    middleware: Arc<[Arc<dyn Middleware>]>,
 }
 
 impl AppInner {
@@ -111,5 +128,18 @@ impl AppInner {
     /// Returns the compiled route matcher.
     pub fn matcher(&self) -> &Matcher {
         &self.matcher
+    }
+
+    /// Runs the middleware chain and dispatches the request.
+    ///
+    /// This is the entrypoint the server calls per request. The middleware chain
+    /// wraps [`dispatch`](AppInner::dispatch); a middleware error is rendered
+    /// into a response so the connection is never torn down.
+    pub async fn handle(self: Arc<Self>, request: Request) -> Response {
+        let next = Next::new(self.clone(), self.middleware.clone());
+        match next.run(request).await {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        }
     }
 }

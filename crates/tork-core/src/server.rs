@@ -46,7 +46,7 @@ impl Service<Request<Incoming>> for TorkService {
             // Erase the connection body into the runtime's request body type.
             let (parts, incoming) = request.into_parts();
             let request = Request::from_parts(parts, box_body(incoming));
-            Ok(app.dispatch(request).await)
+            Ok(app.handle(request).await)
         })
     }
 }
@@ -63,7 +63,9 @@ impl App {
     /// Returns an error if the route table is invalid or the address cannot be
     /// bound.
     pub async fn serve(self, addr: impl AsRef<str>) -> Result<()> {
-        let app = Arc::new(self.build()?);
+        // Surface configuration errors (such as a rejected duplicate middleware)
+        // cleanly to stderr before exiting.
+        let app = Arc::new(self.build().inspect_err(|error| eprintln!("{}", error.message()))?);
         run(app, addr.as_ref()).await
     }
 }
