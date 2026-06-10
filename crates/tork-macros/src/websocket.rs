@@ -19,6 +19,9 @@ struct WsArgs {
     summary: Option<LitStr>,
     description: Option<LitStr>,
     tags: Vec<LitStr>,
+    max_message_size: Option<usize>,
+    max_frame_size: Option<usize>,
+    idle_timeout_ms: Option<u64>,
     /// Enclosing router prefix, injected by `#[api_router]`.
     prefix_hint: Option<LitStr>,
 }
@@ -37,6 +40,9 @@ impl Parse for WsArgs {
             summary: None,
             description: None,
             tags: Vec::new(),
+            max_message_size: None,
+            max_frame_size: None,
+            idle_timeout_ms: None,
             prefix_hint: None,
         };
 
@@ -53,6 +59,18 @@ impl Parse for WsArgs {
                 "summary" => args.summary = Some(input.parse()?),
                 "description" => args.description = Some(input.parse()?),
                 "__prefix" => args.prefix_hint = Some(input.parse()?),
+                "max_message_size" => {
+                    let value: LitStr = input.parse()?;
+                    args.max_message_size = Some(parse_size(&value)?);
+                }
+                "max_frame_size" => {
+                    let value: LitStr = input.parse()?;
+                    args.max_frame_size = Some(parse_size(&value)?);
+                }
+                "idle_timeout" => {
+                    let value: LitStr = input.parse()?;
+                    args.idle_timeout_ms = Some(parse_duration_ms(&value)?);
+                }
                 "tags" => {
                     let content;
                     bracketed!(content in input);
@@ -103,6 +121,19 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
     };
     let placeholders = path_param_names(&full_path);
 
+    // Build the route-level WebSocket config expression from the size/timeout attrs.
+    let mut config_expr = quote! { #krate::WebSocketConfig::new() };
+    if let Some(bytes) = args.max_message_size {
+        config_expr = quote! { #config_expr.max_message_size(#bytes) };
+    }
+    if let Some(bytes) = args.max_frame_size {
+        config_expr = quote! { #config_expr.max_frame_size(#bytes) };
+    }
+    if let Some(ms) = args.idle_timeout_ms {
+        config_expr =
+            quote! { #config_expr.idle_timeout(::core::time::Duration::from_millis(#ms)) };
+    }
+
     // Bind each parameter: the `WebSocket` parameter is the socket, the rest are
     // path parameters or dependencies. Bindings run before the upgrade is spawned.
     let mut bindings = Vec::new();
@@ -134,7 +165,7 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
         if is_websocket_type(ty) {
             socket_count += 1;
             bindings.push(quote! {
-                let #ident = #krate::WebSocket::from_request_context(&ctx)?;
+                let #ident = #krate::WebSocket::from_request_context(&ctx, #config_expr)?;
             });
         } else if placeholders.contains(&name) {
             bindings.push(quote! {
@@ -195,6 +226,53 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
             #builder
         }
     })
+}
+
+/// Parses a byte size such as `"64KB"`, `"1MB"`, or a plain byte count.
+fn parse_size(value: &LitStr) -> syn::Result<usize> {
+    let text = value.value();
+    let lower = text.trim().to_ascii_lowercase();
+    // Longest suffixes first so `kb` is not mistaken for `b`.
+    let units: [(&str, usize); 7] = [
+        ("mib", 1024 * 1024),
+        ("kib", 1024),
+        ("mb", 1024 * 1024),
+        ("kb", 1024),
+        ("m", 1024 * 1024),
+        ("k", 1024),
+        ("b", 1),
+    ];
+    for (suffix, multiplier) in units {
+        if let Some(number) = lower.strip_suffix(suffix) {
+            let parsed: usize = number.trim().parse().map_err(|_| {
+                syn::Error::new(value.span(), format!("invalid byte size `{text}`"))
+            })?;
+            return Ok(parsed * multiplier);
+        }
+    }
+    lower
+        .parse::<usize>()
+        .map_err(|_| syn::Error::new(value.span(), format!("invalid byte size `{text}`")))
+}
+
+/// Parses a duration such as `"60s"`, `"2m"`, `"500ms"`, or plain seconds.
+fn parse_duration_ms(value: &LitStr) -> syn::Result<u64> {
+    let text = value.value();
+    let lower = text.trim().to_ascii_lowercase();
+    let units: [(&str, u64); 4] = [("ms", 1), ("s", 1000), ("m", 60_000), ("h", 3_600_000)];
+    for (suffix, multiplier) in units {
+        if let Some(number) = lower.strip_suffix(suffix) {
+            let parsed: u64 = number.trim().parse().map_err(|_| {
+                syn::Error::new(value.span(), format!("invalid duration `{text}`"))
+            })?;
+            return Ok(parsed * multiplier);
+        }
+    }
+    // A bare number is interpreted as seconds.
+    lower
+        .parse::<u64>()
+        .map(|secs| secs * 1000)
+        .map_err(|_| syn::Error::new(value.span(), format!("invalid duration `{text}`")))
 }
 
 /// Returns `true` if `ty`'s final path segment is `WebSocket`.

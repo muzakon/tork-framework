@@ -8,6 +8,7 @@
 //! `tokio-tungstenite`, which users never see directly.
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -24,6 +25,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TgWebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TgCloseCode;
 
 use crate::body::RespBody;
@@ -171,42 +173,134 @@ impl From<WsError> for Error {
     }
 }
 
+/// Limits and timeouts for a WebSocket connection.
+///
+/// Set defaults for the whole app with
+/// [`App::websocket_config`](crate::App::websocket_config), or per route with the
+/// `#[websocket(...)]` attributes; a route value overrides the app default.
+#[derive(Clone, Default)]
+pub struct WebSocketConfig {
+    max_message_size: Option<usize>,
+    max_frame_size: Option<usize>,
+    idle_timeout: Option<Duration>,
+}
+
+impl WebSocketConfig {
+    /// Creates an empty configuration (all limits unset).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the maximum size of an incoming message, in bytes.
+    pub fn max_message_size(mut self, bytes: usize) -> Self {
+        self.max_message_size = Some(bytes);
+        self
+    }
+
+    /// Sets the maximum size of an incoming message, in kibibytes.
+    pub fn max_message_size_kb(self, kb: usize) -> Self {
+        self.max_message_size(kb * 1024)
+    }
+
+    /// Sets the maximum size of a single incoming frame, in bytes.
+    pub fn max_frame_size(mut self, bytes: usize) -> Self {
+        self.max_frame_size = Some(bytes);
+        self
+    }
+
+    /// Sets the maximum size of a single incoming frame, in kibibytes.
+    pub fn max_frame_size_kb(self, kb: usize) -> Self {
+        self.max_frame_size(kb * 1024)
+    }
+
+    /// Closes the connection if no message arrives within `timeout`.
+    pub fn idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = Some(timeout);
+        self
+    }
+
+    /// Closes the connection if no message arrives within `secs` seconds.
+    pub fn idle_timeout_secs(self, secs: u64) -> Self {
+        self.idle_timeout(Duration::from_secs(secs))
+    }
+
+    /// Returns a copy with each unset field taken from `base` (route over app).
+    pub(crate) fn merge(self, base: &WebSocketConfig) -> Self {
+        Self {
+            max_message_size: self.max_message_size.or(base.max_message_size),
+            max_frame_size: self.max_frame_size.or(base.max_frame_size),
+            idle_timeout: self.idle_timeout.or(base.idle_timeout),
+        }
+    }
+
+    /// Maps the size limits onto a tungstenite config, or `None` if both unset.
+    fn to_tungstenite(&self) -> Option<TgWebSocketConfig> {
+        if self.max_message_size.is_none() && self.max_frame_size.is_none() {
+            return None;
+        }
+        Some(TgWebSocketConfig {
+            max_message_size: self.max_message_size,
+            max_frame_size: self.max_frame_size,
+            ..TgWebSocketConfig::default()
+        })
+    }
+}
+
+/// The application-wide default WebSocket configuration, stored in the state map.
+#[derive(Clone)]
+pub(crate) struct AppWsConfig(pub(crate) WebSocketConfig);
+
 /// A WebSocket upgrade handle: call [`accept`](WebSocket::accept) to open it.
 pub struct WebSocket {
     upgrade: OnUpgrade,
+    config: WebSocketConfig,
 }
 
 impl WebSocket {
-    /// Builds the handle from a pending HTTP upgrade.
-    fn new(upgrade: OnUpgrade) -> Self {
-        Self { upgrade }
-    }
-
-    /// Claims the pending upgrade from the request context.
+    /// Claims the pending upgrade from the request context, merging the route's
+    /// config over the application default.
     ///
     /// This is generated-code support for `#[websocket]`, not part of the
     /// everyday API. It errors (`NOT_AN_UPGRADE`) if the request is not a
     /// WebSocket upgrade.
     #[doc(hidden)]
-    pub fn from_request_context(ctx: &RequestContext) -> Result<Self> {
-        Ok(Self::new(ctx.take_upgrade()?))
+    pub fn from_request_context(ctx: &RequestContext, route: WebSocketConfig) -> Result<Self> {
+        let upgrade = ctx.take_upgrade()?;
+        let app_default = ctx
+            .state()
+            .get::<AppWsConfig>()
+            .map(|config| config.0.clone())
+            .unwrap_or_default();
+        Ok(Self {
+            upgrade,
+            config: route.merge(&app_default),
+        })
     }
 
     /// Completes the upgrade and returns the live connection.
     pub async fn accept(self) -> Result<WebSocketConn> {
+        let idle_timeout = self.config.idle_timeout;
         let upgraded = self
             .upgrade
             .await
             .map_err(|error| Error::internal(format!("websocket upgrade failed: {error}")))?;
-        let stream =
-            WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
-        Ok(WebSocketConn { stream })
+        let stream = WebSocketStream::from_raw_socket(
+            TokioIo::new(upgraded),
+            Role::Server,
+            self.config.to_tungstenite(),
+        )
+        .await;
+        Ok(WebSocketConn {
+            stream,
+            idle_timeout,
+        })
     }
 }
 
 /// A live WebSocket connection.
 pub struct WebSocketConn {
     stream: WebSocketStream<TokioIo<Upgraded>>,
+    idle_timeout: Option<Duration>,
 }
 
 impl WebSocketConn {
@@ -216,7 +310,15 @@ impl WebSocketConn {
     /// handler may observe them (the protocol layer answers pings on its own).
     pub async fn recv(&mut self) -> Result<Option<WsMessage>> {
         loop {
-            match self.stream.next().await {
+            let next = match self.idle_timeout {
+                // An idle period beyond the timeout ends the connection.
+                Some(timeout) => match tokio::time::timeout(timeout, self.stream.next()).await {
+                    Ok(item) => item,
+                    Err(_elapsed) => return Ok(None),
+                },
+                None => self.stream.next().await,
+            };
+            match next {
                 Some(Ok(message)) => {
                     if let Some(message) = from_tungstenite(message) {
                         return Ok(Some(message));
@@ -424,6 +526,23 @@ mod tests {
             let round = from_tungstenite(into_tungstenite(message.clone()));
             assert_eq!(round, Some(message));
         }
+    }
+
+    #[test]
+    fn config_merge_prefers_route_over_app() {
+        let app = WebSocketConfig::new()
+            .max_message_size(1000)
+            .idle_timeout_secs(30);
+        let route = WebSocketConfig::new().max_message_size(2000);
+
+        let merged = route.merge(&app);
+        assert_eq!(merged.max_message_size, Some(2000), "route value wins");
+        assert_eq!(merged.max_frame_size, None);
+        assert_eq!(
+            merged.idle_timeout,
+            Some(Duration::from_secs(30)),
+            "app default is kept where the route is unset"
+        );
     }
 
     #[test]

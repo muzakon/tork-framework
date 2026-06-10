@@ -23,6 +23,7 @@ use crate::router::{
     BoxFuture, Route, Router, SharedErrorHook, SharedRequestHook, SharedResponseHook,
     SharedValidationErrorHook,
 };
+use crate::ws::{AppWsConfig, WebSocketConfig};
 use crate::server::{run_with_shutdown, shutdown_signal};
 use crate::state::{AppStateRef, StateMap};
 
@@ -80,6 +81,7 @@ pub struct App {
     on_panic: Vec<PanicHook>,
     catch_panics: bool,
     exception_handlers: HashMap<TypeId, ExceptionHandlerFn>,
+    ws_config: Option<WebSocketConfig>,
 }
 
 impl Default for App {
@@ -107,6 +109,7 @@ impl App {
             on_panic: Vec::new(),
             catch_panics: false,
             exception_handlers: HashMap::new(),
+            ws_config: None,
         }
     }
 
@@ -245,6 +248,14 @@ impl App {
         self
     }
 
+    /// Sets default WebSocket limits and timeouts for every `#[websocket]` route.
+    ///
+    /// A route's own `#[websocket(...)]` limits override these defaults.
+    pub fn websocket_config(mut self, config: WebSocketConfig) -> Self {
+        self.ws_config = Some(config);
+        self
+    }
+
     /// Enables the panic boundary: a panic in a handler is caught and turned into
     /// a `500` response instead of dropping the connection.
     ///
@@ -305,7 +316,7 @@ impl App {
         self.validate_lifecycle()?;
 
         let App {
-            state,
+            mut state,
             routers,
             openapi,
             middleware,
@@ -316,8 +327,14 @@ impl App {
             on_panic,
             catch_panics,
             exception_handlers,
+            ws_config,
             ..
         } = self;
+
+        // Make the default WebSocket config available to websocket handlers.
+        if let Some(config) = ws_config {
+            state.insert(AppWsConfig(config));
+        }
 
         let mut routes = Vec::new();
         for router in routers {
