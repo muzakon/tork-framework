@@ -12,6 +12,7 @@ description = "Core runtime for the Tork web framework: HTTP server, routing, de
 hyper.workspace = true
 hyper-util.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true

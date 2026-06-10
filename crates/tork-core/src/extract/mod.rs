@@ -10,6 +10,7 @@
 use std::sync::Mutex;
 
 use http::{HeaderMap, Method, Uri};
+use hyper::upgrade::OnUpgrade;
 
 use crate::body::ReqBody;
 use crate::error::{Error, Result};
@@ -70,21 +71,28 @@ pub struct RequestContext {
     path_params: PathParams,
     state: AppStateRef,
     body: Mutex<Option<ReqBody>>,
+    upgrade: Mutex<Option<OnUpgrade>>,
 }
 
 impl RequestContext {
     /// Builds a new request context.
+    ///
+    /// A pending WebSocket upgrade (hyper's `OnUpgrade`, present on an upgrade
+    /// request) is taken out of the head's extensions so it can be claimed once
+    /// by [`take_upgrade`](RequestContext::take_upgrade).
     pub fn new(
-        head: http::request::Parts,
+        mut head: http::request::Parts,
         path_params: PathParams,
         state: AppStateRef,
         body: ReqBody,
     ) -> Self {
+        let upgrade = head.extensions.remove::<OnUpgrade>();
         Self {
             head,
             path_params,
             state,
             body: Mutex::new(Some(body)),
+            upgrade: Mutex::new(upgrade),
         }
     }
 
@@ -152,6 +160,22 @@ impl RequestContext {
             .take()
             .ok_or_else(|| Error::bad_request("request body has already been consumed"))
     }
+
+    /// Takes the pending WebSocket upgrade.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error (code `NOT_AN_UPGRADE`) if the request is not a WebSocket
+    /// upgrade, or if the upgrade was already taken.
+    pub(crate) fn take_upgrade(&self) -> Result<OnUpgrade> {
+        self.upgrade
+            .lock()
+            .expect("request upgrade mutex poisoned")
+            .take()
+            .ok_or_else(|| {
+                Error::bad_request("request is not a WebSocket upgrade").with_code("NOT_AN_UPGRADE")
+            })
+    }
 }
 
 /// Produces a value from the current request to satisfy a handler parameter.
@@ -203,6 +227,13 @@ mod tests {
 
         let error = __extract_path_param::<i64>(&ctx, "user_id").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Unprocessable);
+    }
+
+    #[test]
+    fn take_upgrade_errors_without_an_upgrade() {
+        let ctx = test_context(PathParams::new(), "");
+        let error = ctx.take_upgrade().unwrap_err();
+        assert_eq!(error.code(), "NOT_AN_UPGRADE");
     }
 
     #[test]

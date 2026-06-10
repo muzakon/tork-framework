@@ -25,6 +25,7 @@ mod server;
 mod service;
 mod sse;
 mod state;
+mod ws;
 
 pub use app::{App, AppInner};
 pub use lifespan::{Lifespan, LifespanContext, ReadyContext};
@@ -48,6 +49,7 @@ pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router, SchemaThunk};
 pub use sse::{Sse, SseEvent};
 pub use state::{AppStateRef, State, StateMap};
+pub use ws::{WebSocket, WebSocketConn, WsClose, WsCloseCode, WsError, WsMessage};
 
 // Commonly used `http` types are re-exported so users do not need to depend on
 // the `http` crate directly.
@@ -65,5 +67,16 @@ pub mod __rt {
             .build()
             .expect("failed to build the Tokio runtime")
             .block_on(future)
+    }
+
+    /// Spawns a background task on the current Tokio runtime.
+    ///
+    /// Used by `#[websocket]` to drive a connection after the upgrade response is
+    /// returned.
+    pub fn spawn<F>(future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        tokio::spawn(future);
     }
 }
