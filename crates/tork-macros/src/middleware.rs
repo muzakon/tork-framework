@@ -7,8 +7,8 @@
 //! conflicts with the built-in middleware structs.
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{FnArg, ItemFn, parse_macro_input};
+use quote::{format_ident, quote};
+use syn::{FnArg, ItemFn, Visibility, parse_macro_input};
 
 use crate::common::krate;
 
@@ -29,19 +29,19 @@ fn expand_fn(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         ));
     }
 
-    let mut params = Vec::new();
-    for input in &func.sig.inputs {
-        match input {
-            FnArg::Typed(pat_type) => params.push((*pat_type.pat).clone()),
-            FnArg::Receiver(receiver) => {
-                return Err(syn::Error::new_spanned(
-                    receiver,
-                    "`#[middleware]` functions cannot take `self`",
-                ));
-            }
-        }
+    let param_count = func
+        .sig
+        .inputs
+        .iter()
+        .filter(|input| matches!(input, FnArg::Typed(_)))
+        .count();
+    if func.sig.inputs.iter().any(|i| matches!(i, FnArg::Receiver(_))) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "`#[middleware]` functions cannot take `self`",
+        ));
     }
-    if params.len() != 2 {
+    if param_count != 2 {
         return Err(syn::Error::new_spanned(
             &func.sig,
             "`#[middleware]` functions must take exactly two parameters: (request, next)",
@@ -49,12 +49,18 @@ fn expand_fn(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     }
 
     let krate = krate();
-    let attrs = &func.attrs;
-    let vis = &func.vis;
-    let ident = &func.sig.ident;
-    let block = &func.block;
-    let request_pat = &params[0];
-    let next_pat = &params[1];
+    let attrs = func.attrs.clone();
+    let vis = func.vis.clone();
+    let ident = func.sig.ident.clone();
+    let inner_ident = format_ident!("__tork_middleware_{}", ident);
+
+    // Keep the user's function verbatim (with its own signature), renamed and
+    // made private; the generated `handle` simply boxes a call to it. This means
+    // the user's parameter and return types are compiled as written.
+    let mut inner = func;
+    inner.attrs.clear();
+    inner.vis = Visibility::Inherited;
+    inner.sig.ident = inner_ident.clone();
 
     Ok(quote! {
         #(#attrs)*
@@ -62,13 +68,15 @@ fn expand_fn(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         #[derive(::core::clone::Clone, ::core::marker::Copy)]
         #vis struct #ident;
 
+        #inner
+
         impl #krate::Middleware for #ident {
             fn handle(
                 &self,
-                #request_pat: #krate::Request,
-                #next_pat: #krate::Next,
+                request: #krate::Request,
+                next: #krate::Next,
             ) -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
-                ::std::boxed::Box::pin(async move #block)
+                ::std::boxed::Box::pin(#inner_ident(request, next))
             }
         }
     })

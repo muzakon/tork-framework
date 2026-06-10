@@ -41,7 +41,7 @@ pub use state::{AppStateRef, State, StateMap};
 
 // Commonly used `http` types are re-exported so users do not need to depend on
 // the `http` crate directly.
-pub use http::{Method, StatusCode};
+pub use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 
 /// Runtime support for the `#[tork::main]` macro.
 ///
