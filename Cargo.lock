@@ -727,6 +727,7 @@ name = "tork"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "flate2",
  "garde",
  "http",
  "http-body-util",

@@ -250,6 +250,62 @@ async fn cors_annotates_actual_request() {
     );
 }
 
+fn large_handler() -> HandlerFn {
+    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
+        Box::pin(async {
+            bytes_response(
+                StatusCode::OK,
+                "text/plain; charset=utf-8",
+                Bytes::from(vec![b'a'; 2000]),
+            )
+        })
+    })
+}
+
+fn app_with_handler<M: Middleware>(mw: M, handler: HandlerFn) -> Arc<tork::AppInner> {
+    Arc::new(
+        App::new()
+            .middleware(mw)
+            .include_router(Router::new().route(Route::new(Method::GET, "/", handler)))
+            .build()
+            .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn compression_gzips_large_responses() {
+    use tork::middleware::Compression;
+
+    let app = app_with_handler(
+        Compression::new().gzip().minimum_size(1000),
+        large_handler(),
+    );
+    let response = app
+        .handle(get_with_headers(&[("accept-encoding", "gzip")]))
+        .await;
+
+    assert_eq!(response.headers().get("content-encoding").unwrap(), "gzip");
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let mut decoder = flate2::read::GzDecoder::new(&body[..]);
+    let mut decoded = Vec::new();
+    std::io::Read::read_to_end(&mut decoder, &mut decoded).unwrap();
+    assert_eq!(decoded, vec![b'a'; 2000]);
+}
+
+#[tokio::test]
+async fn compression_skips_without_accept_encoding() {
+    use tork::middleware::Compression;
+
+    let app = app_with_handler(
+        Compression::new().gzip().minimum_size(1000),
+        large_handler(),
+    );
+    // `request()` carries no Accept-Encoding.
+    let response = app.handle(request()).await;
+    assert!(response.headers().get("content-encoding").is_none());
+}
+
 #[tokio::test]
 async fn request_id_propagates_incoming() {
     use tork::middleware::RequestId;

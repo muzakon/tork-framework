@@ -15,6 +15,7 @@ use crate::response::Response;
 use crate::router::BoxFuture;
 
 pub mod body_limit;
+pub mod compression;
 pub mod cors;
 pub mod https_redirect;
 pub mod proxy_headers;
@@ -24,6 +25,7 @@ pub mod trace;
 pub mod trusted_host;
 
 pub use body_limit::BodyLimit;
+pub use compression::Compression;
 pub use cors::Cors;
 pub use https_redirect::HttpsRedirect;
 pub use proxy_headers::ProxyHeaders;

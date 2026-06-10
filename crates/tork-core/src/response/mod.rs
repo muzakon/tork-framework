@@ -44,6 +44,21 @@ pub fn bytes_response(status: StatusCode, content_type: &'static str, body: Byte
     with_body(status, content_type, body)
 }
 
+/// Splits a response into its head and fully-buffered body bytes.
+///
+/// Used by middleware that needs to inspect or rewrite a response body (such as
+/// compression). The body is `Full<Bytes>`, so collecting it is immediate.
+pub(crate) async fn into_body_bytes(response: Response) -> (http::response::Parts, Bytes) {
+    use http_body_util::BodyExt;
+    let (parts, body) = response.into_parts();
+    let bytes = body
+        .collect()
+        .await
+        .map(|collected| collected.to_bytes())
+        .unwrap_or_default();
+    (parts, bytes)
+}
+
 /// Builds an empty-bodied response carrying only a status code.
 pub(crate) fn empty(status: StatusCode) -> Response {
     let mut response = http::Response::new(RespBody::new(Bytes::new()));
