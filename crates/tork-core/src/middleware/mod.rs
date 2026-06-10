@@ -200,8 +200,10 @@ mod tests {
     }
 
     fn pong_handler() -> HandlerFn {
-        std::sync::Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
-            Box::pin(async { bytes_response(StatusCode::OK, TEXT_PLAIN_UTF8, Bytes::from_static(b"pong")) })
+        std::sync::Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async {
+                Ok(bytes_response(StatusCode::OK, TEXT_PLAIN_UTF8, Bytes::from_static(b"pong")))
+            })
         })
     }
 

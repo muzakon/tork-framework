@@ -40,9 +40,9 @@ async fn add_marker(req: Request, next: Next) -> Result<Response> {
 }
 
 fn ok_handler() -> HandlerFn {
-    std::sync::Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
+    std::sync::Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
         Box::pin(async {
-            bytes_response(StatusCode::OK, "text/plain; charset=utf-8", Bytes::from_static(b"ok"))
+            Ok(bytes_response(StatusCode::OK, "text/plain; charset=utf-8", Bytes::from_static(b"ok")))
         })
     })
 }
@@ -99,10 +99,10 @@ async fn request_id_generates_when_absent() {
 }
 
 fn slow_handler() -> HandlerFn {
-    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
+    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
         Box::pin(async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            bytes_response(StatusCode::OK, "text/plain; charset=utf-8", Bytes::from_static(b"slow"))
+            Ok(bytes_response(StatusCode::OK, "text/plain; charset=utf-8", Bytes::from_static(b"slow")))
         })
     })
 }
@@ -251,13 +251,13 @@ async fn cors_annotates_actual_request() {
 }
 
 fn large_handler() -> HandlerFn {
-    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
+    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
         Box::pin(async {
-            bytes_response(
+            Ok(bytes_response(
                 StatusCode::OK,
                 "text/plain; charset=utf-8",
                 Bytes::from(vec![b'a'; 2000]),
-            )
+            ))
         })
     })
 }

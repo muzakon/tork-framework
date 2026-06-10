@@ -23,7 +23,10 @@ impl AppInner {
             Match::Found { route, params } => {
                 let handler = route.handler().clone();
                 let ctx = RequestContext::new(head, params, self.state().clone(), body);
-                handler(ctx).await
+                match handler(ctx).await {
+                    Ok(response) => response,
+                    Err(error) => error.into_response(),
+                }
             }
             Match::MethodNotAllowed => {
                 Error::method_not_allowed("method not allowed").into_response()
@@ -40,6 +43,7 @@ mod tests {
     use crate::extract::RequestContext;
     use crate::response::Response;
     use crate::router::{BoxFuture, HandlerFn, Route, Router};
+    use crate::error::Result;
     use crate::{Method, StatusCode, json_response};
 
     use bytes::Bytes;
@@ -47,10 +51,10 @@ mod tests {
     use std::sync::Arc;
 
     fn echo_id_handler() -> HandlerFn {
-        Arc::new(|ctx: RequestContext| -> BoxFuture<'static, Response> {
+        Arc::new(|ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             Box::pin(async move {
                 let id = ctx.path_param("user_id").unwrap_or_default().to_owned();
-                json_response(StatusCode::OK, &serde_json::json!({ "id": id }))
+                Ok(json_response(StatusCode::OK, &serde_json::json!({ "id": id })))
             })
         })
     }

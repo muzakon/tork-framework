@@ -154,7 +154,7 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
                 let #ident: #ty = match #krate::__extract_path_param(&ctx, #name) {
                     ::core::result::Result::Ok(value) => value,
                     ::core::result::Result::Err(error) => {
-                        return #krate::IntoResponse::into_response(error);
+                        return ::core::result::Result::Err(error);
                     }
                 };
             });
@@ -172,7 +172,7 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
                 let #ident = match <#ty as #krate::FromRequest>::from_request(&ctx).await {
                     ::core::result::Result::Ok(value) => value,
                     ::core::result::Result::Err(error) => {
-                        return #krate::IntoResponse::into_response(error);
+                        return ::core::result::Result::Err(error);
                     }
                 };
             });
@@ -231,7 +231,8 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
         #[doc(hidden)]
         #vis fn #route_fn() -> #krate::Route {
             let handler: #krate::HandlerFn = ::std::sync::Arc::new(
-                |ctx: #krate::RequestContext| -> #krate::BoxFuture<'static, #krate::Response> {
+                |ctx: #krate::RequestContext|
+                    -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
                     ::std::boxed::Box::pin(async move {
                         #(#bindings)*
                         #finish

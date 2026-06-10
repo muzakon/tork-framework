@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use http::{Method, StatusCode};
 
+use crate::error::Result;
 use crate::extract::RequestContext;
 use crate::response::Response;
 
@@ -24,7 +25,13 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// which is what lets routers store heterogeneous handlers in one table. Exactly
 /// one allocation per request is paid here; all resolution inside the handler is
 /// statically dispatched.
-pub type HandlerFn = Arc<dyn Fn(RequestContext) -> BoxFuture<'static, Response> + Send + Sync>;
+///
+/// A handler returns `Result<Response>` rather than a bare `Response` so that an
+/// extractor, validation, or handler error stays a value (`Err`) until it reaches
+/// the dispatch boundary, where lifecycle hooks and exception handlers can observe
+/// or map it before it is rendered into a response.
+pub type HandlerFn =
+    Arc<dyn Fn(RequestContext) -> BoxFuture<'static, Result<Response>> + Send + Sync>;
 
 /// Produces a JSON Schema for a type, recorded as a function pointer so that
 /// [`RouteMeta`] stays `Copy`-free of any concrete type while still describing
@@ -264,8 +271,8 @@ mod tests {
     use crate::response::empty;
 
     fn dummy_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
-            Box::pin(async { empty(StatusCode::OK) })
+        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async { Ok(empty(StatusCode::OK)) })
         })
     }
 

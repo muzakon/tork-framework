@@ -103,15 +103,22 @@ where
 /// This is generated-code support, not part of the user-facing API. Handlers
 /// return `Result<T>` where `T` is serializable; the route macro feeds that
 /// result and the declared success status here.
+///
+/// A handler error is returned as `Err` rather than rendered here, so that the
+/// dispatch boundary can run lifecycle hooks and exception handlers against the
+/// error value before it becomes a response.
 #[doc(hidden)]
-pub fn __finish<T, E>(result: core::result::Result<T, E>, status: StatusCode) -> Response
+pub fn __finish<T, E>(
+    result: core::result::Result<T, E>,
+    status: StatusCode,
+) -> crate::error::Result<Response>
 where
     T: serde::Serialize,
     E: Into<crate::error::Error>,
 {
     match result {
-        Ok(value) => json::json_response(status, &value),
-        Err(error) => error.into().into_response(),
+        Ok(value) => Ok(json::json_response(status, &value)),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -122,13 +129,16 @@ where
 /// return type. With `response_model` equal to the return type the conversion is
 /// the free identity `From<T> for T`.
 #[doc(hidden)]
-pub fn __finish_into<T, U, E>(result: core::result::Result<T, E>, status: StatusCode) -> Response
+pub fn __finish_into<T, U, E>(
+    result: core::result::Result<T, E>,
+    status: StatusCode,
+) -> crate::error::Result<Response>
 where
     U: From<T> + serde::Serialize,
     E: Into<crate::error::Error>,
 {
     match result {
-        Ok(value) => json::json_response(status, &U::from(value)),
-        Err(error) => error.into().into_response(),
+        Ok(value) => Ok(json::json_response(status, &U::from(value))),
+        Err(error) => Err(error.into()),
     }
 }

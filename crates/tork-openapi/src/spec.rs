@@ -7,8 +7,8 @@ use serde_json::{Map, Value, json};
 
 use tork_core::constants::APPLICATION_JSON;
 use tork_core::{
-    BoxFuture, HandlerFn, Method, OpenApiProvider, RequestContext, Response, Route, StatusCode,
-    bytes_response,
+    BoxFuture, HandlerFn, Method, OpenApiProvider, RequestContext, Response, Result, Route,
+    StatusCode, bytes_response,
 };
 
 /// OpenAPI specification version emitted by the document.
@@ -98,10 +98,11 @@ impl OpenApiProvider for OpenApi {
 
 /// Builds a route that serves a pre-serialized document at `path`.
 fn spec_route(path: &str, body: Bytes) -> Route {
-    let handler: HandlerFn = Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Response> {
-        let body = body.clone();
-        Box::pin(async move { bytes_response(StatusCode::OK, APPLICATION_JSON, body) })
-    });
+    let handler: HandlerFn =
+        Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            let body = body.clone();
+            Box::pin(async move { Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, body)) })
+        });
 
     Route::new(Method::GET, path.to_owned(), handler).summary("OpenAPI specification")
 }
@@ -240,8 +241,8 @@ mod tests {
     use super::*;
 
     fn dummy_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
-            Box::pin(async { bytes_response(StatusCode::OK, APPLICATION_JSON, Bytes::new()) })
+        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async { Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, Bytes::new())) })
         })
     }
 

@@ -115,6 +115,7 @@ fn normalize_request_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Result;
     use crate::response::{Response, empty};
     use crate::router::{BoxFuture, HandlerFn};
     use crate::extract::RequestContext;
@@ -122,8 +123,8 @@ mod tests {
     use std::sync::Arc;
 
     fn dummy_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Response> {
-            Box::pin(async { empty(StatusCode::OK) })
+        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async { Ok(empty(StatusCode::OK)) })
         })
     }
 

@@ -133,9 +133,12 @@ mod tests {
 
     #[tokio::test]
     async fn serves_a_request_over_tcp() {
-        let handler: HandlerFn = Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, TorkResponse> {
-            Box::pin(async { json_response(StatusCode::OK, &serde_json::json!({ "pong": true })) })
-        });
+        let handler: HandlerFn =
+            Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, crate::Result<TorkResponse>> {
+                Box::pin(async {
+                    Ok(json_response(StatusCode::OK, &serde_json::json!({ "pong": true })))
+                })
+            });
         let router = Router::new().route(Route::new(Method::GET, "/ping", handler));
         let app = Arc::new(App::new().include_router(router).build().unwrap());
 

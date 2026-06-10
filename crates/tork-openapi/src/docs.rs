@@ -9,7 +9,8 @@ use bytes::Bytes;
 
 use tork_core::constants::TEXT_HTML_UTF8;
 use tork_core::{
-    BoxFuture, HandlerFn, Method, RequestContext, Response, Route, StatusCode, bytes_response,
+    BoxFuture, HandlerFn, Method, RequestContext, Response, Result, Route, StatusCode,
+    bytes_response,
 };
 
 /// CDN URL for the Scalar API reference standalone bundle.
@@ -21,10 +22,11 @@ const SCALAR_CDN_URL: &str = "https://cdn.jsdelivr.net/npm/@scalar/api-reference
 pub(crate) fn docs_route(path: &str, title: &str, spec_url: &str) -> Route {
     let body = Bytes::from(render_html(title, spec_url));
 
-    let handler: HandlerFn = Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Response> {
-        let body = body.clone();
-        Box::pin(async move { bytes_response(StatusCode::OK, TEXT_HTML_UTF8, body) })
-    });
+    let handler: HandlerFn =
+        Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            let body = body.clone();
+            Box::pin(async move { Ok(bytes_response(StatusCode::OK, TEXT_HTML_UTF8, body)) })
+        });
 
     Route::new(Method::GET, path.to_owned(), handler).summary("API documentation")
 }
