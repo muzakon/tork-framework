@@ -5,11 +5,11 @@
 //! macros still expand, and appends a `router()` function that assembles the
 //! module's routes under a shared prefix and tag set.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Ident, Item, ItemMod, LitStr, Token, bracketed};
+use syn::{Attribute, Ident, Item, ItemMod, LitStr, Meta, Token, bracketed};
 
 use crate::common::krate;
 
@@ -75,8 +75,8 @@ pub fn expand(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> p
 
 /// Builds the re-emitted module with an appended `router()` function.
 fn expand_module(args: ApiRouterArgs, module: ItemMod) -> syn::Result<TokenStream> {
-    let items = match &module.content {
-        Some((_brace, items)) => items,
+    let mut items = match &module.content {
+        Some((_brace, items)) => items.clone(),
         None => {
             return Err(syn::Error::new_spanned(
                 &module,
@@ -93,6 +93,21 @@ fn expand_module(args: ApiRouterArgs, module: ItemMod) -> syn::Result<TokenStrea
             _ => None,
         })
         .collect();
+
+    // Inject the router prefix into each route attribute so that path parameters
+    // declared in the prefix are classified correctly by the route macro.
+    if let Some(prefix) = &args.prefix {
+        let prefix_value = prefix.value();
+        for item in &mut items {
+            if let Item::Fn(func) = item {
+                for attr in &mut func.attrs {
+                    if is_route_attr(attr) {
+                        inject_prefix_hint(attr, &prefix_value);
+                    }
+                }
+            }
+        }
+    }
 
     let krate = krate();
 
@@ -133,6 +148,18 @@ fn expand_module(args: ApiRouterArgs, module: ItemMod) -> syn::Result<TokenStrea
             #router_fn
         }
     })
+}
+
+/// Appends a hidden `__prefix = "<prefix>"` argument to a route attribute.
+///
+/// The route macro uses this only to classify path parameters; the route's
+/// stored path remains the local one, so router composition is unaffected.
+fn inject_prefix_hint(attr: &mut Attribute, prefix: &str) {
+    if let Meta::List(list) = &mut attr.meta {
+        let existing = &list.tokens;
+        let prefix_lit = LitStr::new(prefix, Span::call_site());
+        list.tokens = quote! { #existing, __prefix = #prefix_lit };
+    }
 }
 
 /// Returns `true` if `attr` is one of the route macros.

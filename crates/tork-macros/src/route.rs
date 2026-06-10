@@ -20,6 +20,10 @@ struct RouteArgs {
     description: Option<LitStr>,
     status_code: Option<Expr>,
     tags: Vec<LitStr>,
+    /// Enclosing router prefix, injected by `#[api_router]` so that path
+    /// parameters declared in the prefix are classified correctly. Not part of
+    /// the public attribute surface.
+    prefix_hint: Option<LitStr>,
 }
 
 impl Parse for RouteArgs {
@@ -38,6 +42,7 @@ impl Parse for RouteArgs {
             description: None,
             status_code: None,
             tags: Vec::new(),
+            prefix_hint: None,
         };
 
         while !input.is_empty() {
@@ -54,6 +59,7 @@ impl Parse for RouteArgs {
                 "summary" => args.summary = Some(input.parse()?),
                 "description" => args.description = Some(input.parse()?),
                 "status_code" => args.status_code = Some(input.parse()?),
+                "__prefix" => args.prefix_hint = Some(input.parse()?),
                 "tags" => {
                     let content;
                     bracketed!(content in input);
@@ -103,7 +109,13 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     let method_ident = Ident::new(method, Span::call_site());
     let path = &args.path;
 
-    let placeholders = path_param_names(&args.path.value());
+    // Classify against the full path (enclosing prefix + local path), so path
+    // parameters declared in an `#[api_router]` prefix are recognized.
+    let full_path = match &args.prefix_hint {
+        Some(prefix) => format!("{}{}", prefix.value(), args.path.value()),
+        None => args.path.value(),
+    };
+    let placeholders = path_param_names(&full_path);
 
     // Build one binding per handler parameter, plus the call argument list.
     let mut bindings = Vec::new();

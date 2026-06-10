@@ -9,6 +9,7 @@ use proc_macro::TokenStream;
 
 mod api_router;
 mod common;
+mod dependency;
 mod main_macro;
 mod route;
 
@@ -53,6 +54,27 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn api_router(attr: TokenStream, item: TokenStream) -> TokenStream {
     api_router::expand(attr, item)
+}
+
+/// Turns a type into a request dependency.
+///
+/// Applied to an `impl` block containing an async `resolve` function, it
+/// generates a `FromRequest` implementation. Each parameter of `resolve` is
+/// itself resolved through `FromRequest` (recursively), then `resolve` is called.
+///
+/// # Example
+///
+/// ```ignore
+/// #[tork::dependency]
+/// impl CurrentUser {
+///     pub async fn resolve(token: BearerToken, users: UserRepository) -> tork::Result<Self> {
+///         // ...resolve the current user from the token...
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn dependency(attr: TokenStream, item: TokenStream) -> TokenStream {
+    dependency::expand(attr, item)
 }
 
 /// Declares a `GET` route. See [`macro@get`] and the other method macros for the

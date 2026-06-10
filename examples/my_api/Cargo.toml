@@ -8,3 +8,9 @@ description = "Example application demonstrating the Tork web framework."
 [dependencies]
 tork = { path = "../../crates/tork" }
 serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
