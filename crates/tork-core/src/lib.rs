@@ -18,6 +18,7 @@ mod hooks;
 mod lifespan;
 pub mod middleware;
 mod openapi;
+mod realtime;
 mod resources;
 mod response;
 mod router;
@@ -42,6 +43,10 @@ pub use hooks::{
     ErrorContext, ErrorEvent, PanicEvent, RequestEvent, ResponseEvent, ValidationErrorEvent,
 };
 pub use openapi::OpenApiProvider;
+pub use realtime::{Hub, Room};
+// Re-exported so WebSocket handlers can name a subscription without depending on
+// tokio directly.
+pub use tokio::sync::broadcast::Receiver as WsReceiver;
 pub use response::{
     IntoResponse, Json, Response, __finish, __finish_into, bytes_response, json_response,
 };
