@@ -9,7 +9,7 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitStr, Pat, PathArguments,
+    Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitStr, Pat, Path, PathArguments,
     ReturnType, Token, Type, bracketed,
 };
 
@@ -23,6 +23,12 @@ struct RouteArgs {
     description: Option<LitStr>,
     status_code: Option<Expr>,
     tags: Vec<LitStr>,
+    /// Scoped observability hooks attached to this route, by function path. Each
+    /// kind is repeatable.
+    on_request: Vec<Path>,
+    on_response: Vec<Path>,
+    on_error: Vec<Path>,
+    on_validation_error: Vec<Path>,
     /// Enclosing router prefix, injected by `#[api_router]` so that path
     /// parameters declared in the prefix are classified correctly. Not part of
     /// the public attribute surface.
@@ -45,6 +51,10 @@ impl Parse for RouteArgs {
             description: None,
             status_code: None,
             tags: Vec::new(),
+            on_request: Vec::new(),
+            on_response: Vec::new(),
+            on_error: Vec::new(),
+            on_validation_error: Vec::new(),
             prefix_hint: None,
         };
 
@@ -62,6 +72,10 @@ impl Parse for RouteArgs {
                 "summary" => args.summary = Some(input.parse()?),
                 "description" => args.description = Some(input.parse()?),
                 "status_code" => args.status_code = Some(input.parse()?),
+                "on_request" => args.on_request.push(input.parse()?),
+                "on_response" => args.on_response.push(input.parse()?),
+                "on_error" => args.on_error.push(input.parse()?),
+                "on_validation_error" => args.on_validation_error.push(input.parse()?),
                 "__prefix" => args.prefix_hint = Some(input.parse()?),
                 "tags" => {
                     let content;
@@ -213,6 +227,20 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     }
     if let Some(schema_ty) = &response_schema_ty {
         builder = quote! { #builder.response_schema::<#schema_ty>() };
+    }
+
+    // Scoped, route-level observability hooks, by function path.
+    for hook in &args.on_request {
+        builder = quote! { #builder.on_request(#hook) };
+    }
+    for hook in &args.on_response {
+        builder = quote! { #builder.on_response(#hook) };
+    }
+    for hook in &args.on_error {
+        builder = quote! { #builder.on_error(#hook) };
+    }
+    for hook in &args.on_validation_error {
+        builder = quote! { #builder.on_validation_error(#hook) };
     }
 
     // When a response model is declared, convert the handler's value into it
