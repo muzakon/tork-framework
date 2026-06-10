@@ -1,6 +1,6 @@
 //! Routes that demonstrate the hooks, error-handling, and streaming surface.
 
-use tork::{LastEventId, RequestEvent, Sse, SseEvent, api_router, get, sse};
+use tork::{LastEventId, RequestEvent, Sse, SseEvent, WebSocket, WsMessage, api_router, get, sse, websocket};
 
 use crate::core::errors::RepoError;
 use crate::models::event::EventOut;
@@ -52,6 +52,21 @@ pub mod demo_router {
         }));
 
         Ok(Sse::events(events))
+    }
+
+    /// Echoes every message back to the client over a WebSocket.
+    #[websocket("/ws", summary = "Echo WebSocket")]
+    pub async fn ws_echo(socket: WebSocket) -> tork::Result<()> {
+        let mut socket = socket.accept().await?;
+        while let Some(message) = socket.recv().await? {
+            match message {
+                WsMessage::Text(text) => socket.send_text(text).await?,
+                WsMessage::Binary(bytes) => socket.send_binary(bytes).await?,
+                WsMessage::Close(_) => break,
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 
