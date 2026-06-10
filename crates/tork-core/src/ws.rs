@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use garde::Validate;
 use http::header::{
     CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE,
 };
@@ -381,6 +382,26 @@ impl WebSocketConn {
         Ok(None)
     }
 
+    /// Receives the next message, deserializes it from JSON, and validates it.
+    ///
+    /// Like [`receive_json`](WebSocketConn::receive_json) but also runs the
+    /// type's `garde` validation; an invalid message is a `422` error whose body
+    /// lists the offending fields. Returns `None` if the peer closes.
+    pub async fn receive_valid<T>(&mut self) -> Result<Option<T>>
+    where
+        T: DeserializeOwned + Validate<Context = ()>,
+    {
+        while let Some(message) = self.recv().await? {
+            return match message {
+                WsMessage::Text(text) => deserialize_and_validate::<T>(text.as_bytes()).map(Some),
+                WsMessage::Binary(bytes) => deserialize_and_validate::<T>(&bytes).map(Some),
+                WsMessage::Close(_) => Ok(None),
+                _ => continue,
+            };
+        }
+        Ok(None)
+    }
+
     /// Serializes `value` to JSON and sends it as a text message.
     pub async fn send_json<T: Serialize>(&mut self, value: &T) -> Result<()> {
         let text = serde_json::to_string(value)
@@ -454,6 +475,17 @@ pub fn __ws_handshake(ctx: &RequestContext) -> Result<Response> {
     headers.insert(CONNECTION, HeaderValue::from_static("upgrade"));
     headers.insert(SEC_WEBSOCKET_ACCEPT, accept);
     Ok(response)
+}
+
+/// Deserializes a JSON message and runs its `garde` validation.
+fn deserialize_and_validate<T>(bytes: &[u8]) -> Result<T>
+where
+    T: DeserializeOwned + Validate<Context = ()>,
+{
+    let value: T = serde_json::from_slice(bytes)
+        .map_err(|error| Error::unprocessable(format!("invalid JSON message: {error}")))?;
+    value.validate().map_err(Error::from_garde_report)?;
+    Ok(value)
 }
 
 /// Maps a framework message to a tungstenite message.
@@ -550,5 +582,23 @@ mod tests {
         let error: Error = WsError::policy_violation("no token").into();
         assert_eq!(error.kind(), crate::ErrorKind::Forbidden);
         assert_eq!(error.code(), "WS_REJECTED");
+    }
+
+    #[derive(serde::Deserialize, garde::Validate)]
+    struct ChatIn {
+        #[garde(length(min = 1))]
+        message: String,
+    }
+
+    #[test]
+    fn deserialize_and_validate_accepts_valid_and_rejects_invalid() {
+        let ok = deserialize_and_validate::<ChatIn>(br#"{"message":"hi"}"#);
+        assert!(ok.is_ok());
+
+        let empty = deserialize_and_validate::<ChatIn>(br#"{"message":""}"#);
+        assert_eq!(empty.err().unwrap().kind(), crate::ErrorKind::Unprocessable);
+
+        let malformed = deserialize_and_validate::<ChatIn>(b"not json");
+        assert_eq!(malformed.err().unwrap().kind(), crate::ErrorKind::Unprocessable);
     }
 }

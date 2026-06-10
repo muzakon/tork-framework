@@ -21,7 +21,7 @@ pub mod header;
 pub mod path;
 pub mod valid;
 
-pub use header::{BearerToken, LastEventId};
+pub use header::{BearerToken, LastEventId, SseResume};
 pub use path::{FromPathParam, __extract_path_param};
 pub use valid::Valid;
 

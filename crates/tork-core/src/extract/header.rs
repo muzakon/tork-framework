@@ -65,6 +65,41 @@ impl FromRequest for LastEventId {
     }
 }
 
+/// The `Last-Event-ID` header parsed into a typed resume cursor.
+///
+/// A thin, typed layer over [`LastEventId`] for resuming an SSE stream: the
+/// header value is parsed into `T` (a parse failure yields `None`, as does a
+/// missing header). Resolving never fails.
+pub struct SseResume<T>(Option<T>);
+
+impl<T> SseResume<T> {
+    /// Returns the parsed last event id, if the client sent a valid one.
+    pub fn last_id(&self) -> Option<&T> {
+        self.0.as_ref()
+    }
+
+    /// Consumes the extractor, returning the parsed last event id if present.
+    pub fn into_inner(self) -> Option<T> {
+        self.0
+    }
+}
+
+impl<T> FromRequest for SseResume<T>
+where
+    T: std::str::FromStr + Send,
+{
+    fn from_request(
+        ctx: &RequestContext,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send {
+        let parsed = ctx
+            .headers()
+            .get(HeaderName::from_static(LAST_EVENT_ID_HEADER))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<T>().ok());
+        async move { Ok(SseResume(parsed)) }
+    }
+}
+
 /// Parses the bearer token out of the request's `Authorization` header.
 fn resolve(ctx: &RequestContext) -> Result<BearerToken> {
     let header = ctx
@@ -115,5 +150,17 @@ mod tests {
         let ctx = context_with(None);
         let id = LastEventId::from_request(&ctx).await.unwrap();
         assert_eq!(id.into_inner(), None);
+    }
+
+    #[tokio::test]
+    async fn sse_resume_parses_a_typed_cursor() {
+        let ctx = context_with(Some(("last-event-id", "42")));
+        let resume = SseResume::<i64>::from_request(&ctx).await.unwrap();
+        assert_eq!(resume.last_id().copied(), Some(42));
+
+        // A non-numeric value yields None for an i64 cursor.
+        let ctx = context_with(Some(("last-event-id", "abc")));
+        let resume = SseResume::<i64>::from_request(&ctx).await.unwrap();
+        assert_eq!(resume.into_inner(), None);
     }
 }
