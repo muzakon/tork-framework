@@ -11,8 +11,10 @@ mod api_model;
 mod api_router;
 mod common;
 mod dependency;
+mod inject;
 mod main_macro;
 mod middleware;
+mod resources;
 mod route;
 
 /// Marks the asynchronous entrypoint of a Tork application.
@@ -107,6 +109,25 @@ pub fn dependency(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
     api_model::expand(attr, item)
+}
+
+/// Declares a resource container.
+///
+/// Generates a `Resources` implementation that registers each `#[resource]`
+/// field by type, and a `FromRequest` implementation for each resource type so
+/// it can be injected directly.
+#[proc_macro_derive(Resources, attributes(resource))]
+pub fn derive_resources(item: TokenStream) -> TokenStream {
+    resources::expand(item)
+}
+
+/// Derives request-time construction by injecting each field.
+///
+/// Generates a `FromRequest` implementation that resolves every field through
+/// `FromRequest` (a resource, another `Inject` service, or a built-in extractor).
+#[proc_macro_derive(Inject)]
+pub fn derive_inject(item: TokenStream) -> TokenStream {
+    inject::expand(item)
 }
 
 /// Turns an async function into a middleware layer.
