@@ -329,7 +329,8 @@ mod tests {
                     "Failure"
                 );
             });
-            String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+            let bytes = buffer.lock().unwrap().clone();
+            String::from_utf8(bytes).unwrap()
         };
         assert!(output.contains("\u{1b}[31m"), "{output}");
         assert!(output.contains("error={\"kind\":\"boom\"}"), "{output}");
@@ -355,7 +356,8 @@ mod tests {
                     "Retry"
                 );
             });
-            String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+            let bytes = buffer.lock().unwrap().clone();
+            String::from_utf8(bytes).unwrap()
         };
         assert!(output.contains("\"service\":\"svc\""), "{output}");
         assert!(output.contains("\"context\":\"Orders\""), "{output}");
