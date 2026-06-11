@@ -16,6 +16,7 @@ mod error;
 mod extract;
 mod hooks;
 mod lifespan;
+mod logging;
 pub mod middleware;
 mod multipart;
 mod openapi;
@@ -33,6 +34,7 @@ mod ws;
 
 pub use app::{App, AppInner, TestApp};
 pub use lifespan::{Lifespan, LifespanContext, ReadyContext};
+pub use logging::{FileLogConfig, LogFormat, LoggerConfig, Rotation, TelemetryConfig};
 pub use middleware::{DuplicatePolicy, Middleware, Next, Request};
 pub use multipart::{FileBytes, Form, FromMultipart, Multipart, UploadConfig, UploadFile};
 #[doc(hidden)]

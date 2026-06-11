@@ -77,6 +77,17 @@ schemars = "1"
 figment = { version = "0.10", features = ["env", "toml"] }
 dotenvy = "0.15"
 
+# Logging and tracing.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+    "json",
+    "registry",
+    "ansi",
+] }
+tracing-appender = "0.2"
+
 # Error-response metadata: trace identifiers and timestamps.
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting"] }
