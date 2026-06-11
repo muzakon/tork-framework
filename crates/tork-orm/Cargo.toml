@@ -1,0 +1,26 @@
+[package]
+name = "tork-orm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A Tortoise-style async ORM for Rust with typed queries and a dialect-agnostic core, native to the Tork web framework."
+
+[dependencies]
+tork-orm-core = { workspace = true, default-features = false }
+tork-orm-macros = { workspace = true }
+
+[features]
+default = ["sqlite", "tork"]
+# Bundled SQLite backend.
+sqlite = ["tork-orm-core/sqlite"]
+# Reserved for future backends.
+postgres = ["tork-orm-core/postgres"]
+mysql = ["tork-orm-core/mysql"]
+# Native integration with the Tork web framework.
+tork = ["tork-orm-core/tork"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

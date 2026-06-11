@@ -1,0 +1,29 @@
+[package]
+name = "tork-orm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core runtime for the Tork ORM: dialect-agnostic query model, typed columns, and database drivers."
+
+[dependencies]
+tokio = { workspace = true }
+time = { workspace = true, features = ["formatting", "parsing", "macros"] }
+rusqlite = { workspace = true, optional = true }
+tork-core = { workspace = true, optional = true }
+
+[features]
+default = ["sqlite", "tork"]
+# Bundled SQLite backend. The only database backend in this phase.
+sqlite = ["dep:rusqlite"]
+# Reserved for future backends; each adds its own driver and dialect.
+postgres = []
+mysql = []
+# Native integration with the Tork web framework (error bridge and resource
+# injection). Disable for a standalone async ORM.
+tork = ["dep:tork-core"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
