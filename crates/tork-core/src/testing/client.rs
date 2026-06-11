@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 
 use super::TestOverrides;
 use super::cookie::CookieJar;
+use super::recorder::LogRecorder;
 use super::request::{PendingBody, TestRequestBuilder};
 use super::response::TestResponse;
 use super::websocket::TestWebSocketBuilder;
@@ -233,6 +234,9 @@ impl Shared {
 pub struct TestClient {
     shared: Arc<Shared>,
     teardown: Teardown,
+    // Routes this client's logs to a recorder for the test's lifetime. Held to
+    // keep the thread-local subscriber active; `None` without a recorder.
+    _log_guard: Option<tracing::subscriber::DefaultGuard>,
 }
 
 /// How a client tears down when finished.
@@ -256,6 +260,7 @@ impl TestClient {
                 cookies: Mutex::new(CookieJar::default()),
             }),
             teardown: Teardown::InProcess(Box::new(app)),
+            _log_guard: None,
         })
     }
 
@@ -368,6 +373,7 @@ impl ServeBuilder {
                 shutdown: Some(shutdown_tx),
                 handle,
             },
+            _log_guard: None,
         })
     }
 }
@@ -380,6 +386,7 @@ pub struct TestClientBuilder {
     overrides: TestOverrides,
     default_headers: HeaderMap,
     cookies: CookieJar,
+    recorder: Option<LogRecorder>,
 }
 
 impl TestClientBuilder {
@@ -390,7 +397,17 @@ impl TestClientBuilder {
             overrides: TestOverrides::default(),
             default_headers: HeaderMap::new(),
             cookies: CookieJar::default(),
+            recorder: None,
         }
+    }
+
+    /// Captures this client's logs into `recorder` for the test's lifetime.
+    ///
+    /// Works with the default current-thread test runtime: the recorder is set as
+    /// the thread's subscriber while the client is alive.
+    pub fn logger(mut self, recorder: LogRecorder) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     /// Registers (or overrides) a resource by type, applied after startup so it
@@ -439,6 +456,7 @@ impl TestClientBuilder {
         let overrides = self.overrides;
         let default_headers = self.default_headers;
         let cookies = self.cookies;
+        let recorder = self.recorder;
 
         let app = self
             .app
@@ -452,6 +470,13 @@ impl TestClientBuilder {
             })
             .await?;
 
+        // Route this client's logs to the recorder via a thread-local subscriber.
+        let log_guard = recorder.map(|recorder| {
+            use tracing_subscriber::layer::SubscriberExt;
+            let subscriber = tracing_subscriber::registry().with(recorder);
+            tracing::subscriber::set_default(subscriber)
+        });
+
         Ok(TestClient {
             shared: Arc::new(Shared {
                 transport: Transport::InProcess(app.inner.clone()),
@@ -459,6 +484,7 @@ impl TestClientBuilder {
                 cookies: Mutex::new(cookies),
             }),
             teardown: Teardown::InProcess(Box::new(app)),
+            _log_guard: log_guard,
         })
     }
 }

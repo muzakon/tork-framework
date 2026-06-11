@@ -15,12 +15,14 @@ use crate::extract::RequestContext;
 
 mod client;
 mod cookie;
+mod recorder;
 mod request;
 mod response;
 mod sse;
 mod websocket;
 
 pub use client::{TestClient, TestClientBuilder};
+pub use recorder::{LogRecord, LogRecorder};
 pub use request::{TestMultipartBuilder, TestRequestBuilder};
 pub use response::TestResponse;
 pub use sse::{TestSseEvent, TestSseStream};
