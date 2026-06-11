@@ -3,14 +3,16 @@
 use std::time::Instant;
 
 use crate::error::Result;
+use crate::logging::Logger;
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
 use crate::response::Response;
 use crate::router::BoxFuture;
 
 /// Logs each request's method, path, resulting status, and elapsed time.
 ///
-/// This is the framework's minimal default tracing sink (standard error); a
-/// pluggable logging hook is planned for a later phase.
+/// This logs before routing (so it covers short-circuited and unmatched requests);
+/// the framework's built-in HTTP log already covers matched routes, so this
+/// middleware is only needed when pre-routing coverage is wanted.
 pub struct Trace;
 
 impl Trace {
@@ -39,7 +41,13 @@ impl Middleware for Trace {
                 Ok(response) => response.status(),
                 Err(error) => error.kind().status(),
             };
-            eprintln!("tork: {method} {path} -> {} ({elapsed:?})", status.as_u16());
+            Logger::framework("HTTP")
+                .info(format!("{method} {path} {}", status.as_u16()))
+                .field("method", method.as_str())
+                .field("path", &path)
+                .field("status", status.as_u16())
+                .field("duration_ms", elapsed.as_millis() as u64)
+                .emit();
             result
         })
     }

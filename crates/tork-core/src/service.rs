@@ -6,8 +6,10 @@ use std::time::Instant;
 
 use futures_util::FutureExt;
 use http::Request;
+use tracing::Instrument;
 
 use crate::app::{AppInner, fire_request_hooks, fire_response_hooks, request_info};
+use crate::logging::Logger;
 use crate::body::ReqBody;
 use crate::error::Error;
 use crate::extract::RequestContext;
@@ -42,8 +44,30 @@ impl AppInner {
                 }
 
                 let started = info.as_ref().map(|_| Instant::now());
+
+                // Capture request metadata before the head is moved, for the
+                // request span and the automatic HTTP log.
+                let method = head.method.clone();
+                let request_path = head.uri.path().to_owned();
+                let route_path = route.path().to_owned();
+                let request_id = head
+                    .headers
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let request_started = Instant::now();
+
+                // A per-request span groups the handler's logs and carries the
+                // correlation fields for trace exporters.
+                let span = tracing::info_span!(
+                    "request",
+                    method = %method,
+                    route = %route_path,
+                    request_id = request_id.as_deref().unwrap_or("")
+                );
+
                 let ctx = RequestContext::new(head, params, self.state().clone(), body);
-                let future = handler(ctx);
+                let future = handler(ctx).instrument(span);
 
                 // With the panic boundary enabled, a handler panic becomes a 500
                 // (and fires the panic hooks) instead of tearing down the task.
@@ -74,6 +98,23 @@ impl AppInner {
                     let elapsed = started.map(|start| start.elapsed()).unwrap_or_default();
                     fire_response_hooks(route.response_hooks(), info, response.status(), elapsed)
                         .await;
+                }
+
+                // The automatic HTTP request-completed log.
+                if self.request_logs() {
+                    let status = response.status().as_u16();
+                    let mut logger = Logger::framework("HTTP");
+                    if let Some(request_id) = &request_id {
+                        logger = logger.with_field("request_id", request_id.clone());
+                    }
+                    logger
+                        .info(format!("{method} {request_path} {status}"))
+                        .field("method", method.as_str())
+                        .field("path", &request_path)
+                        .field("route", &route_path)
+                        .field("status", status)
+                        .field("duration_ms", request_started.elapsed().as_millis() as u64)
+                        .emit();
                 }
 
                 response

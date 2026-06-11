@@ -400,8 +400,14 @@ impl App {
             on_ws_connect,
             on_ws_disconnect,
             upload_config,
+            logger_config,
             ..
         } = self;
+        // The automatic HTTP request log is on unless the logger config disables it.
+        let request_logs = logger_config
+            .as_ref()
+            .map(|config| config.request_logs)
+            .unwrap_or(true);
 
         // Make the default WebSocket config available to websocket handlers.
         if let Some(config) = ws_config {
@@ -447,6 +453,7 @@ impl App {
             on_validation_error: on_validation_error.into(),
             on_panic: on_panic.into(),
             catch_panics,
+            request_logs,
             exception_handlers: Arc::new(exception_handlers),
         })
     }
@@ -478,7 +485,8 @@ impl App {
 
         // Install the global logging subscriber first, so the whole lifecycle is
         // logged. The handle is kept alive for the duration of the run.
-        let logger_config = self.logger_config.take().unwrap_or_default();
+        // Clone (not take) so `build` can still read it for the request-log flag.
+        let logger_config = self.logger_config.clone().unwrap_or_default();
         let _logger_handle = install_logging(&logger_config);
         let log = Logger::framework("Tork");
 
@@ -642,6 +650,7 @@ pub struct AppInner {
     on_validation_error: Arc<[ValidationErrorHook]>,
     on_panic: Arc<[PanicHook]>,
     catch_panics: bool,
+    request_logs: bool,
     exception_handlers: Arc<HashMap<TypeId, ExceptionHandlerFn>>,
 }
 
@@ -714,6 +723,11 @@ impl AppInner {
     /// Reports whether the panic boundary is enabled.
     pub(crate) fn catch_panics(&self) -> bool {
         self.catch_panics
+    }
+
+    /// Reports whether the automatic HTTP request log is enabled.
+    pub(crate) fn request_logs(&self) -> bool {
+        self.request_logs
     }
 
     /// Runs the panic hooks for a caught handler panic.
