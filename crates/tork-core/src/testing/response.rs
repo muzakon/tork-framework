@@ -49,3 +49,54 @@ impl TestResponse {
             .map_err(|error| Error::internal(format!("response body is not valid JSON: {error}")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use http::HeaderValue;
+    use serde::Deserialize;
+
+    fn response(body: &[u8]) -> TestResponse {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-test", HeaderValue::from_static("ok"));
+        TestResponse {
+            status: StatusCode::CREATED,
+            headers,
+            body: Bytes::copy_from_slice(body),
+        }
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Payload {
+        ok: bool,
+    }
+
+    #[tokio::test]
+    async fn exposes_status_headers_bytes_and_json() {
+        let response = response(br#"{"ok":true}"#);
+
+        assert_eq!(response.status(), 201);
+        assert_eq!(response.status_code(), StatusCode::CREATED);
+        assert_eq!(response.headers()["x-test"], "ok");
+        assert_eq!(response.bytes(), Bytes::from_static(br#"{"ok":true}"#));
+        assert_eq!(response.text().unwrap(), r#"{"ok":true}"#);
+        assert_eq!(response.json::<Payload>().await.unwrap(), Payload { ok: true });
+    }
+
+    #[test]
+    fn text_rejects_invalid_utf8() {
+        let response = response(&[0xff, 0xfe]);
+
+        let error = response.text().unwrap_err();
+        assert_eq!(error.message(), "response body is not valid UTF-8");
+    }
+
+    #[tokio::test]
+    async fn json_rejects_invalid_payload() {
+        let response = response(br#"{"ok":"wrong"}"#);
+
+        let error = response.json::<Payload>().await.unwrap_err();
+        assert!(error.message().starts_with("response body is not valid JSON:"));
+    }
+}

@@ -321,3 +321,35 @@ fn closed_error() -> Error {
 fn decode_error(error: serde_json::Error) -> Error {
     Error::internal(format!("message is not valid JSON: {error}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_error_uses_stable_code() {
+        let error = rejected(StatusCode::FORBIDDEN);
+
+        assert_eq!(error.code(), "WS_UPGRADE_REJECTED");
+        assert_eq!(
+            error.message(),
+            "websocket upgrade rejected with status 403 Forbidden"
+        );
+    }
+
+    #[test]
+    fn closed_error_uses_stable_code() {
+        let error = closed_error();
+
+        assert_eq!(error.code(), "WS_CLOSED");
+        assert_eq!(error.message(), "websocket connection closed");
+    }
+
+    #[test]
+    fn decode_error_reports_json_failure() {
+        let source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let error = decode_error(source);
+
+        assert!(error.message().starts_with("message is not valid JSON:"));
+    }
+}

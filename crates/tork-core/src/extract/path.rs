@@ -44,3 +44,41 @@ pub fn __extract_path_param<T: FromPathParam>(ctx: &RequestContext, name: &str) 
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::body::box_body;
+    use crate::extract::PathParams;
+    use crate::state::StateMap;
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use std::sync::Arc;
+
+    fn context(params: PathParams) -> RequestContext {
+        let head = http::Request::new(()).into_parts().0;
+        let body = box_body(Full::new(Bytes::new()));
+        RequestContext::new(head, params, Arc::new(StateMap::new()), body)
+    }
+
+    #[test]
+    fn missing_param_is_internal_router_error() {
+        let error = __extract_path_param::<i64>(&context(PathParams::new()), "user_id").unwrap_err();
+
+        assert_eq!(error.kind(), crate::error::ErrorKind::Internal);
+        assert_eq!(
+            error.message(),
+            "path parameter `user_id` was not captured by the router"
+        );
+    }
+
+    #[test]
+    fn invalid_param_is_unprocessable() {
+        let mut params = PathParams::new();
+        params.push("user_id".to_owned(), "abc".to_owned());
+
+        let error = __extract_path_param::<i64>(&context(params), "user_id").unwrap_err();
+        assert_eq!(error.kind(), crate::error::ErrorKind::Unprocessable);
+        assert_eq!(error.message(), "invalid value for path parameter `user_id`");
+    }
+}

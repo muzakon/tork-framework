@@ -488,3 +488,64 @@ impl TestClientBuilder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use bytes::Bytes;
+    use http::header::{CONTENT_TYPE, COOKIE};
+
+    fn shared() -> Shared {
+        let mut default_headers = HeaderMap::new();
+        default_headers.insert("x-default", HeaderValue::from_static("on"));
+        let mut cookies = CookieJar::default();
+        cookies.set("sid", "abc");
+        Shared {
+            transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
+            default_headers,
+            cookies: Mutex::new(cookies),
+        }
+    }
+
+    #[test]
+    fn build_request_merges_defaults_headers_cookies_and_content_type() {
+        let request = shared()
+            .build_request(
+                Method::POST,
+                "/items",
+                &[("q".to_owned(), "hello world".to_owned())],
+                vec![(
+                    HeaderName::from_static("x-custom"),
+                    HeaderValue::from_static("yes"),
+                )],
+                PendingBody {
+                    content_type: Some(HeaderValue::from_static("application/json")),
+                    bytes: Bytes::from_static(b"{}"),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(request.uri(), "/items?q=hello+world");
+        assert_eq!(request.headers()["x-default"], "on");
+        assert_eq!(request.headers()["x-custom"], "yes");
+        assert_eq!(request.headers()[COOKIE], "sid=abc");
+        assert_eq!(request.headers()[CONTENT_TYPE], "application/json");
+    }
+
+    #[test]
+    fn build_request_rejects_invalid_uri() {
+        let error = shared()
+            .build_request(
+                Method::GET,
+                "http://[",
+                &[],
+                Vec::new(),
+                PendingBody::default(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
+        assert!(error.message().starts_with("invalid request URI:"));
+    }
+}

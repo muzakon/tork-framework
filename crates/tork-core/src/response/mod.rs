@@ -142,3 +142,71 @@ where
         Err(error) => Err(error.into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Error;
+    use bytes::Bytes;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct Payload {
+        id: i64,
+    }
+
+    #[derive(Serialize)]
+    struct RawPayload {
+        id: i64,
+    }
+
+    impl From<RawPayload> for Payload {
+        fn from(value: RawPayload) -> Self {
+            Self { id: value.id }
+        }
+    }
+
+    #[tokio::test]
+    async fn status_code_and_unit_into_response_are_empty() {
+        let status = StatusCode::NO_CONTENT.into_response();
+        let unit = ().into_response();
+
+        let (status_parts, status_body) = into_body_bytes(status).await;
+        let (unit_parts, unit_body) = into_body_bytes(unit).await;
+
+        assert_eq!(status_parts.status, StatusCode::NO_CONTENT);
+        assert_eq!(status_body, Bytes::new());
+        assert_eq!(unit_parts.status, StatusCode::OK);
+        assert_eq!(unit_body, Bytes::new());
+    }
+
+    #[tokio::test]
+    async fn finish_helpers_serialize_success_values() {
+        let direct = __finish::<_, Error>(Ok(Payload { id: 7 }), StatusCode::CREATED).unwrap();
+        let mapped =
+            __finish_into::<_, Payload, Error>(Ok(RawPayload { id: 9 }), StatusCode::ACCEPTED)
+                .unwrap();
+
+        let (direct_parts, direct_body) = into_body_bytes(direct).await;
+        let (mapped_parts, mapped_body) = into_body_bytes(mapped).await;
+
+        assert_eq!(direct_parts.status, StatusCode::CREATED);
+        assert_eq!(mapped_parts.status, StatusCode::ACCEPTED);
+        assert_eq!(direct_body, Bytes::from_static(br#"{"id":7}"#));
+        assert_eq!(mapped_body, Bytes::from_static(br#"{"id":9}"#));
+    }
+
+    #[test]
+    fn result_into_response_and_finish_helpers_propagate_errors() {
+        let error = Error::bad_request("bad");
+
+        let response = core::result::Result::<StatusCode, _>::Err(Error::bad_request("bad"))
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let finish = __finish::<Payload, _>(Err(error), StatusCode::OK)
+            .err()
+            .expect("expected handler error");
+        assert_eq!(finish.message(), "bad");
+    }
+}

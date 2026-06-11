@@ -101,6 +101,36 @@ impl Visit for RecordVisitor {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn recorder_helpers_find_context_and_message() {
+        let recorder = LogRecorder::new();
+        let subscriber = tracing_subscriber::registry().with(recorder.clone());
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(tork.context = "Orders", tork.fields = "{\"id\":1}", "created order");
+        });
+
+        assert!(recorder.contains_context("Orders"));
+        assert!(recorder.contains_message("created order"));
+        assert_eq!(recorder.records()[0].fields["id"], Value::from(1));
+    }
+
+    #[test]
+    fn visitor_ignores_invalid_json_fields_payload() {
+        let mut visitor = RecordVisitor::default();
+        visitor.set("tork.fields", "not-json".to_owned());
+        visitor.set("message", "hello".to_owned());
+
+        assert_eq!(visitor.message.as_deref(), Some("hello"));
+        assert!(visitor.fields.is_empty());
+    }
+}
+
 /// Asserts a recorder captured a log with the given context and message substring.
 ///
 /// ```ignore

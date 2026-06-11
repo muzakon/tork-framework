@@ -243,3 +243,87 @@ impl TestMultipartBuilder {
 
 /// The `Content-Type` header name, re-exported for the client module.
 pub(crate) const CONTENT_TYPE_HEADER: HeaderName = CONTENT_TYPE;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use super::super::client::{Shared, Transport};
+    use std::sync::Mutex;
+
+    #[derive(serde::Serialize)]
+    struct Query {
+        word: &'static str,
+    }
+
+    struct BrokenSerialize;
+
+    impl Serialize for BrokenSerialize {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("boom"))
+        }
+    }
+
+    fn shared() -> Arc<Shared> {
+        Arc::new(Shared {
+            transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
+            default_headers: http::HeaderMap::new(),
+            cookies: Mutex::new(super::super::cookie::CookieJar::default()),
+        })
+    }
+
+    #[test]
+    fn json_and_form_reset_body_on_serialize_failure() {
+        let request = TestRequestBuilder::new(shared(), Method::POST, "/items")
+            .json(&BrokenSerialize)
+            .form(&BrokenSerialize);
+
+        assert!(request.body.content_type.is_none());
+        assert!(request.body.bytes.is_empty());
+    }
+
+    #[test]
+    fn builder_collects_headers_query_and_bytes() {
+        let request = TestRequestBuilder::new(shared(), Method::PUT, "/items")
+            .header("x-test", "1")
+            .header("\n", "ignored")
+            .query("q", "space value")
+            .bytes(Bytes::from_static(b"payload"));
+
+        assert_eq!(request.headers.len(), 1);
+        assert_eq!(request.query, vec![("q".to_owned(), "space value".to_owned())]);
+        assert_eq!(request.body.bytes, Bytes::from_static(b"payload"));
+        assert!(request.body.content_type.is_none());
+    }
+
+    #[tokio::test]
+    async fn multipart_builder_encodes_text_and_file_parts() {
+        let response = TestRequestBuilder::new(shared(), Method::POST, "/upload")
+            .multipart()
+            .text("title", "hello")
+            .file_bytes("file", "note.txt", "text/plain", "payload")
+            .query("kind", "docs")
+            .header("x-test", "1")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 404);
+    }
+
+    #[test]
+    fn form_uses_urlencoding() {
+        let request = TestRequestBuilder::new(shared(), Method::POST, "/search").form(&Query {
+            word: "hello world",
+        });
+
+        assert_eq!(
+            request.body.content_type,
+            Some(HeaderValue::from_static("application/x-www-form-urlencoded"))
+        );
+        assert_eq!(request.body.bytes, Bytes::from_static(b"word=hello+world"));
+    }
+}

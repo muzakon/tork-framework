@@ -95,3 +95,71 @@ impl LogEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::LogRecorder;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Debug)]
+    struct InnerError;
+
+    impl std::fmt::Display for InnerError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "inner")
+        }
+    }
+
+    impl std::error::Error for InnerError {}
+
+    #[derive(Debug)]
+    struct OuterError;
+
+    impl std::fmt::Display for OuterError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "outer")
+        }
+    }
+
+    impl std::error::Error for OuterError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&InnerError)
+        }
+    }
+
+    struct BrokenSerialize;
+
+    impl Serialize for BrokenSerialize {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("nope"))
+        }
+    }
+
+    #[test]
+    fn field_skips_unserializable_values_and_emit_records_error_chain() {
+        let recorder = LogRecorder::new();
+        let subscriber = tracing_subscriber::registry().with(recorder.clone());
+        let event = LogEvent {
+            level: Level::ERROR,
+            context: Arc::<str>::from("Orders"),
+            message: "failed".to_owned(),
+            fields: Map::new(),
+            error: None,
+        }
+        .field("ok", 1)
+        .field("skip", BrokenSerialize)
+        .error(&OuterError);
+
+        tracing::subscriber::with_default(subscriber, move || event.emit());
+
+        let records = recorder.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].context, "Orders");
+        assert_eq!(records[0].message, "failed");
+        assert_eq!(records[0].fields["ok"], Value::from(1));
+    }
+}

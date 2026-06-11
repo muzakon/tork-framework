@@ -36,3 +36,46 @@ pub fn json_response<T: Serialize + ?Sized>(status: StatusCode, value: &T) -> Re
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::response::into_body_bytes;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct Payload {
+        ok: bool,
+    }
+
+    struct BrokenSerialize;
+
+    impl Serialize for BrokenSerialize {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("boom"))
+        }
+    }
+
+    #[tokio::test]
+    async fn json_response_serializes_payload() {
+        let response = json_response(StatusCode::CREATED, &Payload { ok: true });
+        let (parts, body) = into_body_bytes(response).await;
+
+        assert_eq!(parts.status, StatusCode::CREATED);
+        assert_eq!(parts.headers["content-type"], APPLICATION_JSON);
+        assert_eq!(body, Bytes::from_static(br#"{"ok":true}"#));
+    }
+
+    #[tokio::test]
+    async fn json_response_redacts_serialize_failures() {
+        let response = json_response(StatusCode::OK, &BrokenSerialize);
+        let (parts, body) = into_body_bytes(response).await;
+
+        assert_eq!(parts.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(parts.headers["content-type"], APPLICATION_JSON);
+        assert!(String::from_utf8(body.to_vec()).unwrap().contains("INTERNAL_SERVER_ERROR"));
+    }
+}

@@ -76,3 +76,45 @@ impl TestOverrides {
 pub fn __take_override<T: 'static>(ctx: &RequestContext) -> Option<T> {
     ctx.state().get::<TestOverrides>()?.produce::<T>()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::body::box_body;
+    use crate::extract::PathParams;
+    use crate::state::StateMap;
+    use bytes::Bytes;
+    use http_body_util::Full;
+
+    fn context_with_overrides(overrides: TestOverrides) -> RequestContext {
+        let mut state = StateMap::new();
+        state.insert(overrides);
+        let head = http::Request::new(()).into_parts().0;
+        RequestContext::new(
+            head,
+            PathParams::new(),
+            Arc::new(state),
+            box_body(Full::new(Bytes::new())),
+        )
+    }
+
+    #[test]
+    fn override_registry_reports_empty_and_produces_fresh_values() {
+        let mut overrides = TestOverrides::default();
+        assert!(overrides.is_empty());
+
+        overrides.insert::<String, _>(|| "hello".to_owned());
+        assert!(!overrides.is_empty());
+        assert_eq!(overrides.produce::<String>().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn take_override_reads_registered_override() {
+        let mut overrides = TestOverrides::default();
+        overrides.insert::<usize, _>(|| 7usize);
+
+        let ctx = context_with_overrides(overrides);
+        assert_eq!(__take_override::<usize>(&ctx), Some(7));
+        assert_eq!(__take_override::<String>(&ctx), None);
+    }
+}

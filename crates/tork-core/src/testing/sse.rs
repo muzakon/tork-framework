@@ -157,3 +157,36 @@ fn parse_event(block: &str) -> Option<TestSseEvent> {
         id,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Payload {
+        value: i64,
+    }
+
+    #[test]
+    fn parse_event_collects_name_id_and_multiline_data() {
+        let event = parse_event("event: tick\nid: 7\ndata: first\ndata: second\n\n").unwrap();
+
+        assert_eq!(event.event(), Some("tick"));
+        assert_eq!(event.id(), Some("7"));
+        assert_eq!(event.data(), "first\nsecond");
+    }
+
+    #[test]
+    fn parse_event_skips_heartbeat_only_blocks() {
+        assert!(parse_event(": keep-alive\n\n").is_none());
+    }
+
+    #[test]
+    fn event_json_reports_invalid_payload() {
+        let event = parse_event("data: not-json\n\n").unwrap();
+
+        let error = event.json::<Payload>().unwrap_err();
+        assert!(error.message().starts_with("event data is not valid JSON:"));
+    }
+}

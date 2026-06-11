@@ -106,3 +106,12 @@ pub mod __rt {
         tokio::spawn(future);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn runtime_block_on_executes_future() {
+        let value = crate::__rt::block_on(async { 7usize });
+        assert_eq!(value, 7);
+    }
+}

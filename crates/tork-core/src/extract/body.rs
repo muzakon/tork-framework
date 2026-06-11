@@ -58,3 +58,28 @@ pub(crate) async fn read_body_capped(mut body: ReqBody) -> Result<Bytes> {
 
     Ok(buffer.freeze())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::body::box_body;
+    use http_body_util::Full;
+
+    #[tokio::test]
+    async fn reads_body_within_limit() {
+        let body = box_body(Full::new(Bytes::from_static(b"hello")));
+
+        let bytes = read_body_capped(body).await.unwrap();
+        assert_eq!(bytes, Bytes::from_static(b"hello"));
+    }
+
+    #[tokio::test]
+    async fn rejects_body_over_limit() {
+        let oversized = vec![b'x'; MAX_BODY_BYTES + 1];
+        let body = box_body(Full::new(Bytes::from(oversized)));
+
+        let error = read_body_capped(body).await.unwrap_err();
+        assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
+        assert_eq!(error.message(), "request body is too large");
+    }
+}

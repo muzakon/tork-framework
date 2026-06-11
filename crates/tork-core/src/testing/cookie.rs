@@ -60,3 +60,34 @@ impl CookieJar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderValue;
+
+    #[test]
+    fn store_overwrites_values_and_sorts_header_output() {
+        let mut headers = HeaderMap::new();
+        headers.append(SET_COOKIE, HeaderValue::from_static("session=one; Path=/"));
+        headers.append(SET_COOKIE, HeaderValue::from_static("theme=dark; HttpOnly"));
+        headers.append(SET_COOKIE, HeaderValue::from_static("session=two; Secure"));
+
+        let mut jar = CookieJar::default();
+        jar.store(&headers);
+
+        assert_eq!(jar.header_value().as_deref(), Some("session=two; theme=dark"));
+    }
+
+    #[test]
+    fn apply_uses_seeded_cookie_entries() {
+        let mut jar = CookieJar::default();
+        jar.set("token", "abc");
+        jar.set("mode", "test");
+
+        let mut headers = HeaderMap::new();
+        jar.apply(&mut headers);
+
+        assert_eq!(headers[COOKIE], "mode=test; token=abc");
+    }
+}

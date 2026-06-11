@@ -37,3 +37,18 @@ pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Maximum time to wait for in-flight connections to drain during shutdown.
 pub const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exported_constants_match_runtime_contract() {
+        assert_eq!(APPLICATION_JSON, "application/json");
+        assert_eq!(TEXT_EVENT_STREAM, "text/event-stream");
+        assert_eq!(BEARER_PREFIX, "Bearer ");
+        assert_eq!(INTERNAL_ERROR_MESSAGE, "Internal server error");
+        assert_eq!(MAX_BODY_BYTES, 2 * 1024 * 1024);
+        assert_eq!(GRACEFUL_SHUTDOWN_TIMEOUT, Duration::from_secs(15));
+    }
+}
