@@ -7,10 +7,11 @@ use std::time::Duration;
 use bytes::Bytes;
 use http::HeaderValue;
 use http_body_util::{BodyExt, Full};
+use tork::testing::{LogRecorder, TestClient};
 use tork::{
-    App, BoxFuture, DuplicatePolicy, HandlerFn, Method, Middleware, Next, ReqBody, Request,
-    RequestContext, Response, Result, Route, Router, StatusCode, box_body, bytes_response,
-    middleware,
+    App, BoxFuture, DuplicatePolicy, HandlerFn, LoggerConfig, Method, Middleware, Next, ReqBody,
+    Request, RequestContext, Response, Result, Route, Router, StatusCode, box_body,
+    bytes_response, middleware,
 };
 
 struct Noop;
@@ -357,6 +358,30 @@ async fn request_id_supports_custom_header_name() {
         .handle(req)
         .await;
     assert_eq!(response.headers().get("x-correlation-id").unwrap(), "corr-1");
+}
+
+#[tokio::test]
+async fn trace_middleware_logs_success_and_errors() {
+    use tork::middleware::Trace;
+
+    let recorder = LogRecorder::new();
+    let client = TestClient::builder(
+        App::new()
+            .logger(LoggerConfig::new().request_logs(false))
+            .middleware(Trace::new())
+            .include_router(Router::new().route(Route::new(Method::GET, "/", ok_handler()))),
+    )
+    .logger(recorder.clone())
+    .build()
+    .await
+    .unwrap();
+
+    assert_eq!(client.get("/").send().await.unwrap().status(), 200);
+    assert_eq!(client.get("/missing").send().await.unwrap().status(), 404);
+
+    let records = recorder.records();
+    assert!(records.iter().any(|r| r.message.contains("GET / 200")));
+    assert!(records.iter().any(|r| r.message.contains("GET /missing 404")));
 }
 
 #[tokio::test]

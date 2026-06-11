@@ -13,6 +13,7 @@ async fn ws_echo(socket: WebSocket) -> tork::Result<()> {
     while let Some(message) = socket.recv().await? {
         match message {
             WsMessage::Text(text) => socket.send_text(text).await?,
+            WsMessage::Binary(bytes) => socket.send_binary(bytes).await?,
             WsMessage::Close(_) => break,
             _ => {}
         }
@@ -64,6 +65,30 @@ async fn websocket_typed_json_message() {
     let mut ws = client.websocket("/hello").connect().await.unwrap();
     let data = ws.receive_json::<serde_json::Value>().await.unwrap();
     assert_eq!(data, json!({ "msg": "Hello WebSocket" }));
+    let close = ws.receive_close().await.unwrap();
+    assert_eq!(close.code, WsCloseCode::NormalClosure);
+    assert_eq!(close.reason, "done");
+}
+
+#[tokio::test]
+async fn websocket_send_json_and_receive_binary_json() {
+    let app = App::new()
+        .include_router(Router::new().route(__tork_route_ws_echo()))
+        .build_test()
+        .await
+        .unwrap();
+    let client = TestClient::new(app).await.unwrap();
+
+    let mut ws = client.websocket("/ws").subprotocol("json").connect().await.unwrap();
+    ws.send_json(&json!({ "value": 7 })).await.unwrap();
+    let text = ws.receive_text().await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), json!({ "value": 7 }));
+
+    ws.send_binary(br#"{"value":9}"#.to_vec()).await.unwrap();
+    let data = ws.receive_json::<serde_json::Value>().await.unwrap();
+    assert_eq!(data, json!({ "value": 9 }));
+
+    ws.close().await.unwrap();
 }
 
 #[tokio::test]

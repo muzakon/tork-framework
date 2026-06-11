@@ -63,7 +63,26 @@ pub(crate) async fn read_body_capped(mut body: ReqBody) -> Result<Bytes> {
 mod tests {
     use super::*;
     use crate::body::box_body;
+    use crate::extract::PathParams;
+    use crate::state::StateMap;
     use http_body_util::Full;
+    use serde::Deserialize;
+    use std::sync::Arc;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Payload {
+        name: String,
+    }
+
+    fn context(body: Bytes) -> RequestContext {
+        let head = http::Request::new(()).into_parts().0;
+        RequestContext::new(
+            head,
+            PathParams::new(),
+            Arc::new(StateMap::new()),
+            box_body(Full::new(body)),
+        )
+    }
 
     #[tokio::test]
     async fn reads_body_within_limit() {
@@ -81,5 +100,45 @@ mod tests {
         let error = read_body_capped(body).await.unwrap_err();
         assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
         assert_eq!(error.message(), "request body is too large");
+    }
+
+    #[tokio::test]
+    async fn json_extractor_accepts_valid_json() {
+        let ctx = context(Bytes::from_static(br#"{"name":"tork"}"#));
+
+        let Json(payload) = <Json<Payload> as FromRequest>::from_request(&ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            payload,
+            Payload {
+                name: "tork".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn json_extractor_rejects_invalid_json_shape() {
+        let ctx = context(Bytes::from_static(br#"{"name":1}"#));
+
+        let error = match <Json<Payload> as FromRequest>::from_request(&ctx).await {
+            Ok(_) => panic!("expected invalid JSON shape to fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), crate::error::ErrorKind::Unprocessable);
+        assert_eq!(error.message(), "request body is not valid JSON");
+    }
+
+    #[tokio::test]
+    async fn json_extractor_rejects_consumed_body() {
+        let ctx = context(Bytes::from_static(br#"{"name":"tork"}"#));
+        let _ = ctx.take_body().unwrap();
+
+        let error = match <Json<Payload> as FromRequest>::from_request(&ctx).await {
+            Ok(_) => panic!("expected consumed body to fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
+        assert_eq!(error.message(), "request body has already been consumed");
     }
 }

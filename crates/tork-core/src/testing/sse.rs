@@ -161,11 +161,22 @@ fn parse_event(block: &str) -> Option<TestSseEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::BoxError;
+    use bytes::Bytes;
+    use futures_util::stream;
+    use http_body::Frame;
+    use http_body_util::StreamBody;
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize, PartialEq)]
     struct Payload {
         value: i64,
+    }
+
+    fn body_from_chunks(
+        chunks: Vec<std::result::Result<Frame<Bytes>, BoxError>>,
+    ) -> StreamingBody {
+        Box::pin(StreamBody::new(stream::iter(chunks)))
     }
 
     #[test]
@@ -188,5 +199,45 @@ mod tests {
 
         let error = event.json::<Payload>().unwrap_err();
         assert!(error.message().starts_with("event data is not valid JSON:"));
+    }
+
+    #[tokio::test]
+    async fn next_event_parses_trailing_block_at_end_of_stream() {
+        let body = body_from_chunks(vec![Ok(Frame::data(Bytes::from_static(
+            b"event: tick\ndata: {\"value\":1}",
+        )))]);
+        let mut stream = TestSseStream::new(body);
+
+        let event = stream.next_event().await.unwrap().unwrap();
+        assert_eq!(event.event(), Some("tick"));
+        assert_eq!(event.json::<Payload>().unwrap(), Payload { value: 1 });
+        assert!(stream.next_event().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn next_event_reports_stream_errors() {
+        let error: BoxError = Box::new(std::io::Error::other("boom"));
+        let body = body_from_chunks(vec![Err(error)]);
+        let mut stream = TestSseStream::new(body);
+
+        let error = match stream.next_event().await {
+            Ok(_) => panic!("expected stream error"),
+            Err(error) => error,
+        };
+        assert!(error.message().contains("event stream error: boom"));
+    }
+
+    #[tokio::test]
+    async fn next_event_timeout_reports_deadline() {
+        let body: StreamingBody = Box::pin(StreamBody::new(stream::pending::<
+            std::result::Result<Frame<Bytes>, BoxError>,
+        >()));
+        let mut stream = TestSseStream::new(body);
+
+        let error = match stream.next_event_timeout(Duration::from_millis(5)).await {
+            Ok(_) => panic!("expected timeout"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "SSE_TIMEOUT");
     }
 }
