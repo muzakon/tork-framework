@@ -1,11 +1,17 @@
 //! The in-process test client and its builder.
 
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use http::header::HOST;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use http_body_util::{BodyExt, Full};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpStream;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 use super::TestOverrides;
 use super::cookie::CookieJar;
@@ -31,9 +37,19 @@ type ResourceRegister = Box<dyn FnOnce(&mut StateMap)>;
 pub(crate) enum Transport {
     /// Drive the application directly, in process.
     InProcess(Arc<AppInner>),
+    /// Talk to a real server bound to this address over a loopback socket.
+    RealPort(SocketAddr),
 }
 
 impl Transport {
+    /// The bound address, for a real-port transport.
+    pub(crate) fn address(&self) -> Option<SocketAddr> {
+        match self {
+            Transport::InProcess(_) => None,
+            Transport::RealPort(addr) => Some(*addr),
+        }
+    }
+
     /// Executes a request and returns the status, headers, and full body.
     pub(crate) async fn execute(
         &self,
@@ -43,13 +59,13 @@ impl Transport {
             Transport::InProcess(app) => {
                 let response = app.clone().handle(request).await;
                 let (parts, body) = response.into_parts();
-                let bytes = body
-                    .collect()
-                    .await
-                    .map_err(|error| {
-                        Error::internal(format!("failed to read response body: {error}"))
-                    })?
-                    .to_bytes();
+                let bytes = collect_body(body).await?;
+                Ok((parts.status, parts.headers, bytes))
+            }
+            Transport::RealPort(addr) => {
+                let response = send_over_socket(*addr, request).await?;
+                let (parts, body) = response.into_parts();
+                let bytes = collect_body(body).await?;
                 Ok((parts.status, parts.headers, bytes))
             }
         }
@@ -66,8 +82,55 @@ impl Transport {
                 let (parts, body) = response.into_parts();
                 Ok((parts.status, parts.headers, Box::pin(body)))
             }
+            Transport::RealPort(addr) => {
+                let response = send_over_socket(*addr, request).await?;
+                let (parts, body) = response.into_parts();
+                let boxed: StreamingBody = Box::pin(body.map_err(|error| Box::new(error) as BoxError));
+                Ok((parts.status, parts.headers, boxed))
+            }
         }
     }
+}
+
+/// Collects a response body into a single buffer.
+async fn collect_body<B>(body: B) -> Result<Bytes>
+where
+    B: http_body::Body<Data = Bytes>,
+    B::Error: std::fmt::Display,
+{
+    let collected = body
+        .collect()
+        .await
+        .map_err(|error| Error::internal(format!("failed to read response body: {error}")))?;
+    Ok(collected.to_bytes())
+}
+
+/// Sends a request to a real server over a fresh loopback connection.
+async fn send_over_socket(
+    addr: SocketAddr,
+    mut request: http::Request<ReqBody>,
+) -> Result<http::Response<hyper::body::Incoming>> {
+    // HTTP/1.1 requires a Host header; add one derived from the address if absent.
+    if !request.headers().contains_key(HOST) {
+        if let Ok(value) = HeaderValue::from_str(&addr.to_string()) {
+            request.headers_mut().insert(HOST, value);
+        }
+    }
+
+    let stream = TcpStream::connect(addr)
+        .await
+        .map_err(|error| Error::internal(format!("failed to connect to {addr}: {error}")))?;
+    let io = TokioIo::new(stream);
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|error| Error::internal(format!("client handshake failed: {error}")))?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    sender
+        .send_request(request)
+        .await
+        .map_err(|error| Error::internal(format!("request failed: {error}")))
 }
 
 /// State shared between the client and its request builders.
@@ -169,7 +232,18 @@ impl Shared {
 /// to run the lifespan teardown.
 pub struct TestClient {
     shared: Arc<Shared>,
-    teardown: TestApp,
+    teardown: Teardown,
+}
+
+/// How a client tears down when finished.
+enum Teardown {
+    /// An in-process app: run its lifespan shutdown.
+    InProcess(Box<TestApp>),
+    /// A real server task: signal shutdown and wait for it to drain.
+    RealPort {
+        shutdown: Option<oneshot::Sender<()>>,
+        handle: JoinHandle<()>,
+    },
 }
 
 impl TestClient {
@@ -181,13 +255,23 @@ impl TestClient {
                 default_headers: HeaderMap::new(),
                 cookies: Mutex::new(CookieJar::default()),
             }),
-            teardown: app,
+            teardown: Teardown::InProcess(Box::new(app)),
         })
     }
 
     /// Starts a builder for a client with resource and dependency overrides.
     pub fn builder(app: App) -> TestClientBuilder {
         TestClientBuilder::new(app)
+    }
+
+    /// Starts a real-server end-to-end client backed by a loopback socket.
+    pub fn serve(app: App) -> ServeBuilder {
+        ServeBuilder { app }
+    }
+
+    /// The bound address, for a real-port client (`None` when in process).
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.shared.transport.address()
     }
 
     /// Starts a WebSocket connection.
@@ -220,9 +304,71 @@ impl TestClient {
         TestRequestBuilder::new(self.shared.clone(), Method::DELETE, path)
     }
 
-    /// Runs the lifespan shutdown.
+    /// Tears the client down: runs the lifespan shutdown for an in-process client,
+    /// or stops the server task for a real-port client.
     pub async fn shutdown(self) -> Result<()> {
-        self.teardown.shutdown().await
+        match self.teardown {
+            Teardown::InProcess(app) => app.shutdown().await,
+            Teardown::RealPort { shutdown, handle } => {
+                if let Some(sender) = shutdown {
+                    let _ = sender.send(());
+                }
+                let _ = handle.await;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Builds a real-server end-to-end client.
+///
+/// `bind_random_port` runs the full application lifecycle (including lifespan
+/// startup) on a loopback socket bound to an ephemeral port, then returns a client
+/// that talks to it over real connections.
+pub struct ServeBuilder {
+    app: App,
+}
+
+impl ServeBuilder {
+    /// Binds the server to `127.0.0.1:0` and returns a connected client.
+    pub async fn bind_random_port(self) -> Result<TestClient> {
+        let (addr_tx, addr_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let sender = Arc::new(Mutex::new(Some(addr_tx)));
+
+        let app = self.app.on_ready(move |ctx| {
+            let sender = sender.clone();
+            async move {
+                if let Some(tx) = sender.lock().expect("address sender mutex poisoned").take() {
+                    let _ = tx.send(ctx.addr());
+                }
+                Ok(())
+            }
+        });
+
+        let handle = tokio::spawn(async move {
+            let _ = app
+                .serve_with_shutdown("127.0.0.1:0", async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let addr = addr_rx
+            .await
+            .map_err(|_| Error::internal("the test server failed to start"))?;
+
+        Ok(TestClient {
+            shared: Arc::new(Shared {
+                transport: Transport::RealPort(addr),
+                default_headers: HeaderMap::new(),
+                cookies: Mutex::new(CookieJar::default()),
+            }),
+            teardown: Teardown::RealPort {
+                shutdown: Some(shutdown_tx),
+                handle,
+            },
+        })
     }
 }
 
@@ -312,7 +458,7 @@ impl TestClientBuilder {
                 default_headers,
                 cookies: Mutex::new(cookies),
             }),
-            teardown: app,
+            teardown: Teardown::InProcess(Box::new(app)),
         })
     }
 }

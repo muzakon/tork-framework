@@ -4,7 +4,7 @@ use futures_util::stream;
 use serde_json::json;
 use tork::testing::TestClient;
 use tork::{
-    App, BearerToken, Router, Sse, WebSocket, WsCloseCode, WsMessage, api_model, sse, websocket,
+    App, BearerToken, Router, Sse, WebSocket, WsCloseCode, WsMessage, api_model, get, sse, websocket,
 };
 
 #[websocket("/ws")]
@@ -79,6 +79,32 @@ async fn websocket_upgrade_rejected_without_auth() {
     // before it is accepted, so connect returns an error.
     let result = client.websocket("/guarded").connect().await;
     assert!(result.is_err(), "expected the upgrade to be rejected");
+}
+
+#[get("/ping")]
+async fn ping() -> tork::Result<serde_json::Value> {
+    Ok(json!({ "pong": true }))
+}
+
+#[tokio::test]
+async fn real_port_http_and_websocket() {
+    let app = App::new().include(ping).include(ws_echo);
+    let client = TestClient::serve(app).bind_random_port().await.unwrap();
+    assert!(client.local_addr().is_some());
+
+    let response = client.get("/ping").send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        json!({ "pong": true })
+    );
+
+    let mut ws = client.websocket("/ws").connect().await.unwrap();
+    ws.send_text("hi").await.unwrap();
+    assert_eq!(ws.receive_text().await.unwrap(), "hi");
+    ws.close().await.unwrap();
+
+    client.shutdown().await.unwrap();
 }
 
 #[api_model]
