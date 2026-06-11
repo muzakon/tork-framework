@@ -4,4 +4,5 @@ pub mod chat;
 pub mod event;
 pub mod health;
 pub mod order;
+pub mod upload;
 pub mod user;

@@ -1,11 +1,15 @@
 //! Routes that demonstrate the hooks, error-handling, and streaming surface.
 
-use tork::{LastEventId, RequestEvent, Sse, SseEvent, WebSocket, WsMessage, api_router, get, sse, websocket};
+use tork::{
+    FileBytes, Form, LastEventId, Multipart, RequestEvent, Sse, SseEvent, WebSocket, WsMessage,
+    api_router, get, post, sse, websocket,
+};
 
 use crate::core::app_state::ChatHub;
 use crate::core::errors::RepoError;
 use crate::models::chat::{ChatIn, ChatMessage};
 use crate::models::event::EventOut;
+use crate::models::upload::{LoginForm, LoginOut, ProfileForm, UploadOut};
 
 #[api_router(prefix = "/demo", tags = ["demo"])]
 pub mod demo_router {
@@ -54,6 +58,43 @@ pub mod demo_router {
         }));
 
         Ok(Sse::events(events))
+    }
+
+    /// Accepts a single file plus a caption as `multipart/form-data`, using the
+    /// parameter-based style (`#[file]` / `#[form]`).
+    #[post("/files", summary = "Upload a file (parameter style)")]
+    pub async fn upload_file(
+        #[file] avatar: FileBytes,
+        #[form] caption: String,
+    ) -> tork::Result<UploadOut> {
+        Ok(UploadOut {
+            avatar_size: avatar.len(),
+            attachment_size: None,
+            display_name: caption,
+            tags: Vec::new(),
+        })
+    }
+
+    /// Accepts a validated multipart form as a model (`Multipart<ProfileForm>`),
+    /// with a larger upload limit set on the route.
+    #[post("/upload", upload(max_file_size = "25MB"), summary = "Upload a profile (model style)")]
+    pub async fn upload_profile(form: Multipart<ProfileForm>) -> tork::Result<UploadOut> {
+        let form = form.into_inner();
+        Ok(UploadOut {
+            avatar_size: form.avatar.len(),
+            attachment_size: form.attachment.as_ref().map(|file| file.size()),
+            display_name: form.display_name,
+            tags: form.tags,
+        })
+    }
+
+    /// A urlencoded login form (`application/x-www-form-urlencoded`).
+    #[post("/login", summary = "Log in with a urlencoded form")]
+    pub async fn login(form: Form<LoginForm>) -> tork::Result<LoginOut> {
+        let form = form.into_inner();
+        Ok(LoginOut {
+            username: form.username,
+        })
     }
 
     /// Echoes every message back to the client over a WebSocket.

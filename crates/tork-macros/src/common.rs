@@ -236,14 +236,19 @@ pub(crate) fn file_binding(
         (FileKind::Bytes, Multiplicity::Many) => quote! {
             let #ident = __form.take_file_bytes_list(#name).await?;
         },
+        // `UploadFile` is read and validated through `&mut`, so its bindings are
+        // mutable; the allow covers handlers that only inspect metadata.
         (FileKind::Upload, Multiplicity::One) => quote! {
-            let #ident = __form.take_upload_file(#name).ok_or_else(#missing)?;
+            #[allow(unused_mut)]
+            let mut #ident = __form.take_upload_file(#name).ok_or_else(#missing)?;
         },
         (FileKind::Upload, Multiplicity::Optional) => quote! {
-            let #ident = __form.take_upload_file(#name);
+            #[allow(unused_mut)]
+            let mut #ident = __form.take_upload_file(#name);
         },
         (FileKind::Upload, Multiplicity::Many) => quote! {
-            let #ident = __form.take_upload_file_list(#name);
+            #[allow(unused_mut)]
+            let mut #ident = __form.take_upload_file_list(#name);
         },
     }
 }
