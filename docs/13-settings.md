@@ -107,8 +107,12 @@ is already set.
 pub struct Config { /* ... */ }
 ```
 
-File paths are relative to the working directory the process runs in. A missing
-file is skipped, so a config file is optional.
+File paths are relative to the working directory the process runs in. Under
+`cargo run -p <crate>` that directory is the workspace root, not the crate, so run
+the binary from the crate's own directory (or pass absolute paths) when you rely on
+a relative config file or `.env`. A missing file is skipped, so a config file is
+optional; if no source supplies a value and the field has a default, the default is
+used.
 
 ### Environment variables and nesting
 
@@ -202,11 +206,20 @@ pub struct ServerConfig {
 #[settings(prefix = "APP")]
 pub struct Config {
     #[setting(default = "Awesome API")] pub app_name: String,
-    #[setting(nested)]                  pub server: ServerConfig,
+    #[setting(nested, default)]         pub server: ServerConfig,
 }
 
 // config.server.port
 ```
+
+A bare `#[setting(nested)]` group is required: if no source supplies it, loading
+fails. Add the `default` flag (`#[setting(nested, default)]`) to fill an absent
+group from its own field defaults, so the whole config loads even when nothing
+provides the group. This works when every field of the nested struct has a default
+(so the group is itself default-constructible); keep a group required when it holds
+a value with no sensible default, such as a database URL. The bare `default` flag
+works on any field whose type has a `Default` (for example to make an `Option`
+field optional or a counter start at zero).
 
 ## Overriding in tests
 

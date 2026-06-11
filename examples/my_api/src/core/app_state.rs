@@ -133,8 +133,8 @@ pub struct Config {
     /// Maximum items returned per user.
     #[setting(default = 50, ge = 1, le = 500)]
     pub items_per_user: u32,
-    /// Network settings.
-    #[setting(nested)]
+    /// Network settings. Defaults to `ServerConfig`'s own defaults when absent.
+    #[setting(nested, default)]
     pub server: ServerConfig,
     /// A sample secret; override it through the environment in production.
     #[setting(secret, default = "dev-placeholder-key")]

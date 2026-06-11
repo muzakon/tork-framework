@@ -75,6 +75,8 @@ struct SettingArgs {
     email: bool,
     secret: bool,
     nested: bool,
+    /// A bare `default` flag: fill an absent value from the type's `Default`.
+    default_flag: bool,
     custom: Vec<Expr>,
 }
 
@@ -89,10 +91,19 @@ impl Parse for SettingArgs {
                 "email" => args.email = true,
                 "secret" => args.secret = true,
                 "nested" => args.nested = true,
+                // `default` is either a bare flag (use the type's `Default`) or a
+                // value (`default = expr`).
+                "default" => {
+                    if input.peek(Token![=]) {
+                        input.parse::<Token![=]>()?;
+                        args.default = Some(input.parse()?);
+                    } else {
+                        args.default_flag = true;
+                    }
+                }
                 _ => {
                     input.parse::<Token![=]>()?;
                     match name.as_str() {
-                        "default" => args.default = Some(input.parse()?),
                         "min_length" => args.min_length = Some(input.parse()?),
                         "max_length" => args.max_length = Some(input.parse()?),
                         "ge" => args.ge = Some(input.parse()?),
@@ -146,6 +157,10 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
 
     let mut field_tokens = Vec::new();
     let mut extra_fns = Vec::new();
+    // Field initializers for a generated `Default` impl, and whether every field
+    // can be defaulted (so the struct can stand in as an absent nested group).
+    let mut default_inits = Vec::new();
+    let mut all_defaultable = true;
 
     for field in fields {
         let field_ident = field.ident.as_ref().expect("named field");
@@ -211,8 +226,9 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
             quote!(#[garde(#(#garde_rules),*)])
         };
 
-        // A declared default becomes a serde default backed by a generated fn, so
-        // the value is filled in when no source provides it.
+        // Decide how an absent value is filled. A declared default uses a generated
+        // function; a nested group, `Option`, or `Vec` falls back to its own
+        // `Default`. Anything else stays required, and a missing value errors.
         let serde_attr = if let Some(default) = &args.default {
             let fn_ident = format_ident!(
                 "__tork_default_{}_{}",
@@ -224,9 +240,16 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
                 #[doc(hidden)]
                 fn #fn_ident() -> #field_ty { #value }
             });
+            default_inits.push(quote!(#field_ident: #fn_ident()));
             let fn_name = fn_ident.to_string();
             quote!(#[serde(default = #fn_name)])
+        } else if args.default_flag {
+            // Fill an absent value from the type's `Default` (a nested group, an
+            // `Option`, a `Vec`, or any `Default` type).
+            default_inits.push(quote!(#field_ident: ::core::default::Default::default()));
+            quote!(#[serde(default)])
         } else {
+            all_defaultable = false;
             quote!()
         };
 
@@ -241,6 +264,21 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
 
     let load_chain = load_chain(&container);
 
+    // When every field is defaultable, generate a `Default` impl so the struct can
+    // serve as an absent nested group (and so a fully-defaulted config loads even
+    // when no source is present).
+    let default_impl = if all_defaultable && generics.params.is_empty() {
+        quote! {
+            impl ::core::default::Default for #struct_ident {
+                fn default() -> Self {
+                    Self { #(#default_inits),* }
+                }
+            }
+        }
+    } else {
+        quote!()
+    };
+
     Ok(quote! {
         #(#struct_attrs)*
         #[derive(
@@ -253,6 +291,8 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
         #vis struct #struct_ident #generics {
             #(#field_tokens)*
         }
+
+        #default_impl
 
         #(#extra_fns)*
 
