@@ -12,6 +12,7 @@ mod api_router;
 mod app_error;
 mod common;
 mod dependency;
+mod form_model;
 mod inject;
 mod lifespan;
 mod main_macro;
@@ -153,6 +154,27 @@ pub fn derive_resources(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Inject)]
 pub fn derive_inject(item: TokenStream) -> TokenStream {
     inject::expand(item)
+}
+
+/// Derives `FromMultipart` for a `multipart/form-data` model.
+///
+/// Each field binds from the parsed form: file fields (`FileBytes` / `UploadFile`,
+/// optionally `Option` or `Vec`) are recognized by a `#[file]` attribute or their
+/// type; every other field is a text field parsed from its string value.
+/// `#[field(...)]` constraints validate text fields.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(FormModel)]
+/// pub struct CreateFileForm {
+///     #[file] pub file: FileBytes,
+///     #[field(min_length = 16)] pub token: String,
+/// }
+/// ```
+#[proc_macro_derive(FormModel, attributes(file, form, field))]
+pub fn derive_form_model(item: TokenStream) -> TokenStream {
+    form_model::expand(item)
 }
 
 /// Derives `From<Self> for tork::Error`, storing the value as a typed source.
