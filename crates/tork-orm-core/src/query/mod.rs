@@ -5,5 +5,6 @@ pub mod ast;
 pub mod column;
 pub mod expr;
 pub mod queryset;
+pub mod write;
 
 pub use queryset::QuerySet;

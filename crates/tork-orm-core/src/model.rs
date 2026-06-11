@@ -6,8 +6,13 @@
 //! execution needs today (it records SQL types and foreign keys) so that a later
 //! migrations phase can build on it.
 
-use crate::dialect::SqlType;
+use crate::dialect::{render_insert, render_select, SqlType};
+use crate::error::OrmError;
+use crate::executor::Executor;
 use crate::query::QuerySet;
+use crate::query::ast::{SelectItem, SelectStatement};
+use crate::query::expr::{BinaryOp, Expr};
+use crate::query::write::{Assignment, InsertStatement, UpdateStatement};
 use crate::row::Row;
 use crate::value::Value;
 
@@ -92,5 +97,130 @@ pub trait Model: FromRow + Send + Sync + 'static {
         Self: Sized,
     {
         QuerySet::new()
+    }
+
+    /// Inserts `value` and returns the stored row, including any
+    /// database-assigned columns (such as an auto-increment primary key).
+    fn create<E: Executor + Send>(
+        executor: E,
+        value: &Self,
+    ) -> impl std::future::Future<Output = crate::Result<Self>> + Send
+    where
+        Self: Sized,
+    {
+        async move {
+            let pairs = value.insert_values();
+            let columns: Vec<&'static str> = pairs.iter().map(|(name, _)| *name).collect();
+            let row: Vec<Value> = pairs.into_iter().map(|(_, value)| value).collect();
+            let supports_returning = executor.dialect().supports_returning();
+            let returning: Vec<&'static str> = if supports_returning {
+                Self::COLUMNS.iter().map(|column| column.name).collect()
+            } else {
+                Vec::new()
+            };
+
+            let statement = InsertStatement {
+                table: Self::TABLE,
+                columns,
+                rows: vec![row],
+                returning,
+            };
+            let (sql, params) = render_insert(executor.dialect(), &statement);
+
+            if supports_returning {
+                let rows = executor.fetch_all(sql, params).await?;
+                let row = rows.first().ok_or_else(|| {
+                    OrmError::query("insert with RETURNING produced no row")
+                })?;
+                return Self::from_row(row);
+            }
+
+            // Fallback for backends without RETURNING: insert, then re-select the
+            // row by the id the insert assigned.
+            let inserted = executor.execute(sql, params).await?;
+            let projection = Self::COLUMNS
+                .iter()
+                .map(|column| SelectItem::Column {
+                    table: Self::TABLE,
+                    column: column.name,
+                })
+                .collect();
+            let mut select = SelectStatement::new(Self::TABLE, projection);
+            select.filters.push(Expr::binary(
+                Expr::column(Self::TABLE, Self::PRIMARY_KEY),
+                BinaryOp::Eq,
+                Expr::value(Value::Int(inserted.last_insert_rowid)),
+            ));
+            select.limit = Some(1);
+            let (sql, params) = render_select(executor.dialect(), &select);
+            let rows = executor.fetch_all(sql, params).await?;
+            let row = rows
+                .first()
+                .ok_or_else(|| OrmError::query("inserted row could not be reloaded"))?;
+            Self::from_row(row)
+        }
+    }
+
+    /// Inserts many values in one statement, returning the number inserted.
+    ///
+    /// An empty slice inserts nothing and returns zero.
+    fn bulk_create<E: Executor + Send>(
+        executor: E,
+        values: &[Self],
+    ) -> impl std::future::Future<Output = crate::Result<u64>> + Send
+    where
+        Self: Sized,
+    {
+        async move {
+            if values.is_empty() {
+                return Ok(0);
+            }
+            let columns: Vec<&'static str> = values[0]
+                .insert_values()
+                .iter()
+                .map(|(name, _)| *name)
+                .collect();
+            let rows: Vec<Vec<Value>> = values
+                .iter()
+                .map(|value| value.insert_values().into_iter().map(|(_, v)| v).collect())
+                .collect();
+            let statement = InsertStatement {
+                table: Self::TABLE,
+                columns,
+                rows,
+                returning: Vec::new(),
+            };
+            let (sql, params) = render_insert(executor.dialect(), &statement);
+            Ok(executor.execute(sql, params).await?.rows_affected)
+        }
+    }
+
+    /// Writes this instance's current field values to the row with its primary
+    /// key, returning the number of rows changed (zero if no such row exists).
+    fn save<E: Executor + Send>(
+        &self,
+        executor: E,
+    ) -> impl std::future::Future<Output = crate::Result<u64>> + Send
+    where
+        Self: Sized,
+    {
+        async move {
+            let assignments: Vec<Assignment> = self
+                .insert_values()
+                .into_iter()
+                .map(|(column, value)| Assignment { column, value })
+                .collect();
+            let statement = UpdateStatement {
+                table: Self::TABLE,
+                assignments,
+                filters: vec![Expr::binary(
+                    Expr::column(Self::TABLE, Self::PRIMARY_KEY),
+                    BinaryOp::Eq,
+                    Expr::value(self.primary_key_value()),
+                )],
+            };
+            let (sql, params) = crate::dialect::render_update(executor.dialect(), &statement);
+            Ok(executor.execute(sql, params).await?.rows_affected)
+        }
     }
 }

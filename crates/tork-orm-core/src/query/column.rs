@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 
 use crate::query::ast::OrderItem;
 use crate::query::expr::{BinaryOp, Expr};
+use crate::query::write::Assignment;
 use crate::value::{BindValue, Value};
 
 /// Converts a comparison right-hand side into a bound [`Value`], constrained by the
@@ -144,6 +145,12 @@ impl<M, T> Column<M, T> {
     /// Orders by this column descending.
     pub fn desc(self) -> OrderItem {
         OrderItem::new(self.expr(), true)
+    }
+
+    /// Builds an `UPDATE` assignment, `column = value`, for use with
+    /// [`QuerySet::update`](crate::QuerySet::update).
+    pub fn set<V: IntoSqlValue<T>>(self, value: V) -> Assignment {
+        Assignment::new(self.name, value.into_sql_value())
     }
 
     /// Builds a binary comparison against a bound value.

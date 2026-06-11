@@ -29,6 +29,7 @@ pub use query::QuerySet;
 pub use query::ast::{OrderItem, SelectItem, SelectStatement};
 pub use query::column::{Column, IntoSqlValue};
 pub use query::expr::{BinaryOp, Expr, LogicalOp};
+pub use query::write::{Assignment, DeleteStatement, InsertStatement, UpdateStatement};
 pub use row::Row;
 pub use value::{BindValue, FromValue, Value};
 

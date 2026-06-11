@@ -8,6 +8,7 @@
 use crate::dialect::Dialect;
 use crate::query::ast::{SelectItem, SelectStatement};
 use crate::query::expr::Expr;
+use crate::query::write::{DeleteStatement, InsertStatement, UpdateStatement};
 use crate::value::Value;
 
 /// Builds a SQL string and its bound parameters for a dialect.
@@ -191,6 +192,65 @@ impl<'a> QueryWriter<'a> {
         self.sql.push(')');
     }
 
+    /// Renders an `INSERT` statement.
+    pub fn write_insert(&mut self, statement: &InsertStatement) {
+        self.push_sql("INSERT INTO ");
+        self.push_identifier(statement.table);
+        self.push_sql(" (");
+        for (index, column) in statement.columns.iter().enumerate() {
+            if index != 0 {
+                self.push_sql(", ");
+            }
+            self.push_identifier(column);
+        }
+        self.push_sql(") VALUES ");
+        for (row_index, row) in statement.rows.iter().enumerate() {
+            if row_index != 0 {
+                self.push_sql(", ");
+            }
+            self.sql.push('(');
+            for (value_index, value) in row.iter().enumerate() {
+                if value_index != 0 {
+                    self.push_sql(", ");
+                }
+                self.push_bind(value.clone());
+            }
+            self.sql.push(')');
+        }
+        if !statement.returning.is_empty() {
+            self.push_sql(" RETURNING ");
+            for (index, column) in statement.returning.iter().enumerate() {
+                if index != 0 {
+                    self.push_sql(", ");
+                }
+                self.push_identifier(column);
+            }
+        }
+    }
+
+    /// Renders an `UPDATE` statement.
+    pub fn write_update(&mut self, statement: &UpdateStatement) {
+        self.push_sql("UPDATE ");
+        self.push_identifier(statement.table);
+        self.push_sql(" SET ");
+        for (index, assignment) in statement.assignments.iter().enumerate() {
+            if index != 0 {
+                self.push_sql(", ");
+            }
+            self.push_identifier(assignment.column);
+            self.push_sql(" = ");
+            self.push_bind(assignment.value.clone());
+        }
+        self.write_where(&statement.filters);
+    }
+
+    /// Renders a `DELETE` statement.
+    pub fn write_delete(&mut self, statement: &DeleteStatement) {
+        self.push_sql("DELETE FROM ");
+        self.push_identifier(statement.table);
+        self.write_where(&statement.filters);
+    }
+
     /// Consumes the writer, returning the SQL string and its bound parameters.
     pub fn finish(self) -> (String, Vec<Value>) {
         (self.sql, self.params)
@@ -215,6 +275,27 @@ pub fn render_count(dialect: &dyn Dialect, statement: &SelectStatement) -> (Stri
 pub fn render_exists(dialect: &dyn Dialect, statement: &SelectStatement) -> (String, Vec<Value>) {
     let mut writer = QueryWriter::new(dialect);
     writer.write_exists(statement);
+    writer.finish()
+}
+
+/// Renders an `INSERT` statement to SQL and bound parameters.
+pub fn render_insert(dialect: &dyn Dialect, statement: &InsertStatement) -> (String, Vec<Value>) {
+    let mut writer = QueryWriter::new(dialect);
+    writer.write_insert(statement);
+    writer.finish()
+}
+
+/// Renders an `UPDATE` statement to SQL and bound parameters.
+pub fn render_update(dialect: &dyn Dialect, statement: &UpdateStatement) -> (String, Vec<Value>) {
+    let mut writer = QueryWriter::new(dialect);
+    writer.write_update(statement);
+    writer.finish()
+}
+
+/// Renders a `DELETE` statement to SQL and bound parameters.
+pub fn render_delete(dialect: &dyn Dialect, statement: &DeleteStatement) -> (String, Vec<Value>) {
+    let mut writer = QueryWriter::new(dialect);
+    writer.write_delete(statement);
     writer.finish()
 }
 

@@ -7,12 +7,13 @@
 
 use std::marker::PhantomData;
 
-use crate::dialect::{render_count, render_exists, render_select};
+use crate::dialect::{render_count, render_delete, render_exists, render_select, render_update};
 use crate::error::OrmError;
 use crate::executor::Executor;
 use crate::model::{FromRow, Model};
 use crate::query::ast::{OrderItem, SelectItem, SelectStatement};
 use crate::query::expr::Expr;
+use crate::query::write::{Assignment, DeleteStatement, UpdateStatement};
 
 /// A typed query over a model `M`.
 ///
@@ -180,6 +181,45 @@ impl<M: Model> QuerySet<M> {
             Some(row) => row.get_index::<bool>(0),
             None => Ok(false),
         }
+    }
+
+    /// Applies column assignments to every row matching the query's filters.
+    ///
+    /// Build the assignments with [`Column::set`](crate::Column::set). Returns the
+    /// number of rows changed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use tork_orm_core::{Database, Model};
+    /// # async fn run<M: Model>(db: Database, col: tork_orm_core::Column<M, bool>) -> tork_orm_core::Result<()> {
+    /// let changed = M::query().update(&db, [col.set(false)]).await?;
+    /// # let _ = changed;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update<E: Executor>(
+        self,
+        executor: E,
+        assignments: impl IntoIterator<Item = Assignment>,
+    ) -> crate::Result<u64> {
+        let statement = UpdateStatement {
+            table: self.statement.table,
+            assignments: assignments.into_iter().collect(),
+            filters: self.statement.filters,
+        };
+        let (sql, params) = render_update(executor.dialect(), &statement);
+        Ok(executor.execute(sql, params).await?.rows_affected)
+    }
+
+    /// Deletes every row matching the query's filters, returning the count removed.
+    pub async fn delete<E: Executor>(self, executor: E) -> crate::Result<u64> {
+        let statement = DeleteStatement {
+            table: self.statement.table,
+            filters: self.statement.filters,
+        };
+        let (sql, params) = render_delete(executor.dialect(), &statement);
+        Ok(executor.execute(sql, params).await?.rows_affected)
     }
 }
 
