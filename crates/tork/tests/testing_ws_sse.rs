@@ -106,6 +106,39 @@ async fn websocket_upgrade_rejected_without_auth() {
     assert!(result.is_err(), "expected the upgrade to be rejected");
 }
 
+#[tokio::test]
+async fn websocket_builder_rejects_invalid_request_uri() {
+    let app = App::new()
+        .include_router(Router::new().route(__tork_route_ws_echo()))
+        .build_test()
+        .await
+        .unwrap();
+    let client = TestClient::new(app).await.unwrap();
+
+    let error = match client.websocket("http://[").connect().await {
+        Ok(_) => panic!("expected invalid websocket URI to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), tork::ErrorKind::BadRequest);
+    assert!(error.message().starts_with("invalid request URI:"));
+}
+
+#[tokio::test]
+async fn websocket_receive_text_reports_closed_connection() {
+    let app = App::new()
+        .include_router(Router::new().route(__tork_route_ws_hello()))
+        .build_test()
+        .await
+        .unwrap();
+    let client = TestClient::new(app).await.unwrap();
+
+    let mut ws = client.websocket("/hello").connect().await.unwrap();
+    let _ = ws.receive_json::<serde_json::Value>().await.unwrap();
+    let _ = ws.receive_close().await.unwrap();
+    let error = ws.receive_text().await.unwrap_err();
+    assert_eq!(error.code(), "WS_CONNECTION_ERROR");
+}
+
 #[get("/ping")]
 async fn ping() -> tork::Result<serde_json::Value> {
     Ok(json!({ "pong": true }))

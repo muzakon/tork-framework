@@ -193,6 +193,24 @@ async fn default_headers_and_cookie_jar() {
     assert_eq!(body["cookie"], "sid=abc123");
 }
 
+#[tokio::test]
+async fn seeded_cookie_and_invalid_default_header_behavior() {
+    let app = App::new().include_router(Router::new().route(__tork_route_read_headers()));
+    let client = TestClient::builder(app)
+        .default_header("\n", "ignored")
+        .cookie("session", "seeded")
+        .build()
+        .await
+        .unwrap();
+
+    assert!(client.local_addr().is_none());
+
+    let response = client.get("/headers").send().await.unwrap();
+    let body = response.json::<serde_json::Value>().await.unwrap();
+    assert!(body["token"].is_null());
+    assert_eq!(body["cookie"], "session=seeded");
+}
+
 #[derive(Clone)]
 struct Greeting(String);
 
