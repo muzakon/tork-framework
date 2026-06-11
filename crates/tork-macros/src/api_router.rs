@@ -178,3 +178,75 @@ fn is_route_attr(attr: &Attribute) -> bool {
         })
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn api_router_args_parse_and_reject_unknown_keys() {
+        let args: ApiRouterArgs = syn::parse_quote!(prefix = "/v1", tags = ["users", "admin"]);
+        assert_eq!(args.prefix.unwrap().value(), "/v1");
+        assert_eq!(args.tags.len(), 2);
+
+        let err = match syn::parse2::<ApiRouterArgs>(quote!(unknown = "x")) {
+            Ok(_) => panic!("expected parse error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("unknown api_router attribute"));
+    }
+
+    #[test]
+    fn inject_prefix_hint_appends_hidden_prefix_argument() {
+        let mut attr: Attribute = parse_quote!(#[get("/users/{id}")]);
+        inject_prefix_hint(&mut attr, "/api");
+        assert!(quote!(#attr).to_string().contains("__prefix = \"/api\""));
+    }
+
+    #[test]
+    fn is_route_attr_matches_supported_macros() {
+        let get_attr: Attribute = parse_quote!(#[get("/")]);
+        let sse_attr: Attribute = parse_quote!(#[tork::sse("/stream")]);
+        let other: Attribute = parse_quote!(#[derive(Clone)]);
+        assert!(is_route_attr(&get_attr));
+        assert!(is_route_attr(&sse_attr));
+        assert!(!is_route_attr(&other));
+    }
+
+    #[test]
+    fn expand_module_rejects_non_inline_modules() {
+        let args: ApiRouterArgs = syn::parse_quote!(prefix = "/v1");
+        let module: ItemMod = parse_quote!(mod users;);
+        assert!(expand_module(args, module)
+            .unwrap_err()
+            .to_string()
+            .contains("inline module body"));
+    }
+
+    #[test]
+    fn expand_module_injects_prefix_and_builds_router_fn() {
+        let args: ApiRouterArgs = syn::parse_quote!(prefix = "/v1", tags = ["users"]);
+        let module: ItemMod = parse_quote! {
+            pub mod users {
+                #[get("/{id}")]
+                async fn show() -> &'static str { "ok" }
+
+                fn helper() {}
+
+                #[tork::websocket("/live")]
+                async fn live(ws: tork::WebSocket) -> tork::Result<()> { let _ = ws; Ok(()) }
+            }
+        };
+        let tokens = expand_module(args, module).unwrap().to_string();
+        assert!(tokens.contains("pub mod users"));
+        assert!(tokens.contains("pub fn router"));
+        assert!(tokens.contains("prefix"));
+        assert!(tokens.contains("/v1"));
+        assert!(tokens.contains("tags"));
+        assert!(tokens.contains("users"));
+        assert!(tokens.contains("__tork_route_show"));
+        assert!(tokens.contains("__tork_route_live"));
+        assert!(tokens.contains("__prefix = \"/v1\""));
+    }
+}

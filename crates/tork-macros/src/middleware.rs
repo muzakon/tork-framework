@@ -81,3 +81,54 @@ fn expand_fn(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn expand_fn_rejects_sync_self_and_wrong_arity() {
+        let func: ItemFn = parse_quote! {
+            fn audit(request: tork::Request, next: tork::Next) -> tork::Result<tork::Response> { todo!() }
+        };
+        assert!(expand_fn(func)
+            .unwrap_err()
+            .to_string()
+            .contains("async fn"));
+
+        let func: ItemFn = parse_quote! {
+            async fn audit(&self, request: tork::Request, next: tork::Next) -> tork::Result<tork::Response> { todo!() }
+        };
+        assert!(expand_fn(func)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot take `self`"));
+
+        let func: ItemFn = parse_quote! {
+            async fn audit(request: tork::Request) -> tork::Result<tork::Response> { todo!() }
+        };
+        assert!(expand_fn(func)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly two parameters"));
+    }
+
+    #[test]
+    fn expand_fn_emits_struct_and_handle_impl() {
+        let func: ItemFn = parse_quote! {
+            #[doc = "middleware"]
+            pub async fn audit(
+                request: tork::Request,
+                next: tork::Next,
+            ) -> tork::Result<tork::Response> {
+                next.run(request).await
+            }
+        };
+        let tokens = expand_fn(func).unwrap().to_string();
+        assert!(tokens.contains("struct audit"));
+        assert!(tokens.contains("__tork_middleware_audit"));
+        assert!(tokens.contains("Middleware for audit"));
+        assert!(tokens.contains("Box :: pin"));
+    }
+}

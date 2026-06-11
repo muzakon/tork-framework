@@ -744,6 +744,65 @@ pub(crate) fn connection_error(error: tokio_tungstenite::tungstenite::Error) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::box_body;
+    use crate::extract::PathParams;
+    use crate::state::StateMap;
+    use bytes::Bytes;
+    use futures_util::{SinkExt, StreamExt};
+    use http_body_util::Full;
+    use std::sync::Mutex;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    fn request_context(headers: &[(&str, &str)]) -> RequestContext {
+        let mut builder = http::Request::builder().method(Method::GET).uri("/ws");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let head = builder.body(()).unwrap().into_parts().0;
+        RequestContext::new(
+            head,
+            PathParams::new(),
+            Arc::new(StateMap::new()),
+            box_body(Full::new(Bytes::new())),
+        )
+    }
+
+    fn request_context_with_duplex(
+        headers: &[(&str, &str)],
+        config: Option<WebSocketConfig>,
+        hooks: Option<WsHooks>,
+    ) -> (RequestContext, DuplexStream) {
+        let mut builder = http::Request::builder().method(Method::GET).uri("/ws");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let head = builder.body(()).unwrap().into_parts().0;
+        let mut state = StateMap::new();
+        if let Some(config) = config {
+            state.insert(AppWsConfig(config));
+        }
+        if let Some(hooks) = hooks {
+            state.insert(hooks);
+        }
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let ctx = RequestContext::with_duplex_upgrade(
+            head,
+            PathParams::new(),
+            Arc::new(state),
+            box_body(Full::new(Bytes::new())),
+            server,
+        );
+        (ctx, client)
+    }
+
+    fn websocket_headers() -> [(&'static str, &'static str); 4] {
+        [
+            ("upgrade", "websocket"),
+            ("connection", "keep-alive, Upgrade"),
+            ("sec-websocket-version", "13"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ]
+    }
 
     #[test]
     fn close_code_round_trips_through_u16() {
@@ -801,6 +860,14 @@ mod tests {
         let error: Error = WsError::policy_violation("no token").into();
         assert_eq!(error.kind(), crate::ErrorKind::Forbidden);
         assert_eq!(error.code(), "WS_REJECTED");
+
+        let too_large: Error = WsError::new(WsCloseCode::MessageTooBig, "big").into();
+        assert_eq!(too_large.kind(), crate::ErrorKind::PayloadTooLarge);
+
+        let internal = WsError::internal("boom");
+        assert_eq!(internal.code(), WsCloseCode::InternalError);
+        assert_eq!(internal.message(), "boom");
+        assert_eq!(internal.to_string(), "boom");
     }
 
     #[test]
@@ -816,12 +883,126 @@ mod tests {
             Some(WsCloseCode::NormalClosure),
         );
         assert_eq!(event.path(), "/ws");
+        assert_eq!(event.method(), &Method::GET);
         assert_eq!(event.request_id(), Some("req-1"));
         assert_eq!(event.duration(), Duration::from_secs(3));
         assert_eq!(event.close_code(), Some(WsCloseCode::NormalClosure));
     }
 
-    #[derive(serde::Deserialize, garde::Validate)]
+    #[test]
+    fn websocket_config_builders_and_connect_info_accessors_work() {
+        let config = WebSocketConfig::new()
+            .max_message_size_kb(2)
+            .max_frame_size_kb(1)
+            .idle_timeout_secs(3);
+        let tungstenite = config.to_tungstenite().expect("limits should be present");
+        assert_eq!(tungstenite.max_message_size, Some(2 * 1024));
+        assert_eq!(tungstenite.max_frame_size, Some(1024));
+        assert_eq!(config.idle_timeout, Some(Duration::from_secs(3)));
+        assert!(WebSocketConfig::new().to_tungstenite().is_none());
+
+        let info = WsConnInfo {
+            method: Method::POST,
+            path: "/chat".to_owned(),
+            request_id: Some("req-9".to_owned()),
+        };
+        let connect = WsConnectInfo::new(info);
+        assert_eq!(connect.method(), &Method::POST);
+        assert_eq!(connect.path(), "/chat");
+        assert_eq!(connect.request_id(), Some("req-9"));
+    }
+
+    #[test]
+    fn handshake_validates_required_headers() {
+        let ctx = request_context(&[]);
+        let error = match __ws_handshake(&ctx) {
+            Ok(_) => panic!("expected handshake rejection"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), NOT_A_WEBSOCKET);
+        assert_eq!(error.message(), "expected a WebSocket upgrade");
+
+        let ctx = request_context(&[
+            ("upgrade", "websocket"),
+            ("sec-websocket-version", "13"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ]);
+        let error = match __ws_handshake(&ctx) {
+            Ok(_) => panic!("expected handshake rejection"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.message(),
+            "WebSocket upgrade requires Connection: upgrade"
+        );
+
+        let ctx = request_context(&[
+            ("upgrade", "websocket"),
+            ("connection", "upgrade"),
+            ("sec-websocket-version", "12"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ]);
+        let error = match __ws_handshake(&ctx) {
+            Ok(_) => panic!("expected handshake rejection"),
+            Err(error) => error,
+        };
+        assert_eq!(error.message(), "unsupported WebSocket version");
+
+        let ctx = request_context(&[
+            ("upgrade", "websocket"),
+            ("connection", "upgrade"),
+            ("sec-websocket-version", "13"),
+        ]);
+        let error = match __ws_handshake(&ctx) {
+            Ok(_) => panic!("expected handshake rejection"),
+            Err(error) => error,
+        };
+        assert_eq!(error.message(), "missing Sec-WebSocket-Key");
+    }
+
+    #[test]
+    fn handshake_builds_switching_protocols_response() {
+        let ctx = request_context(&websocket_headers());
+        let response = __ws_handshake(&ctx).unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(response.headers()[UPGRADE], "websocket");
+        assert_eq!(response.headers()[CONNECTION], "upgrade");
+        assert!(response.headers().contains_key(SEC_WEBSOCKET_ACCEPT));
+    }
+
+    #[test]
+    fn from_request_context_merges_config_and_captures_request_metadata() {
+        let hooks = WsHooks::default();
+        let (ctx, _client) = request_context_with_duplex(
+            &[
+                ("x-request-id", "req-2"),
+                ("upgrade", "websocket"),
+                ("connection", "upgrade"),
+                ("sec-websocket-version", "13"),
+                ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+            ],
+            Some(WebSocketConfig::new().max_frame_size(64)),
+            Some(hooks),
+        );
+
+        let socket = WebSocket::from_request_context(
+            &ctx,
+            WebSocketConfig::new()
+                .max_message_size(128)
+                .idle_timeout(Duration::from_secs(2)),
+        )
+        .unwrap();
+
+        assert_eq!(socket.config.max_message_size, Some(128));
+        assert_eq!(socket.config.max_frame_size, Some(64));
+        assert_eq!(socket.config.idle_timeout, Some(Duration::from_secs(2)));
+        assert_eq!(socket.info.path, "/ws");
+        assert_eq!(socket.info.request_id.as_deref(), Some("req-2"));
+        assert!(socket.hooks.connect.is_empty());
+        assert!(socket.hooks.disconnect.is_empty());
+    }
+
+    #[derive(Debug, PartialEq, Eq, serde::Deserialize, garde::Validate)]
     struct ChatIn {
         #[garde(length(min = 1))]
         message: String,
@@ -837,5 +1018,134 @@ mod tests {
 
         let malformed = deserialize_and_validate::<ChatIn>(b"not json");
         assert_eq!(malformed.err().unwrap().kind(), crate::ErrorKind::Unprocessable);
+    }
+
+    #[tokio::test]
+    async fn duplex_accept_runs_hooks_and_exchanges_messages() {
+        let connects = Arc::new(Mutex::new(Vec::new()));
+        let disconnects = Arc::new(Mutex::new(Vec::new()));
+        let hooks = WsHooks {
+            connect: vec![Box::new({
+                let connects = connects.clone();
+                move |info| {
+                    let connects = connects.clone();
+                    Box::pin(async move {
+                        connects
+                            .lock()
+                            .unwrap()
+                            .push((info.method().clone(), info.path().to_owned(), info.request_id().map(str::to_owned)));
+                    })
+                }
+            })],
+            disconnect: vec![Box::new({
+                let disconnects = disconnects.clone();
+                move |info| {
+                    let disconnects = disconnects.clone();
+                    Box::pin(async move {
+                        disconnects
+                            .lock()
+                            .unwrap()
+                            .push((info.path().to_owned(), info.close_code()));
+                    })
+                }
+            })],
+        };
+        let headers = [
+            ("x-request-id", "req-hook"),
+            ("upgrade", "websocket"),
+            ("connection", "upgrade"),
+            ("sec-websocket-version", "13"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ];
+        let (ctx, client_io) = request_context_with_duplex(&headers, None, Some(hooks));
+        let socket = WebSocket::from_request_context(&ctx, WebSocketConfig::new()).unwrap();
+        let mut conn = socket.accept().await.unwrap();
+        let mut client =
+            WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+
+        client.send(Message::Text("hello".into())).await.unwrap();
+        assert_eq!(conn.receive_text().await.unwrap(), Some("hello".to_owned()));
+
+        conn.send_json(&serde_json::json!({ "ok": true })).await.unwrap();
+        let message = client.next().await.unwrap().unwrap();
+        assert_eq!(message.into_text().unwrap(), r#"{"ok":true}"#);
+
+        conn.close(WsCloseCode::NormalClosure, "bye").await.unwrap();
+        match client.next().await.unwrap().unwrap() {
+            Message::Close(Some(close)) => {
+                assert_eq!(u16::from(close.code), 1000);
+                assert_eq!(close.reason, "bye");
+            }
+            other => panic!("expected close frame, got {other:?}"),
+        }
+        drop(conn);
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            connects.lock().unwrap().as_slice(),
+            &[(Method::GET, "/ws".to_owned(), Some("req-hook".to_owned()))]
+        );
+        assert_eq!(
+            disconnects.lock().unwrap().as_slice(),
+            &[("/ws".to_owned(), Some(WsCloseCode::NormalClosure))]
+        );
+    }
+
+    #[tokio::test]
+    async fn duplex_connection_helpers_cover_close_idle_and_validation_paths() {
+        let (ctx, client_io) = request_context_with_duplex(
+            &websocket_headers(),
+            None,
+            None,
+        );
+        let socket = WebSocket::from_request_context(
+            &ctx,
+            WebSocketConfig::new().idle_timeout(Duration::from_millis(10)),
+        )
+        .unwrap();
+        let mut conn = socket.accept().await.unwrap();
+        let mut client =
+            WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+
+        client.send(Message::Ping(vec![1, 2])).await.unwrap();
+        client.send(Message::Text("{\"message\":\"ok\"}".into())).await.unwrap();
+        let validated = conn.receive_valid::<ChatIn>().await.unwrap().unwrap();
+        assert_eq!(validated.message, "ok");
+
+        client.send(Message::Binary(br#"{"message":""}"#.to_vec())).await.unwrap();
+        let error = match conn.receive_valid::<ChatIn>().await {
+            Ok(_) => panic!("expected validation error"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), crate::ErrorKind::Unprocessable);
+
+        client.send(Message::Text("not-json".into())).await.unwrap();
+        let error = match conn.receive_json::<ChatIn>().await {
+            Ok(_) => panic!("expected decode error"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), crate::ErrorKind::BadRequest);
+
+        client.close(None).await.unwrap();
+        assert_eq!(conn.receive_text().await.unwrap(), None);
+        assert_eq!(conn.receive_json::<ChatIn>().await.unwrap(), None);
+        assert_eq!(conn.receive_valid::<ChatIn>().await.unwrap(), None);
+
+        let (ctx, _client_io) =
+            request_context_with_duplex(&websocket_headers(), None, None);
+        let socket = WebSocket::from_request_context(
+            &ctx,
+            WebSocketConfig::new().idle_timeout(Duration::from_millis(5)),
+        )
+        .unwrap();
+        let mut idle_conn = socket.accept().await.unwrap();
+        assert_eq!(idle_conn.recv().await.unwrap(), None);
+    }
+
+    #[test]
+    fn frame_and_connection_errors_map_to_expected_results() {
+        let error = connection_error(tokio_tungstenite::tungstenite::Error::ConnectionClosed);
+        assert_eq!(error.code(), "WS_CONNECTION_ERROR");
+        assert!(error.message().contains("websocket connection error:"));
     }
 }

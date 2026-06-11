@@ -131,3 +131,88 @@ fn unsupported_status(code: u16) -> String {
          404, 405, 409, 413, 422, 429, 500, 503, 504"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn kind_helpers_cover_supported_and_unsupported_values() {
+        assert_eq!(kind_for_status(400), Some("BadRequest"));
+        assert_eq!(kind_for_status(503), Some("ServiceUnavailable"));
+        assert_eq!(kind_for_status(999), None);
+        assert!(is_kind_variant("Internal"));
+        assert!(!is_kind_variant("Nope"));
+        assert_eq!(ident("Foo").to_string(), "Foo");
+        assert!(unsupported_status(418).contains("418"));
+    }
+
+    #[test]
+    fn error_kind_defaults_and_accepts_code_or_variant() {
+        let input: DeriveInput = parse_quote! {
+            struct MyError;
+        };
+        assert_eq!(error_kind(&input).unwrap().to_string(), "Internal");
+
+        let input: DeriveInput = parse_quote! {
+            #[status(503)]
+            struct MyError;
+        };
+        assert_eq!(error_kind(&input).unwrap().to_string(), "ServiceUnavailable");
+
+        let input: DeriveInput = parse_quote! {
+            #[status(Forbidden)]
+            struct MyError;
+        };
+        assert_eq!(error_kind(&input).unwrap().to_string(), "Forbidden");
+    }
+
+    #[test]
+    fn error_kind_rejects_invalid_status_forms() {
+        let input: DeriveInput = parse_quote! {
+            #[status(418)]
+            struct MyError;
+        };
+        assert!(error_kind(&input).unwrap_err().to_string().contains("supported codes"));
+
+        let input: DeriveInput = parse_quote! {
+            #[status(foo::Bar)]
+            struct MyError;
+        };
+        assert!(error_kind(&input)
+            .unwrap_err()
+            .to_string()
+            .contains("expected an `ErrorKind` variant"));
+
+        let input: DeriveInput = parse_quote! {
+            #[status(Nope)]
+            struct MyError;
+        };
+        assert!(error_kind(&input)
+            .unwrap_err()
+            .to_string()
+            .contains("is not an `ErrorKind` variant"));
+
+        let input: DeriveInput = parse_quote! {
+            #[status("bad")]
+            struct MyError;
+        };
+        assert!(error_kind(&input)
+            .unwrap_err()
+            .to_string()
+            .contains("expects a status code"));
+    }
+
+    #[test]
+    fn expand_derive_emits_from_impl() {
+        let input: DeriveInput = parse_quote! {
+            #[status(429)]
+            struct RateLimited;
+        };
+        let tokens = expand_derive(input).unwrap().to_string();
+        assert!(tokens.contains("From < RateLimited > for"));
+        assert!(tokens.contains("ErrorKind :: TooManyRequests"));
+        assert!(tokens.contains("with_source"));
+    }
+}

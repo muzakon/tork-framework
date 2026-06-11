@@ -185,3 +185,47 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::{parse_quote, parse_str};
+
+    #[test]
+    fn sse_args_parse_known_keys_and_reject_unknown_ones() {
+        let args: SseArgs = parse_str(
+            "\"/events\", method = POST, event = \"tick\", response_model = Tick, summary = \"sum\", description = \"desc\", tags = [\"stream\"], __prefix = \"/api\"",
+        )
+        .unwrap();
+        assert_eq!(args.path.value(), "/events");
+        assert_eq!(args.method.unwrap().to_string(), "POST");
+        assert_eq!(args.event.unwrap().value(), "tick");
+        assert_eq!(args.tags.len(), 1);
+        assert_eq!(args.prefix_hint.unwrap().value(), "/api");
+
+        let error = match parse_str::<SseArgs>("\"/events\", nope = 1") {
+            Ok(_) => panic!("expected parse failure"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown sse attribute"));
+    }
+
+    #[test]
+    fn expand_sse_emits_streaming_builder_and_event_override() {
+        let args: SseArgs = parse_str(
+            "\"/events/{room}\", method = POST, event = \"tick\", response_model = Tick, summary = \"sum\", description = \"desc\", tags = [\"stream\"]",
+        )
+        .unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events(room: String, user: AuthUser) -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("GET", args, func).unwrap().to_string();
+        assert!(tokens.contains("Route :: new ("));
+        assert!(tokens.contains("Method :: POST"));
+        assert!(tokens.contains(". streaming ()"));
+        assert!(tokens.contains(". response_schema :: < Tick > ()"));
+        assert!(tokens.contains("IntoResponse :: into_response"));
+        assert!(tokens.contains("\"tick\""));
+        assert!(tokens.contains("__extract_path_param"));
+    }
+}

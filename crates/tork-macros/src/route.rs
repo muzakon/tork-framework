@@ -650,3 +650,166 @@ fn status_code_tokens(krate: &TokenStream, status_code: Option<&Expr>) -> TokenS
         Some(expr) => quote! { #expr },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::ToTokens;
+    use syn::{parse_quote, parse_str};
+
+    #[test]
+    fn upload_args_and_route_args_parse_expected_fields() {
+        let upload: UploadArgs = parse_str(
+            "max_body_size = \"2mb\", max_file_size = \"1mb\", memory_threshold = \"16kb\", max_files = 3",
+        )
+        .unwrap();
+        assert_eq!(upload.max_body_size, Some(2 * 1024 * 1024));
+        assert_eq!(upload.max_file_size, Some(1024 * 1024));
+        assert_eq!(upload.memory_threshold, Some(16 * 1024));
+        assert_eq!(upload.max_files, Some(3));
+        let error = match parse_str::<UploadArgs>("nope = 1") {
+            Ok(_) => panic!("expected parse failure"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown upload option"));
+
+        let args: RouteArgs = parse_str(
+            "\"/users/{id}\", response_model = UserOut, summary = \"sum\", description = \"desc\", status_code = 201, tags = [\"users\"], on_request = audit, on_response = done, on_error = err, on_validation_error = invalid, __prefix = \"/api\", upload(max_files = 2)",
+        )
+        .unwrap();
+        assert_eq!(args.path.value(), "/users/{id}");
+        assert!(args.response_model.is_some());
+        assert_eq!(args.tags.len(), 1);
+        assert_eq!(args.on_request.len(), 1);
+        assert!(args.upload.is_some());
+
+        let error = match parse_str::<RouteArgs>("\"/x\", mystery = 1") {
+            Ok(_) => panic!("expected parse failure"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown route attribute"));
+    }
+
+    #[test]
+    fn helper_functions_detect_body_forms_and_metadata() {
+        assert!(matches!(
+            detect_body_form(&parse_quote!(tork::Valid<Input>)),
+            Some(BodyForm::Json(_))
+        ));
+        assert!(matches!(
+            detect_body_form(&parse_quote!(tork::Form<Input>)),
+            Some(BodyForm::Urlencoded(_))
+        ));
+        assert!(matches!(
+            detect_body_form(&parse_quote!(tork::Multipart<Input>)),
+            Some(BodyForm::Multipart(_))
+        ));
+        assert!(detect_body_form(&parse_quote!(String)).is_none());
+        assert!(body_inner_type(&parse_quote!(tork::Json<Input>)).is_some());
+        assert!(first_generic_arg(&parse_quote!(Result<Item>), &["Result"]).is_some());
+        assert!(first_generic_arg(&parse_quote!(String), &["Result"]).is_none());
+
+        let no_status = status_code_tokens(&krate(), None).to_string();
+        assert!(no_status.contains("StatusCode :: OK"));
+        let numeric = status_code_tokens(&krate(), Some(&parse_quote!(201))).to_string();
+        assert!(numeric.contains("from_u16"));
+        assert_eq!(
+            status_code_tokens(&krate(), Some(&parse_quote!(tork::StatusCode::CREATED))).to_string(),
+            "tork :: StatusCode :: CREATED"
+        );
+    }
+
+    #[test]
+    fn build_handler_and_multipart_parts_cover_error_paths() {
+        let krate = krate();
+        let func: ItemFn = parse_quote! {
+            async fn handler(id: String, body: tork::Valid<Input>) -> tork::Result<Output> { todo!() }
+        };
+        let parts = build_handler_parts(&krate, &func, "/users/{id}").unwrap();
+        assert_eq!(parts.call_args.len(), 2);
+        assert!(matches!(parts.request_body, Some(BodyForm::Json(_))));
+        assert!(parts.bindings[0].to_string().contains("__extract_path_param"));
+
+        let func: ItemFn = parse_quote! {
+            async fn bad(self) -> tork::Result<Output> { todo!() }
+        };
+        let error = match build_handler_parts(&krate, &func, "/") {
+            Ok(_) => panic!("expected self rejection"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("cannot take `self`"));
+
+        let func: ItemFn = parse_quote! {
+            async fn bad((id): String) -> tork::Result<Output> { todo!() }
+        };
+        let error = match build_handler_parts(&krate, &func, "/users/{id}") {
+            Ok(_) => panic!("expected identifier rejection"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("simple identifiers"));
+
+        let func: ItemFn = parse_quote! {
+            async fn bad(a: tork::Valid<A>, b: tork::Json<B>) -> tork::Result<Output> { todo!() }
+        };
+        let error = match build_handler_parts(&krate, &func, "/") {
+            Ok(_) => panic!("expected duplicate body rejection"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("at most one request body"));
+
+        let func: ItemFn = parse_quote! {
+            async fn upload(#[file] file: tork::FileBytes, body: tork::Json<Input>) -> tork::Result<Output> { todo!() }
+        };
+        let error = match build_multipart_parts(&krate, &func, "/", &None) {
+            Ok(_) => panic!("expected multipart conflict"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("only have one body encoding"));
+
+        let func: ItemFn = parse_quote! {
+            async fn upload(#[file] payload: String) -> tork::Result<Output> { todo!() }
+        };
+        let error = match build_multipart_parts(&krate, &func, "/", &None) {
+            Ok(_) => panic!("expected invalid file rejection"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("FileBytes or UploadFile"));
+    }
+
+    #[test]
+    fn route_helper_builders_emit_expected_tokens() {
+        let krate = krate();
+        let config = upload_config_tokens(
+            &krate,
+            &UploadArgs {
+                max_body_size: Some(1),
+                max_file_size: Some(2),
+                memory_threshold: Some(3),
+                max_files: Some(4),
+            },
+        )
+        .to_string();
+        assert!(config.contains("max_body_size"));
+        assert!(config.contains("max_file_size"));
+        assert!(config.contains("memory_threshold"));
+        assert!(config.contains("max_files"));
+
+        let func: ItemFn = parse_quote! {
+            async fn upload(#[file] file: tork::FileBytes, #[form(name = "token")] token: String, id: String) -> tork::Result<Output> { todo!() }
+        };
+        assert!(has_form_params(&func));
+        let route_upload = Some(quote!(tork::UploadConfig::new().max_files(2)));
+        let parts = build_multipart_parts(&krate, &func, "/users/{id}", &route_upload).unwrap();
+        assert_eq!(parts.call_args.len(), 3);
+        assert!(parts.prelude.to_string().contains("__parse_multipart"));
+        assert_eq!(parts.schema_required, vec!["file".to_owned(), "token".to_owned()]);
+
+        let stripped = strip_form_attrs(&func);
+        let rendered = stripped.to_token_stream().to_string();
+        assert!(!rendered.contains("file]"));
+        assert!(!rendered.contains("form]"));
+
+        let output: ReturnType = parse_quote!(-> tork::Result<UserOut>);
+        assert!(result_ok_type(&output).is_some());
+    }
+}

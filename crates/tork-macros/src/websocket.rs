@@ -260,3 +260,82 @@ fn is_websocket_type(ty: &Type) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::{parse_quote, parse_str};
+
+    #[test]
+    fn ws_args_parse_options_and_reject_unknown_keys() {
+        let args: WsArgs = parse_str(
+            "\"/ws\", summary = \"sum\", description = \"desc\", max_message_size = \"2kb\", max_frame_size = \"1kb\", idle_timeout = \"5s\", incoming = Inbound, outgoing = Outbound, tags = [\"chat\"], __prefix = \"/api\"",
+        )
+        .unwrap();
+        assert_eq!(args.path.value(), "/ws");
+        assert_eq!(args.summary.unwrap().value(), "sum");
+        assert_eq!(args.max_message_size, Some(2048));
+        assert_eq!(args.max_frame_size, Some(1024));
+        assert_eq!(args.idle_timeout_ms, Some(5000));
+        assert_eq!(args.tags.len(), 1);
+        assert_eq!(args.prefix_hint.unwrap().value(), "/api");
+
+        let error = match parse_str::<WsArgs>("\"/ws\", nope = 1") {
+            Ok(_) => panic!("expected parse failure"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown websocket attribute"));
+    }
+
+    #[test]
+    fn websocket_type_detection_and_expand_errors_are_covered() {
+        assert!(is_websocket_type(&parse_quote!(tork::WebSocket)));
+        assert!(!is_websocket_type(&parse_quote!(String)));
+
+        let args: WsArgs = parse_str("\"/ws\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn handler(self) -> tork::Result<()> { Ok(()) }
+        };
+        assert!(expand_ws(args, func)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot take `self`"));
+
+        let args: WsArgs = parse_str("\"/ws\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn handler((socket): tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        assert!(expand_ws(args, func)
+            .unwrap_err()
+            .to_string()
+            .contains("simple identifiers"));
+
+        let args: WsArgs = parse_str("\"/ws\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn handler(id: String) -> tork::Result<()> { Ok(()) }
+        };
+        assert!(expand_ws(args, func)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one `WebSocket` parameter"));
+    }
+
+    #[test]
+    fn expand_ws_emits_handshake_bindings_and_metadata() {
+        let args: WsArgs = parse_str(
+            "\"/ws/{room}\", summary = \"sum\", description = \"desc\", max_message_size = \"2kb\", max_frame_size = \"1kb\", idle_timeout = \"10s\", incoming = InMsg, outgoing = OutMsg, tags = [\"chat\"]",
+        )
+        .unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket, room: String, user: AuthUser) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("__ws_handshake"));
+        assert!(tokens.contains("WebSocketConfig :: new () . max_message_size"));
+        assert!(tokens.contains("__extract_path_param"));
+        assert!(tokens.contains("FromRequest"));
+        assert!(tokens.contains(". websocket ()"));
+        assert!(tokens.contains(". ws_incoming :: < InMsg > ()"));
+        assert!(tokens.contains(". ws_outgoing :: < OutMsg > ()"));
+    }
+}

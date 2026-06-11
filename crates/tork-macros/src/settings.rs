@@ -344,3 +344,115 @@ fn default_value(expr: &Expr) -> TokenStream2 {
         quote!(#expr)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::{parse_quote, parse_str};
+
+    #[test]
+    fn container_args_parse_known_options_and_reject_unknown() {
+        let args: ContainerArgs = parse_str(
+            "prefix = \"APP\", env_file = \".env\", config_file = \"app.toml\", files = [\"a.toml\", \"b.toml\"], secrets_dir = \"secrets\"",
+        )
+        .unwrap();
+        assert_eq!(args.prefix.as_ref().unwrap().value(), "APP");
+        assert_eq!(args.env_file.as_ref().unwrap().value(), ".env");
+        assert_eq!(args.config_file.as_ref().unwrap().value(), "app.toml");
+        assert_eq!(args.files.len(), 2);
+        assert_eq!(args.secrets_dir.as_ref().unwrap().value(), "secrets");
+
+        let error = match parse_str::<ContainerArgs>("nope = \"x\"") {
+            Ok(_) => panic!("expected parse failure"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown settings option"));
+    }
+
+    #[test]
+    fn setting_args_parse_flags_values_and_unknown_keys() {
+        let args: SettingArgs = parse_str(
+            "default, min_length = 1, max_length = 5, ge = 1, le = 9, gt = 2, lt = 8, email, secret, nested, custom = validate_name",
+        )
+        .unwrap();
+        assert!(args.default_flag);
+        assert!(args.email);
+        assert!(args.secret);
+        assert!(args.nested);
+        assert_eq!(args.min_length.as_ref().unwrap().base10_digits(), "1");
+        assert_eq!(args.custom.len(), 1);
+
+        let args: SettingArgs = parse_str("default = \"hello\"").unwrap();
+        assert!(args.default.is_some());
+        assert!(!args.default_flag);
+
+        let error = match parse_str::<SettingArgs>("mystery = 1") {
+            Ok(_) => panic!("expected parse failure"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown setting constraint"));
+    }
+
+    #[test]
+    fn load_chain_and_default_value_emit_expected_tokens() {
+        let container = ContainerArgs {
+            prefix: Some(parse_quote!("APP")),
+            env_file: Some(parse_quote!(".env")),
+            config_file: Some(parse_quote!("app.toml")),
+            files: vec![parse_quote!("a.toml"), parse_quote!("b.toml")],
+            secrets_dir: Some(parse_quote!("secrets")),
+        };
+        let chain = load_chain(&container).to_string();
+        assert!(chain.contains("env_file"));
+        assert!(chain.contains("prefix"));
+        assert!(chain.contains("config_file"));
+        assert!(chain.contains("file"));
+        assert!(chain.contains("secrets_dir"));
+
+        assert!(default_value(&parse_quote!("secret")).to_string().contains("Into :: into"));
+        assert_eq!(default_value(&parse_quote!(42)).to_string(), "42");
+    }
+
+    #[test]
+    fn expand_struct_generates_default_impl_and_loader() {
+        let item: ItemStruct = parse_quote! {
+            pub struct Settings {
+                #[setting(default = "demo")]
+                name: String,
+                #[setting(default)]
+                port: u16,
+            }
+        };
+        let tokens = expand_struct(ContainerArgs::default(), item).unwrap().to_string();
+        assert!(tokens.contains("impl :: core :: default :: Default for Settings"));
+        assert!(tokens.contains("pub fn load () -> :: tork :: Result < Self >"));
+        assert!(tokens.contains("SettingsLoader :: < Self > :: new ()"));
+        assert!(tokens.contains("__tork_default_settings_name"));
+    }
+
+    #[test]
+    fn expand_struct_handles_constraints_and_rejects_tuple_structs() {
+        let item: ItemStruct = parse_quote! {
+            struct Settings {
+                #[setting(min_length = 1, max_length = 8, ge = 1, le = 9, gt = 2, lt = 8, email, custom = check_name)]
+                name: String,
+                #[setting(secret)]
+                token: String,
+                #[setting(nested, default)]
+                nested: Option<Nested>,
+            }
+        };
+        let tokens = expand_struct(ContainerArgs::default(), item).unwrap().to_string();
+        assert!(tokens.contains("length"));
+        assert!(tokens.contains("range"));
+        assert!(tokens.contains("email"));
+        assert!(tokens.contains("custom"));
+        assert!(tokens.contains("garde"));
+
+        let tuple_struct: ItemStruct = parse_quote!(struct Bad(u32););
+        assert!(expand_struct(ContainerArgs::default(), tuple_struct)
+            .unwrap_err()
+            .to_string()
+            .contains("supports only structs with named fields"));
+    }
+}

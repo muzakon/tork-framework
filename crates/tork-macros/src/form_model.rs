@@ -234,3 +234,98 @@ fn field_constraints(field: &syn::Field) -> syn::Result<Option<Constraints>> {
     })?;
     Ok(Some(constraints))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn numeric_checks_and_text_checks_cover_all_multiplicities() {
+        let constraints = Constraints {
+            min_length: Some(parse_quote!(1)),
+            max_length: Some(parse_quote!(5)),
+            ge: Some(parse_quote!(1)),
+            le: Some(parse_quote!(9)),
+            gt: Some(parse_quote!(2)),
+            lt: Some(parse_quote!(8)),
+        };
+        assert_eq!(numeric_checks(&constraints).len(), 4);
+
+        let one = text_checks(&krate(), &parse_quote!(value), Multiplicity::One, "name", &constraints)
+            .to_string();
+        assert!(one.contains("TOO_SHORT"));
+        assert!(one.contains("TOO_LONG"));
+
+        let optional = text_checks(
+            &krate(),
+            &parse_quote!(value),
+            Multiplicity::Optional,
+            "name",
+            &constraints,
+        )
+        .to_string();
+        assert!(optional.contains("Option :: Some"));
+
+        let many = text_checks(&krate(), &parse_quote!(value), Multiplicity::Many, "name", &constraints)
+            .to_string();
+        assert!(many.is_empty());
+    }
+
+    #[test]
+    fn field_constraints_parse_known_keys_and_ignore_unknown_ones() {
+        let field: syn::Field = parse_quote! {
+            #[field(min_length = 1, max_length = 5, ge = 1, le = 9, gt = 2, lt = 8, title = "ignored")]
+            name: String
+        };
+        let constraints = field_constraints(&field).unwrap().unwrap();
+        assert_eq!(constraints.min_length.unwrap().base10_digits(), "1");
+        assert_eq!(constraints.max_length.unwrap().base10_digits(), "5");
+        assert!(constraints.ge.is_some());
+        assert!(constraints.lt.is_some());
+
+        let field: syn::Field = parse_quote!(name: String);
+        assert!(field_constraints(&field).unwrap().is_none());
+    }
+
+    #[test]
+    fn expand_derive_rejects_invalid_inputs_and_emits_bindings() {
+        let tuple: DeriveInput = parse_quote!(struct Bad(String););
+        assert!(expand_derive(tuple)
+            .unwrap_err()
+            .to_string()
+            .contains("requires a struct with named fields"));
+
+        let enum_input: DeriveInput = parse_quote!(enum Bad { A });
+        assert!(expand_derive(enum_input)
+            .unwrap_err()
+            .to_string()
+            .contains("can only be derived for structs"));
+
+        let invalid_file: DeriveInput = parse_quote! {
+            struct Upload {
+                #[file]
+                payload: String,
+            }
+        };
+        assert!(expand_derive(invalid_file)
+            .unwrap_err()
+            .to_string()
+            .contains("FileBytes or UploadFile"));
+
+        let valid: DeriveInput = parse_quote! {
+            struct Upload {
+                #[file(max_size = "1mb", content_types = ["image/png"], sniff = true)]
+                avatar: tork::FileBytes,
+                #[form(name = "display_name")]
+                #[field(min_length = 1)]
+                name: String,
+            }
+        };
+        let tokens = expand_derive(valid).unwrap().to_string();
+        assert!(tokens.contains("FromMultipart for Upload"));
+        assert!(tokens.contains("take_file_bytes"));
+        assert!(tokens.contains("display_name"));
+        assert!(tokens.contains("VALIDATION_ERROR"));
+    }
+}
