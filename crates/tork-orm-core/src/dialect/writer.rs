@@ -154,6 +154,14 @@ impl<'a> QueryWriter<'a> {
         }
         self.push_sql(" FROM ");
         self.push_identifier(statement.table);
+        for join in &statement.joins {
+            self.push_sql(" INNER JOIN ");
+            self.push_identifier(join.table);
+            self.push_sql(" ON ");
+            self.push_qualified(join.left_table, join.left_column);
+            self.push_sql(" = ");
+            self.push_qualified(join.right_table, join.right_column);
+        }
         self.write_where(&statement.filters);
 
         if !statement.order_by.is_empty() {

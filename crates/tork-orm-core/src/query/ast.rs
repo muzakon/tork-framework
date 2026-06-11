@@ -21,6 +21,23 @@ pub enum SelectItem {
     },
 }
 
+/// A join onto another table, `INNER JOIN "table" ON left = right`.
+///
+/// This phase emits inner joins; the condition equates two qualified columns.
+#[derive(Debug, Clone)]
+pub struct Join {
+    /// The table brought into the query.
+    pub table: &'static str,
+    /// The left side table of the `ON` condition.
+    pub left_table: &'static str,
+    /// The left side column of the `ON` condition.
+    pub left_column: &'static str,
+    /// The right side table of the `ON` condition.
+    pub right_table: &'static str,
+    /// The right side column of the `ON` condition.
+    pub right_column: &'static str,
+}
+
 /// A single `ORDER BY` term.
 #[derive(Debug, Clone)]
 pub struct OrderItem {
@@ -44,6 +61,8 @@ pub struct SelectStatement {
     pub table: &'static str,
     /// The projected items.
     pub projection: Vec<SelectItem>,
+    /// The joined tables.
+    pub joins: Vec<Join>,
     /// The top-level predicates, joined by `AND`.
     pub filters: Vec<Expr>,
     /// The ordering terms.
@@ -62,6 +81,7 @@ impl SelectStatement {
         Self {
             table,
             projection,
+            joins: Vec::new(),
             filters: Vec::new(),
             order_by: Vec::new(),
             limit: None,

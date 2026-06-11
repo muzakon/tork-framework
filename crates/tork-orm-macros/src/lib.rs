@@ -9,6 +9,7 @@ use proc_macro::TokenStream;
 
 mod common;
 mod model;
+mod relations;
 
 /// Derives the [`Model`] trait for a struct that maps to a database table.
 ///
@@ -44,4 +45,31 @@ mod model;
 #[proc_macro_derive(Model, attributes(table, field))]
 pub fn derive_model(item: TokenStream) -> TokenStream {
     model::expand(item)
+}
+
+/// Declares the relations of a model on an `impl` block.
+///
+/// Each method names a relation and is rewritten into an accessor returning a
+/// [`Relation`] descriptor used by `QuerySet::join` (and, later, preloading).
+///
+/// # Method attributes
+///
+/// - `#[has_many(Other, foreign_key = Other::this_id)]` — a one-to-many where the
+///   other model carries this model's key
+/// - `#[belongs_to(Other, foreign_key = Self::other_id)]` — a many-to-one where
+///   this model carries the other model's key
+///
+/// # Example
+///
+/// ```ignore
+/// #[relations]
+/// impl User {
+///     #[has_many(Post, foreign_key = Post::user_id)]
+///     pub fn posts() {}
+/// }
+/// // `User::posts()` now returns a `Relation<User, Post>`.
+/// ```
+#[proc_macro_attribute]
+pub fn relations(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    relations::expand(item)
 }

@@ -84,6 +84,17 @@ impl<M: Model> QuerySet<M> {
         self
     }
 
+    /// Joins a related table for filtering or aggregation.
+    ///
+    /// The join does not load the related rows; use it to filter the queried
+    /// model by columns on the related table. A `has_many` join can repeat parent
+    /// rows, so pair it with [`distinct`](Self::distinct) when selecting parents.
+    /// Only a relation defined on `M` is accepted, so the join is type-checked.
+    pub fn join<C>(mut self, relation: crate::relation::Relation<M, C>) -> Self {
+        self.statement.joins.push(relation.join_node());
+        self
+    }
+
     /// Adds an ordering term (build it with `Column::asc`/`Column::desc`).
     pub fn order_by(mut self, term: OrderItem) -> Self {
         self.statement.order_by.push(term);
