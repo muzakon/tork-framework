@@ -325,6 +325,7 @@ fn decode_error(error: serde_json::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn rejected_error_uses_stable_code() {
@@ -351,5 +352,25 @@ mod tests {
         let error = decode_error(source);
 
         assert!(error.message().starts_with("message is not valid JSON:"));
+    }
+
+    #[tokio::test]
+    async fn client_io_duplex_supports_async_read_and_write() {
+        let (left, mut right) = tokio::io::duplex(16);
+        let mut io = ClientIo::Duplex(left);
+
+        io.write_all(b"ping").await.unwrap();
+        io.flush().await.unwrap();
+
+        let mut buf = [0u8; 4];
+        right.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+
+        right.write_all(b"pong").await.unwrap();
+        right.flush().await.unwrap();
+
+        let mut back = [0u8; 4];
+        io.read_exact(&mut back).await.unwrap();
+        assert_eq!(&back, b"pong");
     }
 }

@@ -311,4 +311,57 @@ mod tests {
         assert!(output.contains("user_id=42"), "{output}");
         assert!(output.contains("ms"), "{output}");
     }
+
+    #[test]
+    fn console_format_with_color_and_error_field_uses_color_codes() {
+        let output = {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let writer = BufWriter(buffer.clone());
+            let layer = tracing_subscriber::fmt::layer()
+                .event_format(TorkFormat::Console(ConsoleFormat { color: true }))
+                .with_writer(writer);
+            let subscriber = tracing_subscriber::registry().with(layer);
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::error!(
+                    tork.context = "OrderService",
+                    tork.fields = "{\"user_id\":42}",
+                    tork.error = "{\"kind\":\"boom\"}",
+                    "Failure"
+                );
+            });
+            String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+        };
+        assert!(output.contains("\u{1b}[31m"), "{output}");
+        assert!(output.contains("error={\"kind\":\"boom\"}"), "{output}");
+        assert!(output.contains("[OrderService] Failure"), "{output}");
+    }
+
+    #[test]
+    fn json_format_keeps_reserved_fields_and_serializes_error() {
+        let output = {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let writer = BufWriter(buffer.clone());
+            let layer = tracing_subscriber::fmt::layer()
+                .event_format(TorkFormat::Json(JsonFormat {
+                    service_name: "svc".to_owned(),
+                }))
+                .with_writer(writer);
+            let subscriber = tracing_subscriber::registry().with(layer);
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::warn!(
+                    tork.context = "Orders",
+                    tork.fields = "{\"service\":\"inner\",\"user_id\":42}",
+                    tork.error = "{\"code\":\"boom\"}",
+                    "Retry"
+                );
+            });
+            String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+        };
+        assert!(output.contains("\"service\":\"svc\""), "{output}");
+        assert!(output.contains("\"context\":\"Orders\""), "{output}");
+        assert!(output.contains("\"message\":\"Retry\""), "{output}");
+        assert!(output.contains("\"user_id\":42"), "{output}");
+        assert!(output.contains("\"error\":{\"code\":\"boom\"}"), "{output}");
+        assert!(!output.contains("\"service\":\"inner\""), "{output}");
+    }
 }

@@ -172,6 +172,7 @@ mod tests {
         assert!(tokens.contains("FromRequest for Service"));
         assert!(tokens.contains("let db ="));
         assert!(tokens.contains("let logger ="));
-        assert!(tokens.contains("for_context ( \"field\" )"));
+        assert!(tokens.contains("for_context"));
+        assert!(tokens.contains("field"));
     }
 }

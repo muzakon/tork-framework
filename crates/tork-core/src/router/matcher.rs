@@ -195,7 +195,10 @@ mod tests {
             Route::new(Method::GET, "/users/{user_id}", dummy_handler()),
             Route::new(Method::GET, "/users/{user_id}", dummy_handler()),
         ];
-        let err = Matcher::build(routes).unwrap_err();
+        let err = match Matcher::build(routes) {
+            Ok(_) => panic!("expected duplicate route registration to fail"),
+            Err(err) => err,
+        };
         assert!(err.to_string().contains("failed to register route GET /users/{user_id}"));
     }
 

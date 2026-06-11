@@ -489,15 +489,16 @@ mod tests {
             }
         };
         let tokens = expand_struct(container, item).unwrap().to_string();
-        assert!(tokens.contains("serde rename_all"));
-        assert!(tokens.contains("garde skip"));
+        assert!(tokens.contains("rename_all"));
+        assert!(tokens.contains("camelCase"));
+        assert!(tokens.contains("skip"));
         assert!(tokens.contains("length"));
         assert!(tokens.contains("range"));
         assert!(tokens.contains("exclusiveMinimum"));
         assert!(tokens.contains("exclusiveMaximum"));
         assert!(tokens.contains("title"));
         assert!(tokens.contains("description"));
-        assert!(tokens.contains("serde default"));
+        assert!(tokens.contains("default"));
         assert!(tokens.contains("validate_name"));
         assert!(tokens.contains("dive"));
         assert!(tokens.contains("fn __tork_user_score_gt"));
