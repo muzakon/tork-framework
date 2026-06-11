@@ -70,8 +70,12 @@ mime = "0.3.17"
 infer = "0.19"
 
 # Validation and JSON Schema generation.
-garde = { version = "0.23", features = ["derive"] }
+garde = { version = "0.23", features = ["derive", "email"] }
 schemars = "1"
+
+# Typed configuration: source merging and .env loading.
+figment = { version = "0.10", features = ["env", "toml"] }
+dotenvy = "0.15"
 
 # Error-response metadata: trace identifiers and timestamps.
 uuid = { version = "1", features = ["v4"] }
