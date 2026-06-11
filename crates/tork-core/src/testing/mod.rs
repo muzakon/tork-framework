@@ -17,10 +17,14 @@ mod client;
 mod cookie;
 mod request;
 mod response;
+mod sse;
+mod websocket;
 
 pub use client::{TestClient, TestClientBuilder};
 pub use request::{TestMultipartBuilder, TestRequestBuilder};
 pub use response::TestResponse;
+pub use sse::{TestSseEvent, TestSseStream};
+pub use websocket::{TestWebSocket, TestWebSocketBuilder};
 
 /// A factory producing a fresh boxed instance of an overridden dependency.
 type OverrideFactory = Arc<dyn Fn() -> Box<dyn Any + Send> + Send + Sync>;

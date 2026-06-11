@@ -708,7 +708,7 @@ where
 }
 
 /// Maps a framework message to a tungstenite message.
-fn into_tungstenite(message: WsMessage) -> Message {
+pub(crate) fn into_tungstenite(message: WsMessage) -> Message {
     match message {
         WsMessage::Text(text) => Message::Text(text),
         WsMessage::Binary(bytes) => Message::Binary(bytes),
@@ -722,7 +722,7 @@ fn into_tungstenite(message: WsMessage) -> Message {
 }
 
 /// Maps a tungstenite message to a framework message, dropping raw frames.
-fn from_tungstenite(message: Message) -> Option<WsMessage> {
+pub(crate) fn from_tungstenite(message: Message) -> Option<WsMessage> {
     match message {
         Message::Text(text) => Some(WsMessage::Text(text)),
         Message::Binary(bytes) => Some(WsMessage::Binary(bytes)),
@@ -737,7 +737,7 @@ fn from_tungstenite(message: Message) -> Option<WsMessage> {
 }
 
 /// Renders a tungstenite protocol error as a framework error.
-fn connection_error(error: tokio_tungstenite::tungstenite::Error) -> Error {
+pub(crate) fn connection_error(error: tokio_tungstenite::tungstenite::Error) -> Error {
     Error::internal(format!("websocket connection error: {error}")).with_code("WS_CONNECTION_ERROR")
 }
 

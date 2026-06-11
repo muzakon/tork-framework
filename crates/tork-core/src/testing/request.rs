@@ -120,6 +120,13 @@ impl TestRequestBuilder {
             .send(self.method, self.path, self.query, self.headers, self.body)
             .await
     }
+
+    /// Sends the request and reads the response as a Server-Sent Events stream.
+    pub async fn sse(self) -> Result<super::sse::TestSseStream> {
+        self.shared
+            .open_sse(self.method, self.path, self.query, self.headers)
+            .await
+    }
 }
 
 /// One part of a multipart body: a text field or a file.

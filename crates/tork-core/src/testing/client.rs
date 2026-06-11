@@ -1,5 +1,6 @@
 //! The in-process test client and its builder.
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -10,10 +11,15 @@ use super::TestOverrides;
 use super::cookie::CookieJar;
 use super::request::{PendingBody, TestRequestBuilder};
 use super::response::TestResponse;
+use super::websocket::TestWebSocketBuilder;
 use crate::app::{App, AppInner, TestApp};
-use crate::body::{ReqBody, box_body};
+use crate::body::{BoxError, ReqBody, box_body};
 use crate::error::{Error, Result};
 use crate::state::StateMap;
+
+/// A boxed streaming response body, used to read Server-Sent Events incrementally.
+pub(crate) type StreamingBody =
+    Pin<Box<dyn http_body::Body<Data = Bytes, Error = BoxError> + Send>>;
 
 /// A closure that registers one override resource into the state map.
 type ResourceRegister = Box<dyn FnOnce(&mut StateMap)>;
@@ -29,7 +35,7 @@ pub(crate) enum Transport {
 
 impl Transport {
     /// Executes a request and returns the status, headers, and full body.
-    async fn execute(
+    pub(crate) async fn execute(
         &self,
         request: http::Request<ReqBody>,
     ) -> Result<(StatusCode, HeaderMap, Bytes)> {
@@ -48,13 +54,27 @@ impl Transport {
             }
         }
     }
+
+    /// Executes a request and returns the streaming body unread, for SSE.
+    pub(crate) async fn execute_streaming(
+        &self,
+        request: http::Request<ReqBody>,
+    ) -> Result<(StatusCode, HeaderMap, StreamingBody)> {
+        match self {
+            Transport::InProcess(app) => {
+                let response = app.clone().handle(request).await;
+                let (parts, body) = response.into_parts();
+                Ok((parts.status, parts.headers, Box::pin(body)))
+            }
+        }
+    }
 }
 
 /// State shared between the client and its request builders.
 pub(crate) struct Shared {
     pub(crate) transport: Transport,
-    default_headers: HeaderMap,
-    cookies: Mutex<CookieJar>,
+    pub(crate) default_headers: HeaderMap,
+    pub(crate) cookies: Mutex<CookieJar>,
 }
 
 impl Shared {
@@ -80,9 +100,27 @@ impl Shared {
         })
     }
 
+    /// Opens a Server-Sent Events stream, returning a reader over the response
+    /// body. The body is not collected, so events are read as they arrive.
+    pub(crate) async fn open_sse(
+        &self,
+        method: Method,
+        path: String,
+        query: Vec<(String, String)>,
+        headers: Vec<(HeaderName, HeaderValue)>,
+    ) -> Result<super::sse::TestSseStream> {
+        let request = self.build_request(method, &path, &query, headers, PendingBody::default())?;
+        let (_status, headers, body) = self.transport.execute_streaming(request).await?;
+        self.cookies
+            .lock()
+            .expect("cookie jar mutex poisoned")
+            .store(&headers);
+        Ok(super::sse::TestSseStream::new(body))
+    }
+
     /// Assembles an `http::Request`, merging default headers, the cookie jar, and
     /// the body's content type.
-    fn build_request(
+    pub(crate) fn build_request(
         &self,
         method: Method,
         path: &str,
@@ -152,10 +190,9 @@ impl TestClient {
         TestClientBuilder::new(app)
     }
 
-    // Used by the WebSocket/SSE builders, which land in a later commit.
-    #[allow(dead_code)]
-    pub(crate) fn shared(&self) -> &Arc<Shared> {
-        &self.shared
+    /// Starts a WebSocket connection.
+    pub fn websocket(&self, path: &str) -> TestWebSocketBuilder {
+        TestWebSocketBuilder::new(self.shared.clone(), path)
     }
 
     /// Starts a `GET` request.
