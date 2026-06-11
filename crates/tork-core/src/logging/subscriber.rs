@@ -20,6 +20,18 @@ type BoxLayer = Box<dyn Layer<Registry> + Send + Sync>;
 #[must_use = "dropping the LoggerHandle stops background log workers"]
 pub(crate) struct LoggerHandle {
     _guards: Vec<WorkerGuard>,
+    #[cfg(feature = "otel")]
+    otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+}
+
+#[cfg(feature = "otel")]
+impl Drop for LoggerHandle {
+    fn drop(&mut self) {
+        // Flush and stop the trace exporter on shutdown.
+        if let Some(provider) = &self.otel_provider {
+            let _ = provider.shutdown();
+        }
+    }
 }
 
 /// Installs the global subscriber from `config`.
@@ -35,9 +47,54 @@ pub(crate) fn install(config: &LoggerConfig) -> LoggerHandle {
         layers.push(file_layer(config, file, &mut guards));
     }
 
+    #[cfg(feature = "otel")]
+    let otel_provider = config.telemetry.as_ref().and_then(|telemetry| {
+        otel_layer(config, telemetry).map(|(layer, provider)| {
+            layers.push(layer);
+            provider
+        })
+    });
+
     // A failure means a subscriber was already installed; that is fine.
     let _ = Registry::default().with(layers).try_init();
-    LoggerHandle { _guards: guards }
+    LoggerHandle {
+        _guards: guards,
+        #[cfg(feature = "otel")]
+        otel_provider,
+    }
+}
+
+/// Builds the OpenTelemetry trace-export layer and its provider.
+#[cfg(feature = "otel")]
+fn otel_layer(
+    config: &LoggerConfig,
+    telemetry: &super::config::TelemetryConfig,
+) -> Option<(BoxLayer, opentelemetry_sdk::trace::SdkTracerProvider)> {
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_otlp::WithExportConfig as _;
+
+    if !telemetry.enabled {
+        return None;
+    }
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(&telemetry.otlp_endpoint)
+        .build()
+        .ok()?;
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name(telemetry.service_name.clone())
+        .build();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(resource)
+        .build();
+    let tracer = provider.tracer("tork");
+    let layer = tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_filter(env_filter(&config.level))
+        .boxed();
+    Some((layer, provider))
 }
 
 /// Builds the level/`RUST_LOG` filter (a fresh value per layer, as it is not
@@ -143,5 +200,20 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("\"context\":\"FileTest\""), "{contents}");
         assert!(contents.contains("\"message\":\"to a file\""), "{contents}");
+    }
+
+    #[cfg(feature = "otel")]
+    #[tokio::test]
+    async fn otel_layer_builds_from_config() {
+        use super::super::config::TelemetryConfig;
+        let config = LoggerConfig::new();
+        let telemetry = TelemetryConfig::new("http://localhost:4317").service_name("test");
+        // The exporter connects lazily, so building the layer succeeds without a
+        // running collector.
+        let built = otel_layer(&config, &telemetry);
+        assert!(built.is_some());
+        if let Some((_, provider)) = built {
+            let _ = provider.shutdown();
+        }
     }
 }

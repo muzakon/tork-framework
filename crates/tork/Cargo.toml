@@ -24,6 +24,8 @@ schemars.workspace = true
 default = ["openapi"]
 # Enables OpenAPI specification generation and the embedded documentation UI.
 openapi = ["dep:tork-openapi"]
+# Exports traces over OTLP via OpenTelemetry.
+otel = ["tork-core/otel"]
 
 [dev-dependencies]
 serde = { workspace = true }

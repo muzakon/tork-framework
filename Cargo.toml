@@ -88,6 +88,12 @@ tracing-subscriber = { version = "0.3", features = [
 ] }
 tracing-appender = "0.2"
 
+# OpenTelemetry trace export (enabled by tork-core's `otel` feature).
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.32"
+
 # Error-response metadata: trace identifiers and timestamps.
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting"] }
