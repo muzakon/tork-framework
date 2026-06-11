@@ -264,4 +264,24 @@ mod tests {
         assert!(document["components"]["schemas"]["ChatOut"].is_object());
         assert!(document["components"]["schemas"]["Tick"].is_object());
     }
+
+    #[test]
+    fn provider_registers_custom_json_route() {
+        let provider = AsyncApi::new()
+            .title("Realtime")
+            .version("2.0.0")
+            .json("/events.json");
+
+        let routes = provider.documentation_routes(&[]);
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].path(), "/events.json");
+        assert_eq!(routes[0].method(), Method::GET);
+    }
+
+    #[test]
+    fn channel_name_covers_root_and_placeholders() {
+        assert_eq!(channel_name("/"), "root");
+        assert_eq!(channel_name("/chat/{room}/members"), "chat_room_members");
+    }
 }

@@ -59,3 +59,34 @@ fn html_escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_escape_replaces_reserved_characters() {
+        assert_eq!(
+            html_escape(r#"<Tork & "Docs">"#),
+            "&lt;Tork &amp; &quot;Docs&quot;&gt;"
+        );
+    }
+
+    #[test]
+    fn render_html_embeds_escaped_title_and_spec_url() {
+        let html = render_html(r#"Tork "Docs""#, "/openapi.json?x=<tag>");
+
+        assert!(html.contains("<title>Tork &quot;Docs&quot;</title>"));
+        assert!(html.contains("data-url=\"/openapi.json?x=&lt;tag&gt;\""));
+        assert!(html.contains(SCALAR_CDN_URL));
+    }
+
+    #[test]
+    fn docs_route_uses_requested_path() {
+        let route = docs_route("/docs", "API", "/openapi.json");
+
+        assert_eq!(route.path(), "/docs");
+        assert_eq!(route.method(), Method::GET);
+        assert_eq!(route.meta().summary.as_deref(), Some("API documentation"));
+    }
+}

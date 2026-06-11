@@ -60,3 +60,15 @@ impl Middleware for Trace {
         DuplicatePolicy::Reject
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_metadata_is_stable() {
+        let middleware = Trace::new();
+        assert_eq!(middleware.name(), "Trace");
+        assert_eq!(middleware.duplicate_policy(), DuplicatePolicy::Reject);
+    }
+}

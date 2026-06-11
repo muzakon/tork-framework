@@ -191,3 +191,49 @@ where
         HeaderValue::from_str(&joined).ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use crate::body::box_body;
+
+    fn request(origin: Option<&str>) -> Request {
+        let mut builder = http::Request::builder().method(Method::GET).uri("/");
+        if let Some(origin) = origin {
+            builder = builder.header(ORIGIN, origin);
+        }
+        builder.body(box_body(Full::new(Bytes::new()))).unwrap()
+    }
+
+    #[test]
+    fn join_builds_header_values_or_none() {
+        assert_eq!(join(["GET", "POST"]).unwrap(), "GET, POST");
+        assert!(join::<[&str; 0], _>([]).is_none());
+    }
+
+    #[test]
+    fn wildcard_without_credentials_returns_star() {
+        let cors = Cors::new().allow_origin("*");
+        let value = cors.allow_origin_value(&request(Some("https://app.example.com")));
+
+        assert_eq!(value.unwrap(), "*");
+    }
+
+    #[test]
+    fn wildcard_with_credentials_echoes_origin() {
+        let cors = Cors::new().allow_origin("*").allow_credentials(true);
+        let value = cors.allow_origin_value(&request(Some("https://app.example.com")));
+
+        assert_eq!(value.unwrap(), "https://app.example.com");
+    }
+
+    #[test]
+    fn exact_allow_list_rejects_unknown_origin() {
+        let cors = Cors::new().allow_origin("https://good.example.com");
+
+        assert!(cors.allow_origin_value(&request(Some("https://evil.example.com"))).is_none());
+        assert!(cors.allow_origin_value(&request(None)).is_none());
+    }
+}

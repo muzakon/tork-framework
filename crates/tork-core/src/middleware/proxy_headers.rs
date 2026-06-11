@@ -49,3 +49,15 @@ impl Middleware for ProxyHeaders {
         DuplicatePolicy::Reject
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_metadata_is_stable() {
+        let middleware = ProxyHeaders::new();
+        assert_eq!(middleware.name(), "ProxyHeaders");
+        assert_eq!(middleware.duplicate_policy(), DuplicatePolicy::Reject);
+    }
+}

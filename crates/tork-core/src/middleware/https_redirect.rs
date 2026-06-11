@@ -77,3 +77,31 @@ fn is_https(request: &Request) -> bool {
     }
     request.uri().scheme_str() == Some("https")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::Full;
+    use crate::body::box_body;
+
+    fn request(uri: &str, forwarded_proto: Option<&str>) -> Request {
+        let mut builder = http::Request::builder().method("GET").uri(uri);
+        if let Some(value) = forwarded_proto {
+            builder = builder.header(FORWARDED_PROTO, value);
+        }
+        builder.body(box_body(Full::new(Bytes::new()))).unwrap()
+    }
+
+    #[test]
+    fn forwarded_proto_takes_priority() {
+        assert!(is_https(&request("/", Some("https"))));
+        assert!(!is_https(&request("/", Some("http"))));
+    }
+
+    #[test]
+    fn uri_scheme_is_used_without_proxy_header() {
+        assert!(is_https(&request("https://example.com/path", None)));
+        assert!(!is_https(&request("http://example.com/path", None)));
+        assert!(!is_https(&request("/path", None)));
+    }
+}

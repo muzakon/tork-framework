@@ -342,3 +342,82 @@ async fn request_id_propagates_incoming() {
         "req-supplied"
     );
 }
+
+#[tokio::test]
+async fn request_id_supports_custom_header_name() {
+    use tork::middleware::RequestId;
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/")
+        .header("x-correlation-id", "corr-1")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+
+    let response = app_with(RequestId::new().header_name("x-correlation-id"))
+        .handle(req)
+        .await;
+    assert_eq!(response.headers().get("x-correlation-id").unwrap(), "corr-1");
+}
+
+#[tokio::test]
+async fn trusted_host_accepts_host_with_port() {
+    use tork::middleware::TrustedHost;
+
+    let response = app_with(TrustedHost::new(["example.com"]))
+        .handle(get_with_headers(&[("host", "example.com:8443")]))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn cors_with_credentials_echoes_origin_and_sets_max_age() {
+    use tork::middleware::Cors;
+
+    let app = app_with(
+        Cors::new()
+            .allow_origin("*")
+            .allow_credentials(true)
+            .allow_headers(["Authorization"])
+            .allow_methods(["GET"])
+            .max_age(600),
+    );
+    let preflight = http::Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/")
+        .header("origin", "https://app.example.com")
+        .header("access-control-request-method", "GET")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+
+    let response = app.handle(preflight).await;
+    assert_eq!(
+        response.headers().get("access-control-allow-origin").unwrap(),
+        "https://app.example.com"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-credentials")
+            .unwrap(),
+        "true"
+    );
+    assert_eq!(response.headers().get("access-control-max-age").unwrap(), "600");
+}
+
+#[tokio::test]
+async fn https_redirect_preserves_path_and_query() {
+    use tork::middleware::HttpsRedirect;
+
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/search?q=tork")
+        .header("host", "example.com")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+
+    let response = app_with(HttpsRedirect::new()).handle(req).await;
+    assert_eq!(
+        response.headers().get("location").unwrap(),
+        "https://example.com/search?q=tork"
+    );
+}

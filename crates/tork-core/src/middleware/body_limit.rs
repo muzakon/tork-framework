@@ -66,3 +66,15 @@ impl Middleware for BodyLimit {
         DuplicatePolicy::Reject
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructors_scale_bytes_kb_and_mb() {
+        assert_eq!(BodyLimit::bytes(7).limit, 7);
+        assert_eq!(BodyLimit::kb(2).limit, 2 * BYTES_PER_KB);
+        assert_eq!(BodyLimit::mb(3).limit, 3 * BYTES_PER_MB);
+    }
+}

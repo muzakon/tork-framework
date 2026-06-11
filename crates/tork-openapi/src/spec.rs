@@ -418,4 +418,32 @@ mod tests {
             "streaming response must not be JSON: {response}"
         );
     }
+
+    #[test]
+    fn provider_registers_spec_and_docs_routes() {
+        let provider = OpenApi::new()
+            .title("Docs")
+            .version("1.2.3")
+            .json("/schema.json")
+            .docs("/docs");
+
+        let routes = provider.documentation_routes(&[]);
+
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].path(), "/schema.json");
+        assert_eq!(routes[1].path(), "/docs");
+    }
+
+    #[test]
+    fn operation_id_and_placeholder_helpers_cover_edge_cases() {
+        assert_eq!(operation_id("patch", "/"), "patch");
+        assert_eq!(
+            operation_id("get", "/teams/{team-id}/members/{*rest}"),
+            "get_teams__team_id__members___rest_"
+        );
+        assert_eq!(
+            placeholder_names("/teams/{team_id}/members/{*rest}"),
+            vec!["team_id".to_owned(), "rest".to_owned()]
+        );
+    }
 }

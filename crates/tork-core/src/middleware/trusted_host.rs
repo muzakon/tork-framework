@@ -79,3 +79,19 @@ impl Middleware for TrustedHost {
         DuplicatePolicy::Reject
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_exact_and_wildcard_suffix_matches() {
+        let hosts = TrustedHost::new(["example.com", "*.example.com"]);
+
+        assert!(hosts.allows("example.com"));
+        assert!(hosts.allows("api.example.com"));
+        assert!(hosts.allows("API.EXAMPLE.COM"));
+        assert!(!hosts.allows("evil.com"));
+        assert!(!hosts.allows("example.co"));
+    }
+}

@@ -75,3 +75,14 @@ impl Middleware for RequestId {
         DuplicatePolicy::Reject
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_name_builder_replaces_default_header() {
+        let request_id = RequestId::new().header_name("x-correlation-id");
+        assert_eq!(request_id.header, HeaderName::from_static("x-correlation-id"));
+    }
+}
