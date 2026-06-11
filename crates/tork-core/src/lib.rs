@@ -35,7 +35,7 @@ mod ws;
 pub use app::{App, AppInner, TestApp};
 pub use lifespan::{Lifespan, LifespanContext, ReadyContext};
 pub use logging::{
-    FileLogConfig, LogEvent, LogFormat, Logger, LoggerConfig, Rotation, TelemetryConfig,
+    FileLogConfig, LogEvent, LogFormat, LogSpan, Logger, LoggerConfig, Rotation, TelemetryConfig,
 };
 pub use middleware::{DuplicatePolicy, Middleware, Next, Request};
 pub use multipart::{FileBytes, Form, FromMultipart, Multipart, UploadConfig, UploadFile};

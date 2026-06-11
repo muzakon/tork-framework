@@ -9,9 +9,11 @@ mod config;
 mod event;
 mod format;
 mod logger;
+mod span;
 mod subscriber;
 
 pub use config::{FileLogConfig, LogFormat, LoggerConfig, Rotation, TelemetryConfig};
 pub use event::LogEvent;
 pub use logger::Logger;
+pub use span::LogSpan;
 pub(crate) use subscriber::install;

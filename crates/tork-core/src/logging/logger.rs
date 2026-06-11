@@ -105,6 +105,16 @@ impl Logger {
     pub fn error(&self, message: impl Into<String>) -> LogEvent {
         self.event(Level::ERROR, message)
     }
+
+    /// Builds a span for an operation, to [`enter`](super::LogSpan::enter) a scope.
+    pub fn span(&self, name: impl Into<String>) -> super::LogSpan {
+        super::LogSpan::new(self.context.clone(), name, &self.base)
+    }
+
+    /// Builds a span to [`run`](super::LogSpan::run) a future inside.
+    pub fn instrument(&self, name: impl Into<String>) -> super::LogSpan {
+        super::LogSpan::new(self.context.clone(), name, &self.base)
+    }
 }
 
 impl FromRequest for Logger {
