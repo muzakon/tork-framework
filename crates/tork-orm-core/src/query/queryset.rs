@@ -95,6 +95,18 @@ impl<M: Model> QuerySet<M> {
         self
     }
 
+    /// Preloads a related table in a separate, N+1-free query.
+    ///
+    /// Switches to a [`Preloader`](crate::preload::Preloader); the parents come
+    /// back wrapped in [`Preloaded`](crate::preload::Preloaded). Constrain the
+    /// related rows on the relation itself with `Relation::filter`/`order_by`.
+    pub fn preload<C: Model>(
+        self,
+        relation: crate::relation::Relation<M, C>,
+    ) -> crate::preload::Preloader<M> {
+        crate::preload::Preloader::new(self).preload(relation)
+    }
+
     /// Adds an ordering term (build it with `Column::asc`/`Column::desc`).
     pub fn order_by(mut self, term: OrderItem) -> Self {
         self.statement.order_by.push(term);

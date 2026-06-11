@@ -10,7 +10,8 @@
 
 use std::marker::PhantomData;
 
-use crate::query::ast::Join;
+use crate::query::ast::{Join, OrderItem};
+use crate::query::expr::Expr;
 
 /// The kind of association between two models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub struct Relation<P, C> {
     from_column: &'static str,
     to_table: &'static str,
     to_column: &'static str,
+    filters: Vec<Expr>,
+    order_by: Vec<OrderItem>,
     _marker: PhantomData<fn() -> (P, C)>,
 }
 
@@ -47,6 +50,8 @@ impl<P, C> Relation<P, C> {
             from_column: parent_key,
             to_table: child_table,
             to_column: child_key,
+            filters: Vec::new(),
+            order_by: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -64,8 +69,24 @@ impl<P, C> Relation<P, C> {
             from_column: local_key,
             to_table: parent_table,
             to_column: parent_key,
+            filters: Vec::new(),
+            order_by: Vec::new(),
             _marker: PhantomData,
         }
+    }
+
+    /// Constrains the related rows loaded by [`preload`](crate::QuerySet::preload).
+    ///
+    /// Has no effect on a plain [`join`](crate::QuerySet::join).
+    pub fn filter(mut self, predicate: Expr) -> Self {
+        self.filters.push(predicate);
+        self
+    }
+
+    /// Orders the related rows loaded by [`preload`](crate::QuerySet::preload).
+    pub fn order_by(mut self, term: OrderItem) -> Self {
+        self.order_by.push(term);
+        self
     }
 
     /// Returns the kind of this relation.
@@ -76,6 +97,26 @@ impl<P, C> Relation<P, C> {
     /// Returns the table this relation brings into a query when joined.
     pub fn target_table(&self) -> &'static str {
         self.to_table
+    }
+
+    /// Returns the owning side column of the join condition.
+    pub fn from_column(&self) -> &'static str {
+        self.from_column
+    }
+
+    /// Returns the related side column of the join condition.
+    pub fn to_column(&self) -> &'static str {
+        self.to_column
+    }
+
+    /// Returns the extra predicates applied when preloading.
+    pub fn preload_filters(&self) -> &[Expr] {
+        &self.filters
+    }
+
+    /// Returns the ordering applied when preloading.
+    pub fn preload_order_by(&self) -> &[OrderItem] {
+        &self.order_by
     }
 
     /// Builds the join node for this relation.

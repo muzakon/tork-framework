@@ -94,6 +94,17 @@ impl Database {
         }
     }
 
+    /// Returns the number of statements run through this database so far.
+    ///
+    /// Useful in tests to confirm a query strategy (such as preloading adding one
+    /// query per relation, not one per row).
+    pub fn statement_count(&self) -> u64 {
+        match &self.backend {
+            #[cfg(feature = "sqlite")]
+            Backend::Sqlite(pool) => pool.statement_count(),
+        }
+    }
+
     /// Releases idle connections held by the pool.
     pub async fn close(&self) {
         match &self.backend {

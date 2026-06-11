@@ -13,6 +13,8 @@ pub mod dialect;
 pub mod driver;
 pub mod query;
 
+pub mod preload;
+
 mod database;
 mod error;
 mod executor;
@@ -31,6 +33,7 @@ pub use query::ast::{OrderItem, SelectItem, SelectStatement};
 pub use query::column::{Column, IntoSqlValue};
 pub use query::expr::{BinaryOp, Expr, LogicalOp};
 pub use query::write::{Assignment, DeleteStatement, InsertStatement, UpdateStatement};
+pub use preload::{Preloaded, Preloader};
 pub use relation::{Relation, RelationKind};
 pub use row::Row;
 pub use value::{BindValue, FromValue, Value};

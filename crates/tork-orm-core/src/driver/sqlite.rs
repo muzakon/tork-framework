@@ -8,6 +8,7 @@
 //! statement cache, and a connection survives a failed query (only a panic or a
 //! failed open removes it), so the pool neither leaks nor thrashes.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::types::{ToSqlOutput, Value as SqliteValue, ValueRef};
@@ -39,6 +40,7 @@ struct Inner {
     source: Source,
     idle: Mutex<Vec<Connection>>,
     semaphore: Semaphore,
+    statements: AtomicU64,
 }
 
 impl Inner {
@@ -97,6 +99,7 @@ impl SqlitePool {
                 source,
                 idle: Mutex::new(Vec::new()),
                 semaphore: Semaphore::new(permits),
+                statements: AtomicU64::new(0),
             }),
         })
     }
@@ -111,6 +114,14 @@ impl SqlitePool {
     pub async fn execute(&self, sql: String, params: Vec<Value>) -> crate::Result<ExecuteResult> {
         self.with_connection(move |conn| execute(conn, &sql, &params))
             .await
+    }
+
+    /// Returns the number of statements run through this pool so far.
+    ///
+    /// Useful in tests to confirm a query strategy (for example, that preloading
+    /// adds one query per relation rather than one per row).
+    pub fn statement_count(&self) -> u64 {
+        self.inner.statements.load(Ordering::Relaxed)
     }
 
     /// Drops all idle connections. In-flight calls keep their connection until done.
@@ -128,6 +139,8 @@ impl SqlitePool {
         F: FnOnce(&mut Connection) -> crate::Result<T> + Send + 'static,
         T: Send + 'static,
     {
+        self.inner.statements.fetch_add(1, Ordering::Relaxed);
+
         // Bound concurrency before touching the blocking pool.
         let _permit = self
             .inner
