@@ -6,11 +6,15 @@
 //! these behind one trait is what makes adding a new backend a small, isolated
 //! change: implement [`Dialect`] for it and wire up a driver.
 
+pub mod writer;
+
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteDialect;
+
+pub use writer::{QueryWriter, render_expr};
 
 /// An abstract column type, independent of any backend.
 ///

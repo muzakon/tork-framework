@@ -11,6 +11,7 @@
 
 pub mod dialect;
 pub mod driver;
+pub mod query;
 
 mod database;
 mod error;
@@ -24,6 +25,8 @@ pub use dialect::SqlType;
 pub use error::{ErrorKind, OrmError, Result};
 pub use executor::Executor;
 pub use model::{ColumnDef, ForeignKeyDef, FromRow, Model};
+pub use query::column::{Column, IntoSqlValue};
+pub use query::expr::{BinaryOp, Expr, LogicalOp};
 pub use row::Row;
 pub use value::{BindValue, FromValue, Value};
 

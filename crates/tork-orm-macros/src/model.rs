@@ -149,6 +149,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
     let krate = krate();
 
     let mut column_defs: Vec<TokenStream2> = Vec::new();
+    let mut column_consts: Vec<TokenStream2> = Vec::new();
     let mut from_row_fields: Vec<TokenStream2> = Vec::new();
     let mut insert_entries: Vec<TokenStream2> = Vec::new();
     let mut primary_key: Option<(Ident, String)> = None;
@@ -203,6 +204,15 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
             foreign_key: #foreign_key,
         }));
 
+        // A typed column handle constant, used as `User::is_active`. Nullable
+        // columns carry their inner type so they compare against plain values;
+        // `is_null` covers the null case.
+        column_consts.push(quote!(
+            #[allow(non_upper_case_globals)]
+            pub const #field_ident: #krate::Column<Self, #base_ty> =
+                #krate::Column::new(#table_name, #column_name);
+        ));
+
         from_row_fields.push(quote!(#field_ident: row.get(#column_name)?));
 
         // Auto-assigned columns are filled by the database, so they are not written.
@@ -231,6 +241,10 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
+        impl #ident {
+            #(#column_consts)*
+        }
+
         impl #krate::FromRow for #ident {
             fn from_row(row: &#krate::Row) -> #krate::Result<Self> {
                 ::core::result::Result::Ok(Self {

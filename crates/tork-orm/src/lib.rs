@@ -17,6 +17,25 @@
 //! # Ok(())
 //! # }
 //! ```
+//! # Type safety
+//!
+//! A column is typed on its Rust type, so comparing it against an incompatible
+//! value is a compile error rather than a run-time failure:
+//!
+//! ```compile_fail
+//! use tork_orm::prelude::*;
+//!
+//! #[derive(Model)]
+//! #[table(name = "users")]
+//! struct User {
+//!     #[field(primary_key, auto)]
+//!     id: i64,
+//!     is_active: bool,
+//! }
+//!
+//! // `is_active` is a bool column; comparing it to a string does not compile.
+//! let _ = User::is_active.eq("not a bool");
+//! ```
 #![forbid(unsafe_code)]
 
 pub use tork_orm_core::*;
@@ -29,7 +48,7 @@ pub use tork_orm_macros::*;
 /// types here.
 pub mod prelude {
     pub use crate::{
-        BindValue, ColumnDef, Database, ErrorKind, Executor, ForeignKeyDef, FromRow, FromValue,
-        Model, OrmError, Result, Row, SqlType, Value,
+        BindValue, Column, ColumnDef, Database, ErrorKind, Executor, Expr, ForeignKeyDef, FromRow,
+        FromValue, Model, OrmError, Result, Row, SqlType, Value,
     };
 }
