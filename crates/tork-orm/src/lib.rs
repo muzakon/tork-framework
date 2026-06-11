@@ -49,7 +49,7 @@ pub use tork_orm_macros::*;
 pub mod prelude {
     pub use crate::{
         Assignment, BindValue, Column, ColumnDef, Database, ErrorKind, Executor, Expr,
-        ForeignKeyDef, FromRow, FromValue, Model, OrmError, OrderItem, Preloaded, QuerySet,
+        ForeignKeyDef, FromRow, FromValue, Model, OrderItem, OrmError, Preloaded, QuerySet,
         Relation, RelationKind, Result, Row, SqlType, Value,
     };
     // The derive and attribute macros (`Model`, `relations`).

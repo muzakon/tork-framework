@@ -131,6 +131,28 @@ impl<M: Model> QuerySet<M> {
         self
     }
 
+    /// Replaces the projection with a tuple of columns and expressions.
+    ///
+    /// Pair with [`all_as`](Self::all_as) and a `#[derive(QueryResult)]` DTO whose
+    /// fields match the projected names (alias aggregates with
+    /// [`Expr::as_`](crate::Expr::as_) so they have a stable name).
+    pub fn select<P: crate::query::projection::Projection>(mut self, projection: P) -> Self {
+        self.statement.projection = projection.into_select_items();
+        self
+    }
+
+    /// Groups rows by a tuple of columns and expressions.
+    pub fn group_by<G: crate::query::projection::ExprTuple>(mut self, group: G) -> Self {
+        self.statement.group_by = group.into_exprs();
+        self
+    }
+
+    /// Restricts grouped rows by a predicate (typically over an aggregate).
+    pub fn having(mut self, predicate: Expr) -> Self {
+        self.statement.having = Some(predicate);
+        self
+    }
+
     /// Returns the statement this query has assembled.
     ///
     /// Useful for inspecting or rendering a query without running it.
@@ -139,12 +161,14 @@ impl<M: Model> QuerySet<M> {
     }
 
     /// Runs the query and returns every matching row as `M`.
-    pub async fn all<E: Executor>(self, executor: E) -> crate::Result<Vec<M>> {
-        self.all_as::<M, E>(executor).await
+    pub async fn all(self, executor: impl Executor) -> crate::Result<Vec<M>> {
+        self.all_as::<M>(executor).await
     }
 
     /// Runs the query and maps each row into an arbitrary [`FromRow`] type.
-    pub async fn all_as<T: FromRow, E: Executor>(self, executor: E) -> crate::Result<Vec<T>> {
+    ///
+    /// Only the result type needs naming: `all_as::<UserPostStats>(&db)`.
+    pub async fn all_as<T: FromRow>(self, executor: impl Executor) -> crate::Result<Vec<T>> {
         let (sql, params) = render_select(executor.dialect(), &self.statement);
         let rows = executor.fetch_all(sql, params).await?;
         rows.iter().map(T::from_row).collect()

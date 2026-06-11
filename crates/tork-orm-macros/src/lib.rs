@@ -9,6 +9,7 @@ use proc_macro::TokenStream;
 
 mod common;
 mod model;
+mod query_result;
 mod relations;
 
 /// Derives the [`Model`] trait for a struct that maps to a database table.
@@ -45,6 +46,27 @@ mod relations;
 #[proc_macro_derive(Model, attributes(table, field))]
 pub fn derive_model(item: TokenStream) -> TokenStream {
     model::expand(item)
+}
+
+/// Derives [`FromRow`] for a projection result type.
+///
+/// Each field is read from the result column of the same name, so it pairs with a
+/// `select(...)` whose items are aliased to those names.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(QueryResult)]
+/// pub struct UserPostStats {
+///     pub user_id: i64,
+///     pub post_count: i64,
+/// }
+/// // ... .select((User::id.as_("user_id"), Post::id.count().as_("post_count")))
+/// //     .all_as::<UserPostStats>(&db)
+/// ```
+#[proc_macro_derive(QueryResult)]
+pub fn derive_query_result(item: TokenStream) -> TokenStream {
+    query_result::expand(item)
 }
 
 /// Declares the relations of a model on an `impl` block.

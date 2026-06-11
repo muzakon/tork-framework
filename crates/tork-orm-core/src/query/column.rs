@@ -9,9 +9,17 @@
 use std::marker::PhantomData;
 
 use crate::query::ast::OrderItem;
-use crate::query::expr::{BinaryOp, Expr};
+use crate::query::expr::{AggFunc, BinaryOp, Expr};
 use crate::query::write::Assignment;
 use crate::value::{BindValue, Value};
+
+/// Marker for column types that support numeric aggregates (`sum`, `avg`, `min`,
+/// `max`).
+pub trait Numeric {}
+
+impl Numeric for i64 {}
+impl Numeric for i32 {}
+impl Numeric for f64 {}
 
 /// Converts a comparison right-hand side into a bound [`Value`], constrained by the
 /// column's type `T`.
@@ -153,9 +161,41 @@ impl<M, T> Column<M, T> {
         Assignment::new(self.name, value.into_sql_value())
     }
 
+    /// Aliases this column in a projection, `column AS "alias"`.
+    pub fn as_(self, alias: &'static str) -> Expr {
+        self.expr().as_(alias)
+    }
+
+    /// `COUNT(column)` for use in a projection or `HAVING`.
+    pub fn count(self) -> Expr {
+        Expr::aggregate(AggFunc::Count, self.expr())
+    }
+
     /// Builds a binary comparison against a bound value.
     fn compare<V: IntoSqlValue<T>>(self, op: BinaryOp, value: V) -> Expr {
         Expr::binary(self.expr(), op, Expr::value(value.into_sql_value()))
+    }
+}
+
+impl<M, T: Numeric> Column<M, T> {
+    /// `SUM(column)`.
+    pub fn sum(self) -> Expr {
+        Expr::aggregate(AggFunc::Sum, self.expr())
+    }
+
+    /// `AVG(column)`.
+    pub fn avg(self) -> Expr {
+        Expr::aggregate(AggFunc::Avg, self.expr())
+    }
+
+    /// `MIN(column)`.
+    pub fn min(self) -> Expr {
+        Expr::aggregate(AggFunc::Min, self.expr())
+    }
+
+    /// `MAX(column)`.
+    pub fn max(self) -> Expr {
+        Expr::aggregate(AggFunc::Max, self.expr())
     }
 }
 

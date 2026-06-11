@@ -5,7 +5,36 @@
 //! of bound parameters by a [`Dialect`](crate::dialect::Dialect). Keeping the AST
 //! backend-neutral is what lets one set of queries target any dialect.
 
-use crate::value::Value;
+use crate::query::ast::OrderItem;
+use crate::value::{BindValue, Value};
+
+/// An aggregate function applied to an expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggFunc {
+    /// `COUNT`
+    Count,
+    /// `SUM`
+    Sum,
+    /// `AVG`
+    Avg,
+    /// `MIN`
+    Min,
+    /// `MAX`
+    Max,
+}
+
+impl AggFunc {
+    /// Returns the SQL name of this function.
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            AggFunc::Count => "COUNT",
+            AggFunc::Sum => "SUM",
+            AggFunc::Avg => "AVG",
+            AggFunc::Min => "MIN",
+            AggFunc::Max => "MAX",
+        }
+    }
+}
 
 /// A binary comparison operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +130,22 @@ pub enum Expr {
         /// Whether the test is negated (`IS NOT NULL`).
         negated: bool,
     },
+    /// An aggregate over an expression, `FUNC(expr)`.
+    Aggregate {
+        /// The aggregate function.
+        func: AggFunc,
+        /// The aggregated expression.
+        arg: Box<Expr>,
+    },
+    /// `COUNT(*)`.
+    CountStar,
+    /// An aliased expression, `expr AS "alias"`.
+    Alias {
+        /// The aliased expression.
+        expr: Box<Expr>,
+        /// The output name.
+        alias: &'static str,
+    },
 }
 
 impl Expr {
@@ -165,5 +210,72 @@ impl Expr {
             expr: Box::new(expr),
             negated,
         }
+    }
+
+    /// Builds an aggregate over an expression.
+    pub fn aggregate(func: AggFunc, arg: Expr) -> Self {
+        Expr::Aggregate {
+            func,
+            arg: Box::new(arg),
+        }
+    }
+
+    /// Aliases this expression, `expr AS "alias"`.
+    ///
+    /// Used in a projection so the output column has a stable name to map onto a
+    /// [`QueryResult`](crate::FromRow) field.
+    pub fn as_(self, alias: &'static str) -> Self {
+        Expr::Alias {
+            expr: Box::new(self),
+            alias,
+        }
+    }
+
+    /// Builds a comparison of this expression against a bound value.
+    ///
+    /// Handy for `HAVING` over an aggregate, for example
+    /// `Post::id.count().gt(3)`.
+    fn compare(self, op: BinaryOp, value: impl BindValue) -> Self {
+        Expr::binary(self, op, Expr::Value(value.to_value()))
+    }
+
+    /// `expr = value`
+    pub fn eq(self, value: impl BindValue) -> Self {
+        self.compare(BinaryOp::Eq, value)
+    }
+
+    /// `expr <> value`
+    pub fn ne(self, value: impl BindValue) -> Self {
+        self.compare(BinaryOp::Ne, value)
+    }
+
+    /// `expr > value`
+    pub fn gt(self, value: impl BindValue) -> Self {
+        self.compare(BinaryOp::Gt, value)
+    }
+
+    /// `expr >= value`
+    pub fn ge(self, value: impl BindValue) -> Self {
+        self.compare(BinaryOp::Ge, value)
+    }
+
+    /// `expr < value`
+    pub fn lt(self, value: impl BindValue) -> Self {
+        self.compare(BinaryOp::Lt, value)
+    }
+
+    /// `expr <= value`
+    pub fn le(self, value: impl BindValue) -> Self {
+        self.compare(BinaryOp::Le, value)
+    }
+
+    /// Orders by this expression ascending.
+    pub fn asc(self) -> OrderItem {
+        OrderItem::new(self, false)
+    }
+
+    /// Orders by this expression descending.
+    pub fn desc(self) -> OrderItem {
+        OrderItem::new(self, true)
     }
 }

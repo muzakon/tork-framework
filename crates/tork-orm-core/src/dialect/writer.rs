@@ -75,6 +75,18 @@ impl<'a> QueryWriter<'a> {
                 self.write_expr(expr);
                 self.push_sql(if *negated { " IS NOT NULL" } else { " IS NULL" });
             }
+            Expr::Aggregate { func, arg } => {
+                self.push_sql(func.as_sql());
+                self.sql.push('(');
+                self.write_expr(arg);
+                self.sql.push(')');
+            }
+            Expr::CountStar => self.push_sql("COUNT(*)"),
+            Expr::Alias { expr, alias } => {
+                self.write_expr(expr);
+                self.push_sql(" AS ");
+                self.push_identifier(alias);
+            }
         }
     }
 
@@ -150,6 +162,7 @@ impl<'a> QueryWriter<'a> {
             }
             match item {
                 SelectItem::Column { table, column } => self.push_qualified(table, column),
+                SelectItem::Expression(expr) => self.write_expr(expr),
             }
         }
         self.push_sql(" FROM ");
@@ -163,6 +176,21 @@ impl<'a> QueryWriter<'a> {
             self.push_qualified(join.right_table, join.right_column);
         }
         self.write_where(&statement.filters);
+
+        if !statement.group_by.is_empty() {
+            self.push_sql(" GROUP BY ");
+            for (index, expr) in statement.group_by.iter().enumerate() {
+                if index != 0 {
+                    self.push_sql(", ");
+                }
+                self.write_expr(expr);
+            }
+        }
+
+        if let Some(having) = &statement.having {
+            self.push_sql(" HAVING ");
+            self.write_expr(having);
+        }
 
         if !statement.order_by.is_empty() {
             self.push_sql(" ORDER BY ");

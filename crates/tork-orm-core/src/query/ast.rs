@@ -7,9 +7,6 @@
 use crate::query::expr::Expr;
 
 /// One item in a `SELECT` projection.
-///
-/// This phase selects plain columns; aggregate and aliased expressions are added
-/// when projection support lands.
 #[derive(Debug, Clone)]
 pub enum SelectItem {
     /// A qualified column, `"table"."column"`.
@@ -19,6 +16,8 @@ pub enum SelectItem {
         /// The column name.
         column: &'static str,
     },
+    /// An arbitrary expression, such as an aggregate or an aliased column.
+    Expression(Expr),
 }
 
 /// A join onto another table, `INNER JOIN "table" ON left = right`.
@@ -65,6 +64,10 @@ pub struct SelectStatement {
     pub joins: Vec<Join>,
     /// The top-level predicates, joined by `AND`.
     pub filters: Vec<Expr>,
+    /// The `GROUP BY` expressions.
+    pub group_by: Vec<Expr>,
+    /// The `HAVING` predicate.
+    pub having: Option<Expr>,
     /// The ordering terms.
     pub order_by: Vec<OrderItem>,
     /// An optional row limit.
@@ -83,6 +86,8 @@ impl SelectStatement {
             projection,
             joins: Vec::new(),
             filters: Vec::new(),
+            group_by: Vec::new(),
+            having: None,
             order_by: Vec::new(),
             limit: None,
             offset: None,

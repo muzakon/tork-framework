@@ -4,6 +4,7 @@
 pub mod ast;
 pub mod column;
 pub mod expr;
+pub mod projection;
 pub mod queryset;
 pub mod write;
 
