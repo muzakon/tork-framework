@@ -12,6 +12,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::app::AppInner;
 use crate::body::{RespBody, box_body};
@@ -65,33 +66,14 @@ where
     loop {
         tokio::select! {
             accepted = listener.accept() => {
-                let (stream, _peer) = match accepted {
-                    Ok(pair) => pair,
-                    // Transient accept errors (for example, fd exhaustion) should
-                    // not bring the server down; skip and keep accepting.
-                    Err(_) => continue,
-                };
-
-                let io = TokioIo::new(stream);
-                let service = TorkService::new(app.clone());
-                let connection = builder.serve_connection_with_upgrades(io, service);
-                let watched = graceful.watch(connection.into_owned());
-
-                tokio::spawn(async move {
-                    // Connection-level errors are already terminal for that
-                    // connection; nothing actionable remains here.
-                    let _ = watched.await;
-                });
+                let _ = handle_accepted_connection(app.clone(), &builder, &graceful, accepted).await;
             }
             _ = &mut shutdown => break,
         }
     }
 
     // Stop accepting, then drain in-flight connections within the timeout.
-    tokio::select! {
-        _ = graceful.shutdown() => {}
-        _ = tokio::time::sleep(GRACEFUL_SHUTDOWN_TIMEOUT) => {}
-    }
+    drain_with_timeout(graceful.shutdown(), tokio::time::sleep(GRACEFUL_SHUTDOWN_TIMEOUT)).await;
 }
 
 /// Resolves when the process receives an interrupt or termination signal.
@@ -111,6 +93,55 @@ pub(crate) async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    shutdown_signal_with(interrupt, terminate).await;
+}
+
+async fn handle_accepted_connection<S>(
+    app: Arc<AppInner>,
+    builder: &auto::Builder<TokioExecutor>,
+    graceful: &GracefulShutdown,
+    accepted: std::io::Result<(S, std::net::SocketAddr)>,
+) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (stream, _peer) = match accepted {
+        Ok(pair) => pair,
+        // Transient accept errors (for example, fd exhaustion) should
+        // not bring the server down; skip and keep accepting.
+        Err(_) => return false,
+    };
+
+    let io = TokioIo::new(stream);
+    let service = TorkService::new(app.clone());
+    let connection = builder.serve_connection_with_upgrades(io, service);
+    let watched = graceful.watch(connection.into_owned());
+
+    tokio::spawn(async move {
+        // Connection-level errors are already terminal for that
+        // connection; nothing actionable remains here.
+        let _ = watched.await;
+    });
+
+    true
+}
+
+async fn drain_with_timeout<F, T>(shutdown: F, timeout: T)
+where
+    F: Future<Output = ()>,
+    T: Future<Output = ()>,
+{
+    tokio::select! {
+        _ = shutdown => {}
+        _ = timeout => {}
+    }
+}
+
+async fn shutdown_signal_with<I, T>(interrupt: I, terminate: T)
+where
+    I: Future<Output = ()>,
+    T: Future<Output = ()>,
+{
     tokio::select! {
         _ = interrupt => {}
         _ = terminate => {}
@@ -127,6 +158,7 @@ mod tests {
     use crate::{Method, StatusCode, json_response};
 
     use std::sync::Arc;
+    use std::future;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
@@ -164,5 +196,35 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn helper_paths_cover_accept_errors_shutdown_and_signals() {
+        let builder = auto::Builder::new(TokioExecutor::new());
+        let app = Arc::new(App::new().build().unwrap());
+        let graceful = GracefulShutdown::new();
+
+        assert!(!handle_accepted_connection::<tokio::io::DuplexStream>(
+            app.clone(),
+            &builder,
+            &graceful,
+            Err(std::io::Error::other("accept failed"))
+        )
+        .await);
+
+        let (stream, _peer) = tokio::io::duplex(16);
+        assert!(handle_accepted_connection(
+            app,
+            &builder,
+            &graceful,
+            Ok((stream, "127.0.0.1:0".parse().unwrap()))
+        )
+        .await);
+
+        drain_with_timeout(future::ready(()), future::pending::<()>()).await;
+        drain_with_timeout(future::pending::<()>(), future::ready(())).await;
+
+        shutdown_signal_with(future::ready(()), future::pending::<()>()).await;
+        shutdown_signal_with(future::pending::<()>(), future::ready(())).await;
     }
 }
