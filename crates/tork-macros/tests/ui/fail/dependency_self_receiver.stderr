@@ -1,0 +1,5 @@
+error: `resolve` cannot take `self`
+ --> tests/ui/fail/dependency_self_receiver.rs:5:22
+  |
+5 |     async fn resolve(&self) -> tork::Result<Self> {
+  |                      ^^^^^

@@ -1,0 +1,2 @@
+#[tork::main]
+fn main() {}

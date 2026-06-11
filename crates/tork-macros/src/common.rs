@@ -277,6 +277,67 @@ pub(crate) fn text_binding(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::{Attribute, parse_quote};
+
+    #[test]
+    fn path_param_names_strip_wildcards() {
+        assert_eq!(
+            path_param_names("/users/{user_id}/files/{*rest}"),
+            vec!["user_id".to_owned(), "rest".to_owned()]
+        );
+    }
+
+    #[test]
+    fn parse_size_understands_suffixes() {
+        assert_eq!(parse_size(&parse_quote!("64KB")).unwrap(), 64 * 1024);
+        assert_eq!(parse_size(&parse_quote!("2MiB")).unwrap(), 2 * 1024 * 1024);
+        assert!(parse_size(&parse_quote!("wat")).is_err());
+    }
+
+    #[test]
+    fn parse_duration_ms_understands_units() {
+        assert_eq!(parse_duration_ms(&parse_quote!("500ms")).unwrap(), 500);
+        assert_eq!(parse_duration_ms(&parse_quote!("2m")).unwrap(), 120_000);
+        assert_eq!(parse_duration_ms(&parse_quote!("3")).unwrap(), 3_000);
+        assert!(parse_duration_ms(&parse_quote!("soon")).is_err());
+    }
+
+    #[test]
+    fn unwrap_multiplicity_and_file_kind_detect_supported_shapes() {
+        let optional: Type = parse_quote!(Option<FileBytes>);
+        let many: Type = parse_quote!(Vec<UploadFile>);
+        let plain: Type = parse_quote!(String);
+
+        let (optional_multi, optional_inner) = unwrap_multiplicity(&optional);
+        let (many_multi, many_inner) = unwrap_multiplicity(&many);
+        let (plain_multi, plain_inner) = unwrap_multiplicity(&plain);
+
+        assert!(matches!(optional_multi, Multiplicity::Optional));
+        assert!(matches!(many_multi, Multiplicity::Many));
+        assert!(matches!(plain_multi, Multiplicity::One));
+        assert!(matches!(file_kind(optional_inner), Some(FileKind::Bytes)));
+        assert!(matches!(file_kind(many_inner), Some(FileKind::Upload)));
+        assert!(file_kind(plain_inner).is_none());
+    }
+
+    #[test]
+    fn parse_file_args_reads_validation_flags() {
+        let attr: Attribute =
+            parse_quote!(#[file(name = "avatar", max_size = "64KB", content_types = ["image/png"], sniff = true)]);
+
+        let args = parse_file_args(&attr).unwrap();
+
+        assert_eq!(args.name.as_deref(), Some("avatar"));
+        assert_eq!(args.max_size, Some(64 * 1024));
+        assert_eq!(args.content_types, vec!["image/png".to_owned()]);
+        assert!(args.sniff);
+        assert!(has_file_rule(&args));
+    }
+}
+
 /// Builds the schema property value for one form field, and whether it is
 /// required. The generated code reads the surrounding `generator` variable.
 pub(crate) fn form_property(
