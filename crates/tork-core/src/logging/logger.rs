@@ -142,14 +142,32 @@ impl FromRequest for Logger {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use serde::ser::Error as _;
+    use serde::Serializer;
     use super::super::format::{JsonFormat, TorkFormat};
+    use crate::{PathParams, RequestContext, StateMap, box_body};
+    use crate::extract::FromRequest;
+    use std::sync::Arc as StdArc;
     use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::prelude::*;
 
     #[derive(Clone)]
     struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+    struct BadSerialize;
+
+    impl serde::Serialize for BadSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(S::Error::custom("nope"))
+        }
+    }
 
     impl Write for BufWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -192,5 +210,89 @@ mod tests {
         assert!(output.contains("\"message\":\"Charging user\""), "{output}");
         assert!(output.contains("\"user_id\":42"), "{output}");
         assert!(output.contains("\"tenant\":\"acme\""), "{output}");
+    }
+
+    #[test]
+    fn for_context_and_framework_preserve_base_fields() {
+        let logger = Logger::framework("startup").with_field("tenant", "acme");
+        let relabeled = logger.for_context("payments");
+
+        assert_eq!(logger.context(), "startup");
+        assert_eq!(relabeled.context(), "payments");
+
+        let output = {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let layer = tracing_subscriber::fmt::layer()
+                .event_format(TorkFormat::Json(JsonFormat {
+                    service_name: "svc".to_owned(),
+                }))
+                .with_writer(BufWriter(buffer.clone()));
+            let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            relabeled.info("Boot").emit();
+        });
+            let bytes = buffer.lock().unwrap().clone();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert!(output.contains("\"context\":\"payments\""), "{output}");
+        assert!(output.contains("\"tenant\":\"acme\""), "{output}");
+    }
+
+    #[test]
+    fn with_field_ignores_unserializable_values() {
+        let logger = Logger::new("logger").with_field("tenant", BadSerialize);
+        let output = {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let layer = tracing_subscriber::fmt::layer()
+                .event_format(TorkFormat::Json(JsonFormat {
+                    service_name: "svc".to_owned(),
+                }))
+                .with_writer(BufWriter(buffer.clone()));
+            let subscriber = tracing_subscriber::registry().with(layer);
+            tracing::subscriber::with_default(subscriber, || {
+                logger.info("Hello").emit();
+            });
+            let bytes = buffer.lock().unwrap().clone();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert!(!output.contains("tenant"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn from_request_uses_request_metadata_and_default_context() {
+        let head = http::Request::builder()
+            .method("GET")
+            .uri("/logs")
+            .header("x-request-id", "req-123")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let ctx = RequestContext::new(
+            head,
+            PathParams::new(),
+            StdArc::new(StateMap::new()),
+            box_body(Full::new(Bytes::new())),
+        );
+
+        let logger = Logger::from_request(&ctx).await.unwrap();
+        assert_eq!(logger.context(), "app");
+        let output = {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let layer = tracing_subscriber::fmt::layer()
+                .event_format(TorkFormat::Json(JsonFormat {
+                    service_name: "svc".to_owned(),
+                }))
+                .with_writer(BufWriter(buffer.clone()));
+            let subscriber = tracing_subscriber::registry().with(layer);
+            tracing::subscriber::with_default(subscriber, || {
+                logger.info("Hello").emit();
+            });
+            let bytes = buffer.lock().unwrap().clone();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert!(output.contains("\"request_id\":\"req-123\""), "{output}");
+        assert!(output.contains("\"method\":\"GET\""), "{output}");
+        assert!(output.contains("\"path\":\"/logs\""), "{output}");
     }
 }

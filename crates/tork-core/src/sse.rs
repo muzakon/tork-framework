@@ -423,10 +423,23 @@ mod tests {
     use http::StatusCode;
     use http_body_util::BodyExt;
     use serde_json::json;
+    use std::time::Duration;
 
     fn encode<T: Serialize>(event: SseEvent<T>, default: Option<&str>) -> String {
         let raw = event.into_raw().expect("serialize");
         String::from_utf8(encode_event(&raw, default).to_vec()).unwrap()
+    }
+
+    #[derive(Debug)]
+    struct BadSerialize;
+
+    impl Serialize for BadSerialize {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("nope"))
+        }
     }
 
     #[test]
@@ -454,6 +467,64 @@ mod tests {
     fn comment_and_multiline_raw_data_split_into_lines() {
         let text = encode(SseEvent::<()>::raw("a\nb").comment("note"), None);
         assert_eq!(text, ": note\ndata: a\ndata: b\n\n");
+    }
+
+    #[test]
+    fn serialize_error_is_reported_for_typed_sse_events() {
+        let error = match SseEvent::new(BadSerialize).into_raw() {
+            Ok(_) => panic!("expected serialization to fail"),
+            Err(error) => error,
+        };
+        assert!(error.message().starts_with("failed to serialize SSE data:"));
+    }
+
+    #[tokio::test]
+    async fn builder_flags_toggle_headers_and_timeout_defaults() {
+        let stream = futures_util::stream::pending::<Result<serde_json::Value>>();
+        let response = Sse::new(stream)
+            .event("tick")
+            .no_cache(false)
+            .disable_proxy_buffering(false)
+            .no_heartbeat()
+            .client_timeout(Duration::from_millis(20))
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(CONTENT_TYPE).is_some());
+        assert!(response.headers().get(CACHE_CONTROL).is_none());
+        assert!(response.headers().get(X_ACCEL_BUFFERING).is_none());
+    }
+
+    #[tokio::test]
+    async fn client_timeout_finishes_without_emitting_a_done_event() {
+        let stream = futures_util::stream::pending::<Result<serde_json::Value>>();
+        let response = Sse::new(stream)
+            .client_timeout(Duration::from_millis(20))
+            .into_response();
+        let mut body = response.into_body();
+
+        let frame = tokio::time::timeout(Duration::from_secs(1), body.frame())
+            .await
+            .expect("timeout should trigger");
+        assert!(frame.is_none());
+    }
+
+    #[tokio::test]
+    async fn events_builder_handles_prebuilt_events() {
+        let stream = futures_util::stream::iter(vec![
+            Ok::<_, Error>(SseEvent::new(json!({ "n": 1 })).event("tick")),
+            Ok(SseEvent::raw("[DONE]").comment("final")),
+        ]);
+        let response = Sse::events(stream)
+            .event("default")
+            .done_event("[END]")
+            .into_response();
+
+        let body = body_to_string(response).await;
+        assert!(body.contains("event: tick\ndata: {\"n\":1}\n\n"), "body: {body}");
+        assert!(body.contains(": final"), "body: {body}");
+        assert!(body.contains("data: [DONE]"), "body: {body}");
+        assert!(body.trim_end().ends_with("data: [END]"), "done last: {body}");
     }
 
     async fn body_to_string(response: Response) -> String {
