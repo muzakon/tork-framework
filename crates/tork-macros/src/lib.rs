@@ -177,7 +177,7 @@ pub fn derive_resources(item: TokenStream) -> TokenStream {
 ///
 /// Generates a `FromRequest` implementation that resolves every field through
 /// `FromRequest` (a resource, another `Inject` service, or a built-in extractor).
-#[proc_macro_derive(Inject)]
+#[proc_macro_derive(Inject, attributes(inject, logger))]
 pub fn derive_inject(item: TokenStream) -> TokenStream {
     inject::expand(item)
 }

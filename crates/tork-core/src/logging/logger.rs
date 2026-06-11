@@ -43,6 +43,11 @@ impl Logger {
         Self::new(context)
     }
 
+    /// Returns the logger's context (the name shown in `[Context]`).
+    pub fn context(&self) -> &str {
+        &self.context
+    }
+
     /// Returns a logger with a different context, keeping the base fields.
     pub fn for_context(&self, context: impl AsRef<str>) -> Logger {
         Logger {
