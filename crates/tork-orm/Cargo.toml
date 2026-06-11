@@ -24,3 +24,5 @@ tork = ["tork-orm-core/tork"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tork = { workspace = true }
+serde_json = { workspace = true }

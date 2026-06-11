@@ -15,6 +15,9 @@ pub mod query;
 
 pub mod preload;
 
+#[cfg(feature = "tork")]
+mod bridge;
+
 mod database;
 mod error;
 mod executor;

@@ -7,6 +7,7 @@
 //! are the only implementors.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use crate::database::Database;
 use crate::dialect::Dialect;
@@ -56,6 +57,30 @@ impl Executor for Database {
         params: Vec<Value>,
     ) -> impl Future<Output = crate::Result<ExecuteResult>> + Send {
         Database::execute(self, sql, params)
+    }
+}
+
+// `Database` is injected into handlers as `Arc<Database>`; implementing `Executor`
+// for the `Arc` lets a query take `&db` directly, with no manual deref.
+impl Executor for Arc<Database> {
+    fn dialect(&self) -> &dyn Dialect {
+        <Database as Executor>::dialect(self)
+    }
+
+    fn fetch_all(
+        &self,
+        sql: String,
+        params: Vec<Value>,
+    ) -> impl Future<Output = crate::Result<Vec<Row>>> + Send {
+        <Database as Executor>::fetch_all(self, sql, params)
+    }
+
+    fn execute(
+        &self,
+        sql: String,
+        params: Vec<Value>,
+    ) -> impl Future<Output = crate::Result<ExecuteResult>> + Send {
+        <Database as Executor>::execute(self, sql, params)
     }
 }
 

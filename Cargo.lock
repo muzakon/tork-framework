@@ -2293,7 +2293,9 @@ dependencies = [
 name = "tork-orm"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tokio",
+ "tork",
  "tork-orm-core",
  "tork-orm-macros",
 ]
