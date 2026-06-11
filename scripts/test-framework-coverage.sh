@@ -15,10 +15,6 @@ cargo llvm-cov \
   --workspace \
   --exclude http-parity \
   --exclude my_api \
-  --package tork \
-  --package tork-core \
-  --package tork-macros \
-  --package tork-openapi \
   --lcov \
   --output-path target/coverage/framework.lcov
 

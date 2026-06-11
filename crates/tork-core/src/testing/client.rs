@@ -337,31 +337,39 @@ pub struct ServeBuilder {
 impl ServeBuilder {
     /// Binds the server to `127.0.0.1:0` and returns a connected client.
     pub async fn bind_random_port(self) -> Result<TestClient> {
-        let (addr_tx, addr_rx) = oneshot::channel();
+        let (addr_tx, addr_rx) = oneshot::channel::<Result<SocketAddr>>();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let sender = Arc::new(Mutex::new(Some(addr_tx)));
+        let ready_sender = sender.clone();
 
         let app = self.app.on_ready(move |ctx| {
-            let sender = sender.clone();
+            let sender = ready_sender.clone();
             async move {
                 if let Some(tx) = sender.lock().expect("address sender mutex poisoned").take() {
-                    let _ = tx.send(ctx.addr());
+                    let _ = tx.send(Ok(ctx.addr()));
                 }
                 Ok(())
             }
         });
 
+        let sender = sender.clone();
         let handle = tokio::spawn(async move {
-            let _ = app
+            let result = app
                 .serve_with_shutdown("127.0.0.1:0", async move {
                     let _ = shutdown_rx.await;
                 })
                 .await;
+            if let (Err(error), Some(tx)) = (
+                result,
+                sender.lock().expect("address sender mutex poisoned").take(),
+            ) {
+                let _ = tx.send(Err(error));
+            }
         });
 
         let addr = addr_rx
             .await
-            .map_err(|_| Error::internal("the test server failed to start"))?;
+            .map_err(|_| Error::internal("the test server failed to start"))??;
 
         Ok(TestClient {
             shared: Arc::new(Shared {
