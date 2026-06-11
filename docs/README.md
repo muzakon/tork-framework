@@ -23,14 +23,16 @@ the previous one and ends with working code.
 11. [WebSocket](11-websocket.md)
 12. [Forms and file uploads](12-forms-and-file-uploads.md)
 13. [Settings](13-settings.md)
-14. [Project structure](14-project-structure.md)
+14. [Testing](14-testing.md)
+15. [Project structure](15-project-structure.md)
 
 ## Status
 
 The framework is built in phases. The runtime, routing, dependency injection,
 validation and serialization, OpenAPI, the middleware layer, the lifecycle hooks
-and error handling, Server-Sent Events, WebSocket, forms and file uploads, and
-typed settings are in place. An ORM and a CLI are planned for later phases.
+and error handling, Server-Sent Events, WebSocket, forms and file uploads, typed
+settings, and an in-process test client are in place. An ORM and a CLI are planned
+for later phases.
 
 ## Conventions in this guide
 

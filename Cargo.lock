@@ -612,11 +612,9 @@ dependencies = [
 name = "my_api"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "futures-util",
  "garde",
- "http",
- "http-body-util",
+ "serde_json",
  "tokio",
  "tork",
 ]
