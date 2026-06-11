@@ -8,6 +8,7 @@
 
 use std::marker::PhantomData;
 
+use crate::query::ast::OrderItem;
 use crate::query::expr::{BinaryOp, Expr};
 use crate::value::{BindValue, Value};
 
@@ -133,6 +134,16 @@ impl<M, T> Column<M, T> {
     /// `column IS NOT NULL`
     pub fn is_not_null(self) -> Expr {
         Expr::is_null(self.expr(), true)
+    }
+
+    /// Orders by this column ascending.
+    pub fn asc(self) -> OrderItem {
+        OrderItem::new(self.expr(), false)
+    }
+
+    /// Orders by this column descending.
+    pub fn desc(self) -> OrderItem {
+        OrderItem::new(self.expr(), true)
     }
 
     /// Builds a binary comparison against a bound value.

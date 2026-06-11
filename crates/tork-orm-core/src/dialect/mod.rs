@@ -14,7 +14,7 @@ pub mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteDialect;
 
-pub use writer::{QueryWriter, render_expr};
+pub use writer::{QueryWriter, render_count, render_exists, render_expr, render_select};
 
 /// An abstract column type, independent of any backend.
 ///

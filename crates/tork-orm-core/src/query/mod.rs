@@ -1,5 +1,9 @@
-//! The backend-neutral query model: typed columns and the expression AST that the
-//! query builder assembles and a dialect renders.
+//! The backend-neutral query model: typed columns, the expression and statement
+//! AST, and the [`QuerySet`] builder that assembles and runs queries.
 
+pub mod ast;
 pub mod column;
 pub mod expr;
+pub mod queryset;
+
+pub use queryset::QuerySet;

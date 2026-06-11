@@ -7,6 +7,7 @@
 //! migrations phase can build on it.
 
 use crate::dialect::SqlType;
+use crate::query::QuerySet;
 use crate::row::Row;
 use crate::value::Value;
 
@@ -73,4 +74,23 @@ pub trait Model: FromRow + Send + Sync + 'static {
 
     /// Returns the value of the primary key column for this instance.
     fn primary_key_value(&self) -> Value;
+
+    /// Starts a query over this model.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use tork_orm_core::{Database, Model};
+    /// # async fn run<M: Model>(db: Database) -> tork_orm_core::Result<()> {
+    /// let rows = M::query().limit(10).all(&db).await?;
+    /// # let _ = rows;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn query() -> QuerySet<Self>
+    where
+        Self: Sized,
+    {
+        QuerySet::new()
+    }
 }

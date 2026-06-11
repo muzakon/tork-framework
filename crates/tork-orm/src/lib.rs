@@ -49,6 +49,6 @@ pub use tork_orm_macros::*;
 pub mod prelude {
     pub use crate::{
         BindValue, Column, ColumnDef, Database, ErrorKind, Executor, Expr, ForeignKeyDef, FromRow,
-        FromValue, Model, OrmError, Result, Row, SqlType, Value,
+        FromValue, Model, OrmError, OrderItem, QuerySet, Result, Row, SqlType, Value,
     };
 }

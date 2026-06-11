@@ -6,6 +6,7 @@
 //! share one rendering walk and differ only in their primitives.
 
 use crate::dialect::Dialect;
+use crate::query::ast::{SelectItem, SelectStatement};
 use crate::query::expr::Expr;
 use crate::value::Value;
 
@@ -119,10 +120,102 @@ impl<'a> QueryWriter<'a> {
         self.sql.push(')');
     }
 
+    /// Renders the `WHERE` clause for a statement's top-level filters.
+    ///
+    /// The filters are joined by `AND` without an outer parenthesis; any nested
+    /// group renders its own parentheses.
+    fn write_where(&mut self, filters: &[Expr]) {
+        if filters.is_empty() {
+            return;
+        }
+        self.push_sql(" WHERE ");
+        for (index, filter) in filters.iter().enumerate() {
+            if index != 0 {
+                self.push_sql(" AND ");
+            }
+            self.write_expr(filter);
+        }
+    }
+
+    /// Renders a `SELECT` statement.
+    pub fn write_select(&mut self, statement: &SelectStatement) {
+        self.push_sql("SELECT ");
+        if statement.distinct {
+            self.push_sql("DISTINCT ");
+        }
+        for (index, item) in statement.projection.iter().enumerate() {
+            if index != 0 {
+                self.push_sql(", ");
+            }
+            match item {
+                SelectItem::Column { table, column } => self.push_qualified(table, column),
+            }
+        }
+        self.push_sql(" FROM ");
+        self.push_identifier(statement.table);
+        self.write_where(&statement.filters);
+
+        if !statement.order_by.is_empty() {
+            self.push_sql(" ORDER BY ");
+            for (index, term) in statement.order_by.iter().enumerate() {
+                if index != 0 {
+                    self.push_sql(", ");
+                }
+                self.write_expr(&term.expr);
+                self.push_sql(if term.descending { " DESC" } else { " ASC" });
+            }
+        }
+
+        if let Some(limit) = statement.limit {
+            self.push_sql(" LIMIT ");
+            self.push_sql(&limit.to_string());
+        }
+        if let Some(offset) = statement.offset {
+            self.push_sql(" OFFSET ");
+            self.push_sql(&offset.to_string());
+        }
+    }
+
+    /// Renders a `SELECT COUNT(*)` over a statement's table and filters.
+    pub fn write_count(&mut self, statement: &SelectStatement) {
+        self.push_sql("SELECT COUNT(*) FROM ");
+        self.push_identifier(statement.table);
+        self.write_where(&statement.filters);
+    }
+
+    /// Renders an existence check over a statement's table and filters.
+    pub fn write_exists(&mut self, statement: &SelectStatement) {
+        self.push_sql("SELECT EXISTS(SELECT 1 FROM ");
+        self.push_identifier(statement.table);
+        self.write_where(&statement.filters);
+        self.sql.push(')');
+    }
+
     /// Consumes the writer, returning the SQL string and its bound parameters.
     pub fn finish(self) -> (String, Vec<Value>) {
         (self.sql, self.params)
     }
+}
+
+/// Renders a `SELECT` statement to SQL and bound parameters.
+pub fn render_select(dialect: &dyn Dialect, statement: &SelectStatement) -> (String, Vec<Value>) {
+    let mut writer = QueryWriter::new(dialect);
+    writer.write_select(statement);
+    writer.finish()
+}
+
+/// Renders a count query to SQL and bound parameters.
+pub fn render_count(dialect: &dyn Dialect, statement: &SelectStatement) -> (String, Vec<Value>) {
+    let mut writer = QueryWriter::new(dialect);
+    writer.write_count(statement);
+    writer.finish()
+}
+
+/// Renders an existence query to SQL and bound parameters.
+pub fn render_exists(dialect: &dyn Dialect, statement: &SelectStatement) -> (String, Vec<Value>) {
+    let mut writer = QueryWriter::new(dialect);
+    writer.write_exists(statement);
+    writer.finish()
 }
 
 /// Renders a standalone boolean expression to SQL and its bound parameters.

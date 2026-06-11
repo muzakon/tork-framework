@@ -9,6 +9,7 @@
 use std::future::Future;
 
 use crate::database::Database;
+use crate::dialect::Dialect;
 use crate::driver::ExecuteResult;
 use crate::row::Row;
 use crate::value::Value;
@@ -18,6 +19,9 @@ use crate::value::Value;
 /// The query layer takes `executor: impl Executor`, which lets a caller pass
 /// `&db` (a [`Database`]) and, later, a transaction handle interchangeably.
 pub trait Executor {
+    /// Returns the dialect SQL should be rendered with before running.
+    fn dialect(&self) -> &dyn Dialect;
+
     /// Runs a row-returning query.
     fn fetch_all(
         &self,
@@ -34,6 +38,10 @@ pub trait Executor {
 }
 
 impl Executor for Database {
+    fn dialect(&self) -> &dyn Dialect {
+        Database::dialect(self).as_ref()
+    }
+
     fn fetch_all(
         &self,
         sql: String,
@@ -55,6 +63,10 @@ impl<T> Executor for &T
 where
     T: Executor + Sync + ?Sized,
 {
+    fn dialect(&self) -> &dyn Dialect {
+        T::dialect(self)
+    }
+
     fn fetch_all(
         &self,
         sql: String,
