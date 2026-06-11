@@ -13,6 +13,15 @@ use std::sync::Arc;
 
 use crate::extract::RequestContext;
 
+mod client;
+mod cookie;
+mod request;
+mod response;
+
+pub use client::{TestClient, TestClientBuilder};
+pub use request::{TestMultipartBuilder, TestRequestBuilder};
+pub use response::TestResponse;
+
 /// A factory producing a fresh boxed instance of an overridden dependency.
 type OverrideFactory = Arc<dyn Fn() -> Box<dyn Any + Send> + Send + Sync>;
 

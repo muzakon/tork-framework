@@ -517,9 +517,20 @@ impl App {
     /// app without binding a socket, returning a [`TestApp`] that the
     /// [`TestClient`](crate::testing::TestClient) drives. The `on_ready` hooks are
     /// not run, since there is no bound address.
-    pub async fn build_test(mut self) -> Result<TestApp> {
+    pub async fn build_test(self) -> Result<TestApp> {
+        self.build_test_with(|_| {}).await
+    }
+
+    /// Builds the application for testing, applying `apply` to the state map after
+    /// startup (so test overrides win) and before the app is finalized. Used by the
+    /// test client builder to inject resource and dependency overrides.
+    pub(crate) async fn build_test_with(
+        mut self,
+        apply: impl FnOnce(&mut StateMap),
+    ) -> Result<TestApp> {
         self.validate_lifecycle()?;
         self.run_startup().await?;
+        apply(&mut self.state);
         let lifespan = std::mem::take(&mut self.lifespan);
         let on_shutdown = std::mem::take(&mut self.on_shutdown);
         let inner = Arc::new(self.build()?);
@@ -556,8 +567,6 @@ async fn run_shutdown(lifespan: &mut [Box<dyn ErasedLifespan>], on_shutdown: &[H
 /// lifespans and `on_shutdown` hooks so [`shutdown`](TestApp::shutdown) can run
 /// the teardown that a real server would run on stop.
 pub struct TestApp {
-    // Read by the test client, which lands in a later commit of this phase.
-    #[allow(dead_code)]
     pub(crate) inner: Arc<AppInner>,
     pub(crate) lifespan: Vec<Box<dyn ErasedLifespan>>,
     pub(crate) on_shutdown: Vec<Hook>,
