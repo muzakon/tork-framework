@@ -114,6 +114,7 @@ proc-macro2 = "1"
 
 # Benchmarking.
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+trybuild = "1"
 
 # Release profile: optimize for a fast, lean production binary.
 [profile.release]
