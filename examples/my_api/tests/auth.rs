@@ -4,16 +4,14 @@ use bytes::Bytes;
 use http_body_util::Full;
 use tork::{App, AppInner, Method, ReqBody, StatusCode, box_body};
 
-use my_api::core::app_state::{Config, UserStore};
+use my_api::core::app_state::UserStore;
 use my_api::routers::users;
 
 async fn app() -> AppInner {
     // Register the resources directly (the live server uses the lifespan instead).
+    // The users router only needs the store; configuration is not on its path.
     App::new()
         .state(UserStore::seed())
-        .state(Config {
-            service_name: "test".to_owned(),
-        })
         .include_router(users::router())
         .build()
         .unwrap()

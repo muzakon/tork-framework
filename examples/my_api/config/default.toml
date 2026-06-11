@@ -1,0 +1,12 @@
+# Base configuration for the example application.
+#
+# Values here are overridden, in order, by config/{env}.toml, the .env file, and
+# environment variables (prefix APP_, nesting via __). Anything omitted falls back
+# to the defaults declared on the Config struct.
+
+app_name = "My API"
+items_per_user = 100
+
+[server]
+host = "0.0.0.0"
+port = 8000

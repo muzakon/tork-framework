@@ -1,14 +1,17 @@
 //! Routes that demonstrate the hooks, error-handling, and streaming surface.
 
+use std::sync::Arc;
+
 use tork::{
     FileBytes, Form, LastEventId, Multipart, RequestEvent, Sse, SseEvent, WebSocket, WsMessage,
     api_router, get, post, sse, websocket,
 };
 
-use crate::core::app_state::ChatHub;
+use crate::core::app_state::{ChatHub, Config};
 use crate::core::errors::RepoError;
 use crate::models::chat::{ChatIn, ChatMessage};
 use crate::models::event::EventOut;
+use crate::models::info::InfoOut;
 use crate::models::upload::{LoginForm, LoginOut, ProfileForm, UploadOut};
 
 #[api_router(prefix = "/demo", tags = ["demo"])]
@@ -58,6 +61,18 @@ pub mod demo_router {
         }));
 
         Ok(Sse::events(events))
+    }
+
+    /// Returns the loaded configuration, showing settings injected as a resource.
+    #[get("/info", response_model = InfoOut, summary = "Show the loaded configuration")]
+    pub async fn info(config: Arc<Config>) -> tork::Result<InfoOut> {
+        Ok(InfoOut {
+            app_name: config.app_name.clone(),
+            environment: config.environment.clone(),
+            items_per_user: config.items_per_user,
+            server_host: config.server.host.clone(),
+            server_port: config.server.port,
+        })
     }
 
     /// Accepts a single file plus a caption as `multipart/form-data`, using the

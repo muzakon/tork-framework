@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tork::{Error, Hub, LifespanContext, Resources, Result};
+use tork::{Error, Hub, LifespanContext, Resources, Result, SecretString, settings};
 
 use crate::models::chat::ChatMessage;
 use crate::models::order::OrderOut;
@@ -101,10 +101,44 @@ impl UserStore {
     }
 }
 
-/// Application configuration, injected as a resource.
-#[derive(Clone)]
+/// Network settings, nested inside [`Config`].
+#[settings]
+pub struct ServerConfig {
+    /// Address the server binds to.
+    #[setting(default = "0.0.0.0")]
+    pub host: String,
+    /// Port the server listens on.
+    #[setting(default = 8000)]
+    pub port: u16,
+}
+
+/// Application configuration, loaded once at startup and injected as a resource.
+///
+/// Values come from `config/default.toml`, then `config/{env}.toml`, then `.env`
+/// and environment variables (prefix `APP_`, nesting via `__`). Defaults fill in
+/// anything missing, and the whole config is validated before the app runs.
+#[settings(
+    prefix = "APP",
+    env_file = ".env",
+    config_file = "config/default.toml",
+    files = ["config/{env}.toml"]
+)]
 pub struct Config {
-    pub service_name: String,
+    /// Human-readable application name.
+    #[setting(default = "my_api")]
+    pub app_name: String,
+    /// Deployment environment (also selects `config/{env}.toml`).
+    #[setting(default = "development")]
+    pub environment: String,
+    /// Maximum items returned per user.
+    #[setting(default = 50, ge = 1, le = 500)]
+    pub items_per_user: u32,
+    /// Network settings.
+    #[setting(nested)]
+    pub server: ServerConfig,
+    /// A sample secret; override it through the environment in production.
+    #[setting(secret, default = "dev-placeholder-key")]
+    pub api_key: SecretString,
 }
 
 /// The application's resource container.
@@ -113,7 +147,7 @@ pub struct AppState {
     #[resource]
     pub store: UserStore,
     #[resource]
-    pub config: Config,
+    pub config: Arc<Config>,
     #[resource]
     pub chat: ChatHub,
 }
@@ -121,11 +155,12 @@ pub struct AppState {
 #[tork::lifespan]
 impl AppState {
     /// Acquires the application's resources at startup.
-    async fn startup(ctx: LifespanContext) -> Result<Self> {
-        let service_name = ctx.env("SERVICE_NAME").unwrap_or_else(|_| "my_api".to_owned());
+    async fn startup(_ctx: LifespanContext) -> Result<Self> {
+        // Load and validate configuration once; a failure aborts the boot.
+        let config = Arc::new(Config::load()?);
         Ok(AppState {
             store: UserStore::seed(),
-            config: Config { service_name },
+            config,
             chat: ChatHub(Hub::new()),
         })
     }

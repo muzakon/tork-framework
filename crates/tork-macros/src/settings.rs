@@ -13,8 +13,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    Attribute, Expr, ExprLit, Fields, Ident, ItemStruct, Lit, LitInt, LitStr, Token, Type,
-    bracketed, parse_macro_input,
+    Attribute, Expr, ExprLit, Fields, Ident, ItemStruct, Lit, LitInt, LitStr, Token, bracketed,
+    parse_macro_input,
 };
 
 use crate::api_model::{bound_parts, coerce_bound, exclusive_check, to_snake};
@@ -219,7 +219,7 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
                 to_snake(&struct_ident.to_string()),
                 field_ident
             );
-            let value = default_value(field_ty, default);
+            let value = default_value(default);
             extra_fns.push(quote! {
                 #[doc(hidden)]
                 fn #fn_ident() -> #field_ty { #value }
@@ -291,19 +291,15 @@ fn load_chain(container: &ContainerArgs) -> TokenStream2 {
     chain
 }
 
-/// Produces the default value expression for a field, coercing a string literal
-/// to an owned `String` so `default = "..."` works on a `String` field.
-fn default_value(field_ty: &Type, expr: &Expr) -> TokenStream2 {
-    let is_string = matches!(
-        field_ty,
-        Type::Path(path) if path.path.segments.last().map(|s| s.ident == "String").unwrap_or(false)
-    );
-    let is_str_lit = matches!(
-        expr,
-        Expr::Lit(ExprLit { lit: Lit::Str(_), .. })
-    );
-    if is_string && is_str_lit {
-        quote!(#expr.to_owned())
+/// Produces the default value expression for a field. A string literal is
+/// converted with `.into()` so `default = "..."` works for any field whose type
+/// implements `From<&str>` (for example `String` or [`tork::SecretString`]); the
+/// function's return type makes the conversion unambiguous. Other expressions
+/// (numbers, booleans, paths) pass through unchanged.
+fn default_value(expr: &Expr) -> TokenStream2 {
+    let is_str_lit = matches!(expr, Expr::Lit(ExprLit { lit: Lit::Str(_), .. }));
+    if is_str_lit {
+        quote!(::core::convert::Into::into(#expr))
     } else {
         quote!(#expr)
     }
