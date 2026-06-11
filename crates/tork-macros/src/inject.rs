@@ -58,6 +58,13 @@ fn expand_derive(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 ctx: & #krate::RequestContext,
             ) -> impl ::core::future::Future<Output = #krate::Result<Self>> + Send {
                 async move {
+                    // A test client may substitute this service with a pre-built
+                    // instance; otherwise it is constructed from its fields.
+                    if let ::core::option::Option::Some(__overridden) =
+                        #krate::__take_override::<Self>(ctx)
+                    {
+                        return ::core::result::Result::Ok(__overridden);
+                    }
                     #(#bindings)*
                     ::core::result::Result::Ok(#ident { #(#names),* })
                 }

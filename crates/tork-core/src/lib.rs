@@ -26,6 +26,7 @@ mod router;
 mod server;
 mod service;
 mod settings;
+pub mod testing;
 mod sse;
 mod state;
 mod ws;
@@ -62,6 +63,9 @@ pub use response::{
 pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, RequestBodyKind, Route, RouteMeta, Router, SchemaThunk};
 pub use settings::{SecretString, SettingsLoader};
+// Generated-code support for `#[derive(Inject)]` test overrides.
+#[doc(hidden)]
+pub use testing::__take_override;
 pub use sse::{Sse, SseEvent};
 pub use state::{AppStateRef, State, StateMap};
 pub use ws::{
