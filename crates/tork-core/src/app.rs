@@ -138,6 +138,15 @@ impl App {
         self
     }
 
+    /// Mounts a single route, given the route factory generated for a handler.
+    ///
+    /// A `#[get]` / `#[post]` / `#[sse]` / `#[websocket]` handler named `handler`
+    /// generates a `handler()` route factory, so `App::new().include(handler)`
+    /// registers it directly without building a `Router`.
+    pub fn include(self, route: impl FnOnce() -> Route) -> Self {
+        self.include_router(Router::new().route(route()))
+    }
+
     /// Configures OpenAPI document generation and the documentation UI.
     pub fn openapi<P: OpenApiProvider>(mut self, provider: P) -> Self {
         self.openapi = Some(Box::new(provider));

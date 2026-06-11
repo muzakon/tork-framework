@@ -108,6 +108,7 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
     let krate = krate();
     let fn_name = func.sig.ident.clone();
     let vis = func.vis.clone();
+    let handler_ident = format_ident!("__tork_handler_{}", fn_name);
     let route_fn = format_ident!("__tork_route_{}", fn_name);
 
     let method = args
@@ -150,13 +151,15 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
         Some(event) => quote! { .event(#event) },
         None => quote! {},
     };
-    let call = quote! { #fn_name(#(#call_args),*).await };
+    let call = quote! { #handler_ident(#(#call_args),*).await };
+
+    let mut emit_func = func.clone();
+    emit_func.sig.ident = handler_ident.clone();
 
     Ok(quote! {
-        #func
+        #emit_func
 
-        #[doc(hidden)]
-        #vis fn #route_fn() -> #krate::Route {
+        #vis fn #fn_name() -> #krate::Route {
             let handler: #krate::HandlerFn = ::std::sync::Arc::new(
                 |ctx: #krate::RequestContext|
                     -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
@@ -174,6 +177,11 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
                 },
             );
             #builder
+        }
+
+        #[doc(hidden)]
+        #vis fn #route_fn() -> #krate::Route {
+            #fn_name()
         }
     })
 }

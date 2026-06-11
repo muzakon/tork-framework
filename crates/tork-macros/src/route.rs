@@ -191,6 +191,9 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     let krate = krate();
     let fn_name = func.sig.ident.clone();
     let vis = func.vis.clone();
+    // The user-named function becomes the route factory; the original async body is
+    // re-emitted under a hidden name and called by the generated handler closure.
+    let handler_ident = format_ident!("__tork_handler_{}", fn_name);
     let route_fn = format_ident!("__tork_route_{}", fn_name);
     let method_ident = Ident::new(method, Span::call_site());
     let path = &args.path;
@@ -252,8 +255,10 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
         (bindings, call_args, TokenStream::new(), request_meta, TokenStream::new())
     };
 
-    // Re-emit the function without the form parameter attributes so it compiles.
-    let emit_func = strip_form_attrs(&func);
+    // Re-emit the function (renamed, without the form parameter attributes) so it
+    // compiles and can be called by the generated handler closure.
+    let mut emit_func = strip_form_attrs(&func);
+    emit_func.sig.ident = handler_ident.clone();
 
     let status_code = status_code_tokens(&krate, args.status_code.as_ref());
 
@@ -303,7 +308,7 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
 
     // When a response model is declared, convert the handler's value into it
     // before serializing; otherwise serialize the value as-is.
-    let call = quote! { #fn_name(#(#call_args),*).await };
+    let call = quote! { #handler_ident(#(#call_args),*).await };
     let finish = match &args.response_model {
         Some(response_model) => {
             quote! { #krate::__finish_into::<_, #response_model, _>(#call, #status_code) }
@@ -316,8 +321,9 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
 
         #extra_items
 
-        #[doc(hidden)]
-        #vis fn #route_fn() -> #krate::Route {
+        // The route factory, named after the handler so it can be passed to
+        // `App::include` / `Router::include`.
+        #vis fn #fn_name() -> #krate::Route {
             let handler: #krate::HandlerFn = ::std::sync::Arc::new(
                 |ctx: #krate::RequestContext|
                     -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
@@ -329,6 +335,13 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
                 },
             );
             #builder
+        }
+
+        // Backward-compatible alias used by `Router::route(...)` call sites and the
+        // `#[api_router]` auto-registration.
+        #[doc(hidden)]
+        #vis fn #route_fn() -> #krate::Route {
+            #fn_name()
         }
     })
 }

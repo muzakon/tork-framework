@@ -118,6 +118,7 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
     let krate = krate();
     let fn_name = func.sig.ident.clone();
     let vis = func.vis.clone();
+    let handler_ident = format_ident!("__tork_handler_{}", fn_name);
     let route_fn = format_ident!("__tork_route_{}", fn_name);
     let path = &args.path;
 
@@ -214,11 +215,13 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
         builder = quote! { #builder.ws_outgoing::<#outgoing>() };
     }
 
-    Ok(quote! {
-        #func
+    let mut emit_func = func.clone();
+    emit_func.sig.ident = handler_ident.clone();
 
-        #[doc(hidden)]
-        #vis fn #route_fn() -> #krate::Route {
+    Ok(quote! {
+        #emit_func
+
+        #vis fn #fn_name() -> #krate::Route {
             let handler: #krate::HandlerFn = ::std::sync::Arc::new(
                 |ctx: #krate::RequestContext|
                     -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
@@ -229,7 +232,7 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
                         #(#bindings)*
                         #krate::__rt::spawn(async move {
                             if let ::core::result::Result::Err(__error) =
-                                #fn_name(#(#call_args),*).await
+                                #handler_ident(#(#call_args),*).await
                             {
                                 ::std::eprintln!("tork: websocket handler error: {__error}");
                             }
@@ -239,6 +242,11 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
                 },
             );
             #builder
+        }
+
+        #[doc(hidden)]
+        #vis fn #route_fn() -> #krate::Route {
+            #fn_name()
         }
     })
 }

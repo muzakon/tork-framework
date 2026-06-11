@@ -66,6 +66,25 @@ async fn read_headers(headers: Headers) -> tork::Result<serde_json::Value> {
 }
 
 #[tokio::test]
+async fn include_registers_a_handler_directly() {
+    // The route factory is named after the handler, so it can be passed to include.
+    let app = App::new()
+        .include(hello)
+        .include(create_item)
+        .build_test()
+        .await
+        .unwrap();
+    let client = TestClient::new(app).await.unwrap();
+
+    let response = client.get("/hello").send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        json!({ "msg": "Hello World" })
+    );
+}
+
+#[tokio::test]
 async fn get_json_and_post_json() {
     let app = App::new()
         .include_router(
