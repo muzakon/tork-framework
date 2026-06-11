@@ -387,3 +387,119 @@ pub(crate) fn to_snake(input: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn container_args_and_field_args_parse_known_keys() {
+        let container: ContainerArgs = parse_quote!(rename_all = "camelCase");
+        assert_eq!(container.rename_all.unwrap().value(), "camelCase");
+
+        let fields: FieldArgs = parse_quote!(
+            min_length = 1,
+            max_length = 3,
+            ge = 1,
+            le = 9,
+            gt = 2,
+            lt = 8,
+            title = "Title",
+            description = "Desc",
+            custom = validate_name,
+            nested,
+            default
+        );
+        assert!(fields.min_length.is_some());
+        assert!(fields.max_length.is_some());
+        assert!(fields.ge.is_some());
+        assert!(fields.le.is_some());
+        assert!(fields.gt.is_some());
+        assert!(fields.lt.is_some());
+        assert_eq!(fields.title.unwrap().value(), "Title");
+        assert_eq!(fields.description.unwrap().value(), "Desc");
+        assert_eq!(fields.custom.len(), 1);
+        assert!(fields.nested);
+        assert!(fields.default);
+    }
+
+    #[test]
+    fn parse_rejects_unknown_container_and_field_options() {
+        let err = match syn::parse2::<ContainerArgs>(quote!(unknown = "x")) {
+            Ok(_) => panic!("expected parse error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("unknown api_model option"));
+
+        let err = match syn::parse2::<FieldArgs>(quote!(unknown = 1)) {
+            Ok(_) => panic!("expected parse error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("unknown field constraint"));
+    }
+
+    #[test]
+    fn helper_functions_cover_bounds_and_identifiers() {
+        assert_eq!(bound_parts(Some(quote!(1)), Some(quote!(9))).to_string(), "min = 1 , max = 9");
+        assert_eq!(bound_parts(Some(quote!(1)), None).to_string(), "min = 1");
+        assert_eq!(bound_parts(None, Some(quote!(9))).to_string(), "max = 9");
+        assert_eq!(bound_parts(None, None).to_string(), "");
+
+        let field_ty: Type = parse_quote!(f64);
+        assert_eq!(coerce_bound(&parse_quote!(0), &field_ty).to_string(), "0.0");
+        assert_eq!(coerce_bound(&parse_quote!(2.5), &field_ty).to_string(), "2.5");
+
+        let option_ty: Type = parse_quote!(Option<u32>);
+        let plain_ty: Type = parse_quote!(String);
+        assert!(option_inner(&option_ty).is_some());
+        assert!(option_inner(&plain_ty).is_none());
+        assert!(is_float_type(&parse_quote!(f32)));
+        assert!(!is_float_type(&parse_quote!(u32)));
+        assert_eq!(to_snake("HTTPServer"), "h_t_t_p_server");
+    }
+
+    #[test]
+    fn exclusive_check_handles_option_and_plain_values() {
+        let struct_ident = parse_quote!(Model);
+        let field_ident = parse_quote!(count);
+        let bound: Expr = parse_quote!(3);
+        let plain_ty: Type = parse_quote!(u32);
+        let opt_ty: Type = parse_quote!(Option<u32>);
+
+        let (_, plain_fn) = exclusive_check(&struct_ident, &field_ident, "gt", &bound, &plain_ty);
+        assert!(plain_fn.to_string().contains("model_count_gt"));
+        let (_, opt_fn) = exclusive_check(&struct_ident, &field_ident, "lt", &bound, &opt_ty);
+        assert!(opt_fn.to_string().contains("model_count_lt"));
+    }
+
+    #[test]
+    fn expand_struct_handles_named_fields_and_constraints() {
+        let container: ContainerArgs = parse_quote!(rename_all = "camelCase");
+        let item: ItemStruct = parse_quote! {
+            #[doc = "model"]
+            pub struct User {
+                #[field(min_length = 1, max_length = 3, default)]
+                pub name: String,
+                #[field(ge = 0, le = 10, gt = 0, lt = 10, title = "Score", description = "Score field")]
+                pub score: Option<f64>,
+                #[field(custom = validate_name, nested)]
+                pub child: Option<Child>,
+                pub raw: String,
+            }
+        };
+        let tokens = expand_struct(container, item).unwrap().to_string();
+        assert!(tokens.contains("serde rename_all"));
+        assert!(tokens.contains("garde skip"));
+        assert!(tokens.contains("length"));
+        assert!(tokens.contains("range"));
+        assert!(tokens.contains("exclusiveMinimum"));
+        assert!(tokens.contains("exclusiveMaximum"));
+        assert!(tokens.contains("title"));
+        assert!(tokens.contains("description"));
+        assert!(tokens.contains("serde default"));
+        assert!(tokens.contains("validate_name"));
+        assert!(tokens.contains("dive"));
+        assert!(tokens.contains("fn __tork_user_score_gt"));
+    }
+}

@@ -188,4 +188,37 @@ mod tests {
             Match::NotFound
         ));
     }
+
+    #[test]
+    fn build_rejects_duplicate_same_method_and_path() {
+        let routes = vec![
+            Route::new(Method::GET, "/users/{user_id}", dummy_handler()),
+            Route::new(Method::GET, "/users/{user_id}", dummy_handler()),
+        ];
+        let err = Matcher::build(routes).unwrap_err();
+        assert!(err.to_string().contains("failed to register route GET /users/{user_id}"));
+    }
+
+    #[test]
+    fn normalized_request_path_covers_root_and_trailing_slashes() {
+        assert_eq!(normalized_request_path("/"), None);
+        assert_eq!(normalized_request_path("/users"), None);
+        assert_eq!(normalized_request_path("/users/"), Some("/users"));
+        assert_eq!(normalized_request_path("/users///"), Some("/users"));
+    }
+
+    #[test]
+    fn root_path_matches_and_method_not_allowed_uses_all_paths() {
+        let routes = vec![
+            Route::new(Method::GET, "/", dummy_handler()),
+            Route::new(Method::POST, "/users", dummy_handler()),
+        ];
+        let matcher = Matcher::build(routes).unwrap();
+        assert!(matches!(matcher.find(&Method::GET, "/"), Match::Found { .. }));
+        assert!(matches!(matcher.find(&Method::POST, "/"), Match::MethodNotAllowed));
+        assert!(matches!(
+            matcher.find(&Method::GET, "/users/"),
+            Match::MethodNotAllowed
+        ));
+    }
 }

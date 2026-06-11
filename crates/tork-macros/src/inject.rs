@@ -113,3 +113,65 @@ fn expand_derive(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn is_logger_detects_final_segment() {
+        let logger: Type = parse_quote!(Logger);
+        let nested: Type = parse_quote!(crate::logging::Logger);
+        let other: Type = parse_quote!(Db);
+        assert!(is_logger(&logger));
+        assert!(is_logger(&nested));
+        assert!(!is_logger(&other));
+    }
+
+    #[test]
+    fn context_attr_reads_known_value_and_rejects_unknown_keys() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[inject(context = "api")])];
+        assert_eq!(context_attr(&attrs, "inject").unwrap(), Some("api".to_owned()));
+        assert_eq!(context_attr(&[], "inject").unwrap(), None);
+
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[inject(foo = "bar")])];
+        let err = context_attr(&attrs, "inject").unwrap_err();
+        assert!(err.to_string().contains("expected `context = \"...\"`"));
+    }
+
+    #[test]
+    fn expand_derive_rejects_invalid_struct_shapes() {
+        let input: DeriveInput = parse_quote!(enum NotInjectable { A });
+        assert!(expand_derive(input)
+            .unwrap_err()
+            .to_string()
+            .contains("only be derived for structs"));
+
+        let input: DeriveInput = parse_quote! {
+            struct Tuple(Logger);
+        };
+        assert!(expand_derive(input)
+            .unwrap_err()
+            .to_string()
+            .contains("named fields"));
+    }
+
+    #[test]
+    fn expand_derive_uses_logger_context_precedence_and_override() {
+        let input: DeriveInput = parse_quote! {
+            #[inject(context = "container")]
+            struct Service {
+                db: Db,
+                #[logger(context = "field")]
+                logger: Logger,
+            }
+        };
+        let tokens = expand_derive(input).unwrap().to_string();
+        assert!(tokens.contains("__take_override"));
+        assert!(tokens.contains("FromRequest for Service"));
+        assert!(tokens.contains("let db ="));
+        assert!(tokens.contains("let logger ="));
+        assert!(tokens.contains("for_context ( \"field\" )"));
+    }
+}

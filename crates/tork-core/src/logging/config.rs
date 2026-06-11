@@ -242,22 +242,58 @@ mod tests {
             .format(LogFormat::Json)
             .service_name("tork-api")
             .request_logs(false)
+            .include_source(true)
+            .include_thread_ids(true)
+            .non_blocking(true)
             .file(FileLogConfig::new("./logs").prefix("api").rotation(Rotation::Hourly));
 
         assert_eq!(config.level, "debug");
         assert_eq!(config.format, LogFormat::Json);
         assert_eq!(config.service_name, "tork-api");
         assert!(!config.request_logs);
+        assert!(config.include_source);
+        assert!(config.include_thread_ids);
+        assert!(config.non_blocking);
         let file = config.file.expect("file sink");
         assert_eq!(file.prefix, "api");
         assert_eq!(file.rotation, Rotation::Hourly);
     }
 
     #[test]
-    fn log_format_deserializes_from_lowercase() {
+    fn file_and_telemetry_builders_cover_all_fields() {
+        let file = FileLogConfig::new("./logs")
+            .prefix("svc")
+            .rotation(Rotation::Never)
+            .non_blocking(false);
+        assert_eq!(file.directory, PathBuf::from("./logs"));
+        assert_eq!(file.prefix, "svc");
+        assert_eq!(file.rotation, Rotation::Never);
+        assert!(!file.non_blocking);
+
+        let telemetry = TelemetryConfig::new("http://localhost:4317")
+            .service_name("tork-api")
+            .enabled(false);
+        assert!(!telemetry.enabled);
+        assert_eq!(telemetry.otlp_endpoint, "http://localhost:4317");
+        assert_eq!(telemetry.service_name, "tork-api");
+    }
+
+    #[test]
+    fn log_format_and_rotation_deserialize_from_lowercase() {
         let format: LogFormat = serde_json::from_str("\"json\"").unwrap();
         assert_eq!(format, LogFormat::Json);
         let format: LogFormat = serde_json::from_str("\"auto\"").unwrap();
         assert_eq!(format, LogFormat::Auto);
+        let format: LogFormat = serde_json::from_str("\"pretty\"").unwrap();
+        assert_eq!(format, LogFormat::Pretty);
+        let format: LogFormat = serde_json::from_str("\"compact\"").unwrap();
+        assert_eq!(format, LogFormat::Compact);
+
+        let rotation: Rotation = serde_json::from_str("\"never\"").unwrap();
+        assert_eq!(rotation, Rotation::Never);
+        let rotation: Rotation = serde_json::from_str("\"hourly\"").unwrap();
+        assert_eq!(rotation, Rotation::Hourly);
+        let rotation: Rotation = serde_json::from_str("\"daily\"").unwrap();
+        assert_eq!(rotation, Rotation::Daily);
     }
 }
