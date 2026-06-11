@@ -93,6 +93,44 @@ impl AppInner {
         }
     }
 
+    /// Routes a WebSocket upgrade request over an in-process duplex stream.
+    ///
+    /// Used by the test client: the matched handler reads the duplex instead of a
+    /// real upgraded socket. Returns the handler's response, which is a `101` on a
+    /// successful handshake or an error response if the handshake or a dependency
+    /// is rejected before the upgrade. (The caller, the test client, lands in a
+    /// later commit of this phase.)
+    #[allow(dead_code)]
+    pub(crate) async fn dispatch_upgrade(
+        &self,
+        request: Request<ReqBody>,
+        duplex: tokio::io::DuplexStream,
+    ) -> Response {
+        let (head, body) = request.into_parts();
+        let path = head.uri.path().to_owned();
+
+        match self.matcher().find(&head.method, &path) {
+            Match::Found { route, params } => {
+                let handler = route.handler().clone();
+                let ctx = RequestContext::with_duplex_upgrade(
+                    head,
+                    params,
+                    self.state().clone(),
+                    body,
+                    duplex,
+                );
+                match handler(ctx).await {
+                    Ok(response) => response,
+                    Err(error) => error.into_response(),
+                }
+            }
+            Match::MethodNotAllowed => {
+                Error::method_not_allowed("method not allowed").into_response()
+            }
+            Match::NotFound => Error::not_found("resource not found").into_response(),
+        }
+    }
+
     /// Renders a routing error (no matched route), running the app-global hooks
     /// when request metadata is present.
     async fn finish_error(&self, error: Error, info: Option<RequestInfo>) -> Response {

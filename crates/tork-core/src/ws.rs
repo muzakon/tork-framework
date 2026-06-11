@@ -8,11 +8,14 @@
 //! `tokio-tungstenite`, which users never see directly.
 
 use std::borrow::Cow;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use garde::Validate;
 use http::Method;
 use http::header::{
@@ -345,9 +348,71 @@ pub(crate) struct WsHooks {
     pub(crate) disconnect: Vec<WsDisconnectHook>,
 }
 
+/// A pending WebSocket upgrade.
+///
+/// Either a real upgrade negotiated by hyper on a live connection, or an
+/// in-memory duplex used by the in-process test client (no network).
+pub(crate) enum Upgrade {
+    /// A real upgrade from hyper.
+    Hyper(OnUpgrade),
+    /// An in-process duplex stream (test client). Constructed by the test client,
+    /// which lands in a later commit of this phase.
+    #[allow(dead_code)]
+    Duplex(DuplexStream),
+}
+
+/// The byte transport beneath a [`WebSocketConn`].
+///
+/// Both variants implement tokio's async IO traits, so the connection type stays
+/// concrete while supporting a real upgraded socket and an in-process duplex.
+enum WsTransport {
+    Upgraded(TokioIo<Upgraded>),
+    Duplex(DuplexStream),
+}
+
+impl AsyncRead for WsTransport {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsTransport::Upgraded(io) => Pin::new(io).poll_read(cx, buf),
+            WsTransport::Duplex(io) => Pin::new(io).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for WsTransport {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            WsTransport::Upgraded(io) => Pin::new(io).poll_write(cx, buf),
+            WsTransport::Duplex(io) => Pin::new(io).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsTransport::Upgraded(io) => Pin::new(io).poll_flush(cx),
+            WsTransport::Duplex(io) => Pin::new(io).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsTransport::Upgraded(io) => Pin::new(io).poll_shutdown(cx),
+            WsTransport::Duplex(io) => Pin::new(io).poll_shutdown(cx),
+        }
+    }
+}
+
 /// A WebSocket upgrade handle: call [`accept`](WebSocket::accept) to open it.
 pub struct WebSocket {
-    upgrade: OnUpgrade,
+    upgrade: Upgrade,
     config: WebSocketConfig,
     hooks: Arc<WsHooks>,
     info: WsConnInfo,
@@ -395,16 +460,18 @@ impl WebSocket {
     /// Fires the `on_ws_connect` hooks once the socket is open.
     pub async fn accept(self) -> Result<WebSocketConn> {
         let idle_timeout = self.config.idle_timeout;
-        let upgraded = self
-            .upgrade
-            .await
-            .map_err(|error| Error::internal(format!("websocket upgrade failed: {error}")))?;
-        let stream = WebSocketStream::from_raw_socket(
-            TokioIo::new(upgraded),
-            Role::Server,
-            self.config.to_tungstenite(),
-        )
-        .await;
+        let transport = match self.upgrade {
+            Upgrade::Hyper(on_upgrade) => {
+                let upgraded = on_upgrade.await.map_err(|error| {
+                    Error::internal(format!("websocket upgrade failed: {error}"))
+                })?;
+                WsTransport::Upgraded(TokioIo::new(upgraded))
+            }
+            Upgrade::Duplex(duplex) => WsTransport::Duplex(duplex),
+        };
+        let stream =
+            WebSocketStream::from_raw_socket(transport, Role::Server, self.config.to_tungstenite())
+                .await;
 
         for hook in self.hooks.connect.iter() {
             hook(WsConnectInfo::new(self.info.clone())).await;
@@ -423,7 +490,7 @@ impl WebSocket {
 
 /// A live WebSocket connection.
 pub struct WebSocketConn {
-    stream: WebSocketStream<TokioIo<Upgraded>>,
+    stream: WebSocketStream<WsTransport>,
     idle_timeout: Option<Duration>,
     hooks: Arc<WsHooks>,
     info: WsConnInfo,

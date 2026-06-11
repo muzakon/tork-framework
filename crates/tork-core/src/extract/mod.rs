@@ -15,6 +15,7 @@ use hyper::upgrade::OnUpgrade;
 use crate::body::ReqBody;
 use crate::error::{Error, Result};
 use crate::state::{AppStateRef, StateMap};
+use crate::ws::Upgrade;
 
 pub mod body;
 pub mod header;
@@ -71,7 +72,7 @@ pub struct RequestContext {
     path_params: PathParams,
     state: AppStateRef,
     body: Mutex<Option<ReqBody>>,
-    upgrade: Mutex<Option<OnUpgrade>>,
+    upgrade: Mutex<Option<Upgrade>>,
 }
 
 impl RequestContext {
@@ -86,13 +87,35 @@ impl RequestContext {
         state: AppStateRef,
         body: ReqBody,
     ) -> Self {
-        let upgrade = head.extensions.remove::<OnUpgrade>();
+        let upgrade = head.extensions.remove::<OnUpgrade>().map(Upgrade::Hyper);
         Self {
             head,
             path_params,
             state,
             body: Mutex::new(Some(body)),
             upgrade: Mutex::new(upgrade),
+        }
+    }
+
+    /// Builds a request context with an in-process WebSocket upgrade.
+    ///
+    /// Used by the test client to drive a WebSocket handler over an in-memory
+    /// duplex stream instead of a real upgraded connection. (The caller lands in a
+    /// later commit of this phase.)
+    #[allow(dead_code)]
+    pub(crate) fn with_duplex_upgrade(
+        head: http::request::Parts,
+        path_params: PathParams,
+        state: AppStateRef,
+        body: ReqBody,
+        duplex: tokio::io::DuplexStream,
+    ) -> Self {
+        Self {
+            head,
+            path_params,
+            state,
+            body: Mutex::new(Some(body)),
+            upgrade: Mutex::new(Some(Upgrade::Duplex(duplex))),
         }
     }
 
@@ -167,7 +190,7 @@ impl RequestContext {
     ///
     /// Returns an error (code `NOT_AN_UPGRADE`) if the request is not a WebSocket
     /// upgrade, or if the upgrade was already taken.
-    pub(crate) fn take_upgrade(&self) -> Result<OnUpgrade> {
+    pub(crate) fn take_upgrade(&self) -> Result<Upgrade> {
         self.upgrade
             .lock()
             .expect("request upgrade mutex poisoned")
@@ -248,7 +271,7 @@ mod tests {
     #[test]
     fn take_upgrade_errors_without_an_upgrade() {
         let ctx = test_context(PathParams::new(), "");
-        let error = ctx.take_upgrade().unwrap_err();
+        let error = ctx.take_upgrade().err().expect("should error without an upgrade");
         assert_eq!(error.code(), "NOT_AN_UPGRADE");
     }
 
