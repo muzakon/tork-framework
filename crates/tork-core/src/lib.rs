@@ -59,7 +59,7 @@ pub use response::{
     IntoResponse, Json, Response, __finish, __finish_into, bytes_response, json_response,
 };
 pub use router::matcher::{Match, Matcher};
-pub use router::{BoxFuture, HandlerFn, Route, RouteMeta, Router, SchemaThunk};
+pub use router::{BoxFuture, HandlerFn, RequestBodyKind, Route, RouteMeta, Router, SchemaThunk};
 pub use sse::{Sse, SseEvent};
 pub use state::{AppStateRef, State, StateMap};
 pub use ws::{

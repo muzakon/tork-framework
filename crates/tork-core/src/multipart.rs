@@ -317,6 +317,15 @@ pub trait FromMultipart: Sized {
     fn from_multipart(
         form: &mut MultipartForm,
     ) -> impl std::future::Future<Output = Result<Self>> + Send;
+
+    /// Builds the OpenAPI/AsyncAPI schema for the form (overridden by the derive).
+    ///
+    /// The default is a permissive object; `#[derive(FormModel)]` generates a
+    /// precise schema with file fields marked as `format: binary`.
+    fn form_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let _ = generator;
+        schemars::json_schema!({ "type": "object" })
+    }
 }
 
 /// A `multipart/form-data` request body bound to a form model.

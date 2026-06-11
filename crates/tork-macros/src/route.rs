@@ -14,8 +14,8 @@ use syn::{
 };
 
 use crate::common::{
-    file_binding, file_kind, file_validation, krate, parse_file_args, parse_size, path_param_names,
-    text_binding, unwrap_multiplicity,
+    file_binding, file_kind, file_validation, form_property, form_schema_body, krate,
+    parse_file_args, parse_size, path_param_names, text_binding, unwrap_multiplicity,
 };
 
 /// Parsed attributes of a route macro.
@@ -204,22 +204,52 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     // A handler with `#[file]` / `#[form]` parameters (or bare file types) reads a
     // multipart body once and distributes the fields; otherwise the parameters are
     // path parameters and dependencies.
+    // `request_meta` is the builder segment describing the request body for
+    // OpenAPI; `extra_items` holds any generated top-level item (the form schema
+    // function for a parameter-based multipart handler).
     let multipart = has_form_params(&func);
-    let (bindings, call_args, prelude, request_body) = if multipart {
+    let (bindings, call_args, prelude, request_meta, extra_items) = if multipart {
         let route_upload = args.upload.as_ref().map(|u| upload_config_tokens(&krate, u));
         let MultipartParts {
             bindings,
             call_args,
             prelude,
+            schema_inserts,
+            schema_required,
         } = build_multipart_parts(&krate, &func, &full_path, &route_upload)?;
-        (bindings, call_args, prelude, None)
+        // Generate a free function returning the form object schema, recorded as
+        // the multipart request body.
+        let schema_fn = format_ident!("__tork_form_schema_{}", fn_name);
+        let schema_body = form_schema_body(&krate, &schema_inserts, &schema_required);
+        let extra_items = quote! {
+            #[doc(hidden)]
+            fn #schema_fn(generator: &mut #krate::__schemars::SchemaGenerator) -> #krate::__schemars::Schema {
+                #schema_body
+            }
+        };
+        let request_meta = quote! {
+            .request_schema_fn(#schema_fn)
+            .request_kind(#krate::RequestBodyKind::Multipart)
+        };
+        (bindings, call_args, prelude, request_meta, extra_items)
     } else {
         let HandlerParts {
             bindings,
             call_args,
             request_body,
         } = build_handler_parts(&krate, &func, &full_path)?;
-        (bindings, call_args, TokenStream::new(), request_body)
+        let request_meta = match &request_body {
+            Some(BodyForm::Json(ty)) => quote! { .request_schema::<#ty>() },
+            Some(BodyForm::Urlencoded(ty)) => quote! {
+                .request_schema::<#ty>().request_kind(#krate::RequestBodyKind::Form)
+            },
+            Some(BodyForm::Multipart(ty)) => quote! {
+                .request_schema_fn(<#ty as #krate::FromMultipart>::form_schema)
+                    .request_kind(#krate::RequestBodyKind::Multipart)
+            },
+            None => TokenStream::new(),
+        };
+        (bindings, call_args, TokenStream::new(), request_meta, TokenStream::new())
     };
 
     // Re-emit the function without the form parameter attributes so it compiles.
@@ -252,9 +282,7 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     if let Some(response_model) = &args.response_model {
         builder = quote! { #builder.response_model::<#response_model>() };
     }
-    if let Some(body) = &request_body {
-        builder = quote! { #builder.request_schema::<#body>() };
-    }
+    builder = quote! { #builder #request_meta };
     if let Some(schema_ty) = &response_schema_ty {
         builder = quote! { #builder.response_schema::<#schema_ty>() };
     }
@@ -286,6 +314,8 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     Ok(quote! {
         #emit_func
 
+        #extra_items
+
         #[doc(hidden)]
         #vis fn #route_fn() -> #krate::Route {
             let handler: #krate::HandlerFn = ::std::sync::Arc::new(
@@ -303,12 +333,23 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     })
 }
 
+/// The request-body encoding declared by a handler parameter, with the inner
+/// model type. Drives the OpenAPI request-body content type.
+pub(crate) enum BodyForm {
+    /// `Valid<T>` / `Json<T>` -> `application/json`.
+    Json(Type),
+    /// `Form<T>` -> `application/x-www-form-urlencoded`.
+    Urlencoded(Type),
+    /// `Multipart<T>` -> `multipart/form-data`.
+    Multipart(Type),
+}
+
 /// The pieces of a generated handler closure: per-parameter bindings, the call
-/// argument list, and the detected request-body type (if any).
+/// argument list, and the detected request body (if any).
 pub(crate) struct HandlerParts {
     pub bindings: Vec<TokenStream>,
     pub call_args: Vec<Ident>,
-    pub request_body: Option<Type>,
+    pub request_body: Option<BodyForm>,
 }
 
 /// Builds the handler bindings shared by the route and SSE macros.
@@ -326,7 +367,7 @@ pub(crate) fn build_handler_parts(
 
     let mut bindings = Vec::new();
     let mut call_args = Vec::new();
-    let mut request_body: Option<Type> = None;
+    let mut request_body: Option<BodyForm> = None;
 
     for input in &func.sig.inputs {
         let pat_type = match input {
@@ -361,14 +402,14 @@ pub(crate) fn build_handler_parts(
                 };
             });
         } else {
-            if let Some(body) = body_inner_type(ty) {
+            if let Some(body) = detect_body_form(ty) {
                 if request_body.is_some() {
                     return Err(syn::Error::new_spanned(
                         ty,
                         "a handler may declare at most one request body",
                     ));
                 }
-                request_body = Some(body.clone());
+                request_body = Some(body);
             }
             bindings.push(quote! {
                 let #ident = match <#ty as #krate::FromRequest>::from_request(&ctx).await {
@@ -395,6 +436,10 @@ pub(crate) struct MultipartParts {
     pub bindings: Vec<TokenStream>,
     pub call_args: Vec<Ident>,
     pub prelude: TokenStream,
+    /// Property inserts describing the form object for the OpenAPI schema.
+    pub schema_inserts: Vec<TokenStream>,
+    /// Names of the required (non-`Option`, non-`Vec`) form fields.
+    pub schema_required: Vec<String>,
 }
 
 /// Whether a handler has any `#[file]` / `#[form]` parameter or bare file type.
@@ -431,6 +476,8 @@ fn build_multipart_parts(
     let placeholders = path_param_names(full_path);
     let mut bindings = Vec::new();
     let mut call_args = Vec::new();
+    let mut schema_inserts = Vec::new();
+    let mut schema_required = Vec::new();
 
     for input in &func.sig.inputs {
         let pat_type = match input {
@@ -481,10 +528,20 @@ fn build_multipart_parts(
             if !validation.is_empty() {
                 bindings.push(validation);
             }
+            let (insert, required) = form_property(krate, &field, true, inner, multiplicity);
+            schema_inserts.push(insert);
+            if required {
+                schema_required.push(field);
+            }
         } else if let Some(attr) = form_attr {
             let args = parse_file_args(attr)?;
             let field = args.name.clone().unwrap_or_else(|| name.clone());
             bindings.push(text_binding(krate, &ident, inner, multiplicity, &field));
+            let (insert, required) = form_property(krate, &field, false, inner, multiplicity);
+            schema_inserts.push(insert);
+            if required {
+                schema_required.push(field);
+            }
         } else if placeholders.contains(&name) {
             bindings.push(quote! {
                 let #ident: #ty = #krate::__extract_path_param(&ctx, #name)?;
@@ -503,6 +560,8 @@ fn build_multipart_parts(
         bindings,
         call_args,
         prelude,
+        schema_inserts,
+        schema_required,
     })
 }
 
@@ -531,6 +590,17 @@ fn result_ok_type(output: &ReturnType) -> Option<Type> {
 /// Returns the inner `T` of a `Valid<T>` or `Json<T>` parameter type.
 fn body_inner_type(ty: &Type) -> Option<&Type> {
     first_generic_arg(ty, &["Valid", "Json"])
+}
+
+/// Classifies a parameter type as a request body and its encoding, if any.
+fn detect_body_form(ty: &Type) -> Option<BodyForm> {
+    if let Some(inner) = first_generic_arg(ty, &["Valid", "Json"]) {
+        return Some(BodyForm::Json(inner.clone()));
+    }
+    if let Some(inner) = first_generic_arg(ty, &["Form"]) {
+        return Some(BodyForm::Urlencoded(inner.clone()));
+    }
+    first_generic_arg(ty, &["Multipart"]).map(|inner| BodyForm::Multipart(inner.clone()))
 }
 
 /// Returns the first generic type argument of a path type whose final segment

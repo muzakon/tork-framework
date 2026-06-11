@@ -13,8 +13,8 @@ use quote::quote;
 use syn::{Data, DeriveInput, Expr, Fields, Ident, LitInt, parse_macro_input};
 
 use crate::common::{
-    Multiplicity, file_binding, file_kind, file_validation, krate, parse_file_args, text_binding,
-    unwrap_multiplicity,
+    Multiplicity, file_binding, file_kind, file_validation, form_property, form_schema_body, krate,
+    parse_file_args, text_binding, unwrap_multiplicity,
 };
 
 /// Expands `#[derive(FormModel)]`.
@@ -51,6 +51,8 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut bindings = Vec::new();
     let mut checks = Vec::new();
     let mut names = Vec::new();
+    let mut schema_inserts = Vec::new();
+    let mut schema_required = Vec::new();
 
     for field in fields {
         let field_ident = field.ident.as_ref().expect("named field");
@@ -76,6 +78,11 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
             if !validation.is_empty() {
                 bindings.push(validation);
             }
+            let (insert, required) = form_property(&krate, &name, true, inner, multiplicity);
+            schema_inserts.push(insert);
+            if required {
+                schema_required.push(name);
+            }
         } else {
             let name = match form_attr {
                 Some(attr) => parse_file_args(attr)?
@@ -87,10 +94,17 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
             if let Some(constraints) = field_constraints(field)? {
                 checks.push(text_checks(&krate, field_ident, multiplicity, &name, &constraints));
             }
+            let (insert, required) = form_property(&krate, &name, false, inner, multiplicity);
+            schema_inserts.push(insert);
+            if required {
+                schema_required.push(name);
+            }
         }
 
         names.push(field_ident);
     }
+
+    let schema_body = form_schema_body(&krate, &schema_inserts, &schema_required);
 
     Ok(quote! {
         impl #krate::FromMultipart for #ident {
@@ -106,6 +120,10 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
                     );
                 }
                 ::core::result::Result::Ok(#ident { #(#names),* })
+            }
+
+            fn form_schema(generator: &mut #krate::__schemars::SchemaGenerator) -> #krate::__schemars::Schema {
+                #schema_body
             }
         }
     })

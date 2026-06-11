@@ -272,6 +272,60 @@ pub(crate) fn text_binding(
     }
 }
 
+/// Builds the schema property value for one form field, and whether it is
+/// required. The generated code reads the surrounding `generator` variable.
+pub(crate) fn form_property(
+    krate: &TokenStream,
+    name: &str,
+    is_file: bool,
+    inner: &Type,
+    multiplicity: Multiplicity,
+) -> (TokenStream, bool) {
+    let value = if is_file {
+        match multiplicity {
+            Multiplicity::Many => quote! {
+                #krate::__serde_json::json!({
+                    "type": "array",
+                    "items": { "type": "string", "format": "binary" }
+                })
+            },
+            _ => quote! {
+                #krate::__serde_json::json!({ "type": "string", "format": "binary" })
+            },
+        }
+    } else {
+        let sub = quote! { generator.subschema_for::<#inner>().to_value() };
+        match multiplicity {
+            Multiplicity::Many => quote! {
+                #krate::__serde_json::json!({ "type": "array", "items": #sub })
+            },
+            _ => sub,
+        }
+    };
+    let insert = quote! { __properties.insert(#name.to_owned(), #value); };
+    (insert, matches!(multiplicity, Multiplicity::One))
+}
+
+/// Builds the body of a form schema function from property inserts and the names
+/// of the required fields.
+pub(crate) fn form_schema_body(
+    krate: &TokenStream,
+    inserts: &[TokenStream],
+    required: &[String],
+) -> TokenStream {
+    quote! {
+        let mut __properties = #krate::__serde_json::Map::new();
+        #(#inserts)*
+        let __schema = #krate::__serde_json::json!({
+            "type": "object",
+            "properties": #krate::__serde_json::Value::Object(__properties),
+            "required": [ #(#required),* ],
+        });
+        #krate::__schemars::Schema::try_from(__schema)
+            .unwrap_or_else(|_| #krate::__schemars::json_schema!({ "type": "object" }))
+    }
+}
+
 /// Builds the validation statement for a file field, applied after binding.
 pub(crate) fn file_validation(
     krate: &TokenStream,

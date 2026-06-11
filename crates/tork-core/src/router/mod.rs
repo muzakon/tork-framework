@@ -106,6 +106,18 @@ pub type HandlerFn =
 /// request and response bodies.
 pub type SchemaThunk = fn(&mut schemars::SchemaGenerator) -> schemars::Schema;
 
+/// The encoding of a route's request body, for OpenAPI documentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RequestBodyKind {
+    /// `application/json`.
+    #[default]
+    Json,
+    /// `application/x-www-form-urlencoded`.
+    Form,
+    /// `multipart/form-data`.
+    Multipart,
+}
+
 /// Introspection metadata for a route, used to build the OpenAPI document.
 #[derive(Clone, Debug)]
 pub struct RouteMeta {
@@ -121,6 +133,8 @@ pub struct RouteMeta {
     pub response_model: Option<&'static str>,
     /// Schema generator for the request body, if the operation accepts one.
     pub request_schema: Option<SchemaThunk>,
+    /// The encoding of the request body (`application/json` by default).
+    pub request_kind: RequestBodyKind,
     /// Schema generator for the success response body, if any.
     pub response_schema: Option<SchemaThunk>,
     /// Whether the response is a stream (Server-Sent Events), documented as
@@ -144,6 +158,7 @@ impl Default for RouteMeta {
             status_code: StatusCode::OK,
             response_model: None,
             request_schema: None,
+            request_kind: RequestBodyKind::Json,
             response_schema: None,
             streaming: false,
             websocket: false,
@@ -222,6 +237,18 @@ impl Route {
     /// Records the request body schema generator.
     pub fn request_schema<T: schemars::JsonSchema>(mut self) -> Self {
         self.meta.request_schema = Some(|generator| generator.subschema_for::<T>());
+        self
+    }
+
+    /// Records the request body schema generator from a thunk (for form bodies).
+    pub fn request_schema_fn(mut self, thunk: SchemaThunk) -> Self {
+        self.meta.request_schema = Some(thunk);
+        self
+    }
+
+    /// Sets the request body encoding (`application/json` by default).
+    pub fn request_kind(mut self, kind: RequestBodyKind) -> Self {
+        self.meta.request_kind = kind;
         self
     }
 

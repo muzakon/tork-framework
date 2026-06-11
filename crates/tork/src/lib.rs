@@ -35,3 +35,5 @@ pub use garde as __garde;
 pub use schemars as __schemars;
 #[doc(hidden)]
 pub use serde as __serde;
+#[doc(hidden)]
+pub use serde_json as __serde_json;
