@@ -44,8 +44,6 @@ pub enum Rotation {
 }
 
 /// Configuration for a rolling file log sink.
-// Fields are read by the file sink, which lands in a later commit of this phase.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FileLogConfig {
     pub(crate) directory: PathBuf,
@@ -124,16 +122,14 @@ pub struct LoggerConfig {
     pub(crate) format: LogFormat,
     pub(crate) color: bool,
     pub(crate) service_name: String,
-    // `request_logs`, `file`, and `telemetry` are consumed by request logging, the
-    // file sink, and the OTel layer in later commits of this phase.
-    #[allow(dead_code)]
     pub(crate) request_logs: bool,
+    // include_source/include_thread_ids are reserved for the formatter; telemetry
+    // is consumed by the OTel layer behind the `otel` feature.
     #[allow(dead_code)]
     pub(crate) include_source: bool,
     #[allow(dead_code)]
     pub(crate) include_thread_ids: bool,
     pub(crate) non_blocking: bool,
-    #[allow(dead_code)]
     pub(crate) file: Option<FileLogConfig>,
     #[allow(dead_code)]
     pub(crate) telemetry: Option<TelemetryConfig>,
