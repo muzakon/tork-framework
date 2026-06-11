@@ -14,8 +14,4 @@ mod subscriber;
 pub use config::{FileLogConfig, LogFormat, LoggerConfig, Rotation, TelemetryConfig};
 pub use event::LogEvent;
 pub use logger::Logger;
-// Wired into `App` in a later commit of this phase.
-#[allow(unused_imports)]
-pub use subscriber::LoggerHandle;
-#[allow(unused_imports)]
 pub(crate) use subscriber::install;

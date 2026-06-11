@@ -37,8 +37,6 @@ impl Logger {
     }
 
     /// Creates a framework-internal logger (used for startup and request logs).
-    // Used by the startup/request logs wired in a later commit of this phase.
-    #[allow(dead_code)]
     pub(crate) fn framework(context: &'static str) -> Self {
         Self::new(context)
     }

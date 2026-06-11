@@ -15,6 +15,7 @@ use crate::hooks::{
     ValidationErrorEvent,
 };
 use crate::lifespan::{ErasedLifespan, Lifespan, LifespanCell, LifespanContext, ReadyContext};
+use crate::logging::{Logger, LoggerConfig, install as install_logging};
 use crate::middleware::{Middleware, Next, Request, resolve_duplicates};
 use crate::openapi::{AsyncApiProvider, OpenApiProvider};
 use crate::response::{IntoResponse, Response};
@@ -90,6 +91,7 @@ pub struct App {
     on_ws_connect: Vec<WsConnectHook>,
     on_ws_disconnect: Vec<WsDisconnectHook>,
     upload_config: Option<UploadConfig>,
+    logger_config: Option<LoggerConfig>,
 }
 
 impl Default for App {
@@ -122,6 +124,7 @@ impl App {
             on_ws_connect: Vec::new(),
             on_ws_disconnect: Vec::new(),
             upload_config: None,
+            logger_config: None,
         }
     }
 
@@ -129,6 +132,14 @@ impl App {
     /// [`State`](crate::State) extractor.
     pub fn state<S: Send + Sync + 'static>(mut self, state: S) -> Self {
         self.state.insert(state);
+        self
+    }
+
+    /// Configures logging. Without this, logging is on by default with sensible
+    /// settings (a developer console on a terminal, JSON otherwise; level from
+    /// `RUST_LOG` or `info`).
+    pub fn logger(mut self, config: LoggerConfig) -> Self {
+        self.logger_config = Some(config);
         self
     }
 
@@ -464,20 +475,33 @@ impl App {
         S: std::future::Future<Output = ()>,
     {
         let addr = addr.as_ref();
+
+        // Install the global logging subscriber first, so the whole lifecycle is
+        // logged. The handle is kept alive for the duration of the run.
+        let logger_config = self.logger_config.take().unwrap_or_default();
+        let _logger_handle = install_logging(&logger_config);
+        let log = Logger::framework("Tork");
+
+        log.info("Starting Tork application").emit();
         self.validate_lifecycle()
-            .inspect_err(|error| eprintln!("{}", error.message()))?;
+            .inspect_err(log_boot_error)?;
         self.run_startup()
             .await
-            .inspect_err(|error| eprintln!("{}", error.message()))?;
+            .inspect_err(log_boot_error)?;
 
         let mut lifespan = std::mem::take(&mut self.lifespan);
         let on_shutdown = std::mem::take(&mut self.on_shutdown);
         let on_ready = std::mem::take(&mut self.on_ready);
 
-        let app = Arc::new(
-            self.build()
-                .inspect_err(|error| eprintln!("{}", error.message()))?,
-        );
+        let app = Arc::new(self.build().inspect_err(log_boot_error)?);
+
+        // Log each mapped route, NestJS-style.
+        let explorer = Logger::framework("RouterExplorer");
+        for route in app.matcher().routes() {
+            explorer
+                .info(format!("Mapped {{{} {}}}", route.method(), route.path()))
+                .emit();
+        }
 
         let listener = TcpListener::bind(addr)
             .await
@@ -489,11 +513,16 @@ impl App {
         for hook in &on_ready {
             hook(ReadyContext::new(local))
                 .await
-                .inspect_err(|error| eprintln!("{}", error.message()))?;
+                .inspect_err(log_boot_error)?;
         }
+
+        Logger::framework("Tork")
+            .info(format!("Application is running on http://{local}"))
+            .emit();
 
         run_with_shutdown(app, listener, shutdown).await;
 
+        log.info("Shutting down").emit();
         run_shutdown(&mut lifespan, &on_shutdown).await;
         Ok(())
     }
@@ -551,19 +580,28 @@ impl App {
     }
 }
 
+/// Logs a fatal boot error under the framework context.
+fn log_boot_error(error: &Error) {
+    Logger::framework("Tork")
+        .error(error.message().to_owned())
+        .field("code", error.code())
+        .emit();
+}
+
 /// Runs the shutdown phase: lifespans in reverse order, or the `on_shutdown`
 /// hooks. Errors are logged rather than propagated, as shutdown is best-effort.
 async fn run_shutdown(lifespan: &mut [Box<dyn ErasedLifespan>], on_shutdown: &[Hook]) {
+    let log = Logger::framework("Lifecycle");
     if !lifespan.is_empty() {
         for cell in lifespan.iter_mut().rev() {
             if let Err(error) = cell.shutdown().await {
-                eprintln!("tork: shutdown failed: {}", error.message());
+                log.error(format!("shutdown failed: {}", error.message())).emit();
             }
         }
     } else {
         for hook in on_shutdown {
             if let Err(error) = hook().await {
-                eprintln!("tork: shutdown hook failed: {}", error.message());
+                log.error(format!("shutdown hook failed: {}", error.message())).emit();
             }
         }
     }
