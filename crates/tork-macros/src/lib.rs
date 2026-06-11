@@ -19,6 +19,7 @@ mod main_macro;
 mod middleware;
 mod resources;
 mod route;
+mod settings;
 mod sse;
 mod websocket;
 
@@ -114,6 +115,31 @@ pub fn dependency(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
     api_model::expand(attr, item)
+}
+
+/// Declares a typed application configuration.
+///
+/// Derives `serde` deserialization and `garde` validation, maps `#[setting(...)]`
+/// constraints to validation rules, turns `#[setting(default = ...)]` into a serde
+/// default, and generates a `load()` method that merges the configured sources
+/// (`.env`, environment variables, config files, a secrets directory, overrides)
+/// into a validated value. Loading is meant to run once at startup.
+///
+/// # Example
+///
+/// ```ignore
+/// #[tork::settings(prefix = "APP", env_file = ".env")]
+/// pub struct Config {
+///     #[setting(default = "Awesome API")] pub app_name: String,
+///     #[setting(email)] pub admin_email: String,
+///     #[setting(default = 50, ge = 1, le = 500)] pub items_per_user: u32,
+///     #[setting(secret)] pub jwt_secret: tork::SecretString,
+/// }
+/// // let config = Config::load()?;
+/// ```
+#[proc_macro_attribute]
+pub fn settings(attr: TokenStream, item: TokenStream) -> TokenStream {
+    settings::expand(attr, item)
 }
 
 /// Declares an application lifespan on a resource container.

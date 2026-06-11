@@ -194,6 +194,22 @@ pub trait FromRequest: Sized + Send {
     ) -> impl std::future::Future<Output = Result<Self>> + Send;
 }
 
+/// Injects any resource registered as `Arc<T>`.
+///
+/// Registering a shared value as `Arc<T>` (for example a loaded configuration)
+/// lets a handler or service take it by `Arc<T>`, cloning only the pointer per
+/// request. This is the idiomatic way to share immutable state cheaply, since the
+/// orphan rules prevent a downstream crate from implementing `FromRequest` for
+/// `Arc<T>` itself.
+impl<T: Send + Sync + 'static> FromRequest for std::sync::Arc<T> {
+    fn from_request(
+        ctx: &RequestContext,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send {
+        let resolved = ctx.resource::<std::sync::Arc<T>>();
+        async move { resolved }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

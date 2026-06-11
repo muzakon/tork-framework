@@ -262,7 +262,7 @@ fn expand_struct(container: ContainerArgs, item: ItemStruct) -> syn::Result<Toke
 }
 
 /// Builds the `min`/`max` argument list for `length(...)` or `range(...)`.
-fn bound_parts(min: Option<TokenStream2>, max: Option<TokenStream2>) -> TokenStream2 {
+pub(crate) fn bound_parts(min: Option<TokenStream2>, max: Option<TokenStream2>) -> TokenStream2 {
     match (min, max) {
         (Some(min), Some(max)) => quote!(min = #min, max = #max),
         (Some(min), None) => quote!(min = #min),
@@ -273,7 +273,7 @@ fn bound_parts(min: Option<TokenStream2>, max: Option<TokenStream2>) -> TokenStr
 
 /// Generates a hidden garde custom validator enforcing an exclusive bound, plus
 /// the path to call it. Handles `Option<T>` by validating only the `Some` case.
-fn exclusive_check(
+pub(crate) fn exclusive_check(
     struct_ident: &Ident,
     field_ident: &Ident,
     kind: &str,
@@ -333,7 +333,7 @@ fn exclusive_check(
 /// Coerces an integer literal bound to a float literal when the field type is
 /// `f32`/`f64`, so `ge = 0` works on a float field. Other expressions pass
 /// through unchanged.
-fn coerce_bound(expr: &Expr, field_ty: &Type) -> TokenStream2 {
+pub(crate) fn coerce_bound(expr: &Expr, field_ty: &Type) -> TokenStream2 {
     let inner = option_inner(field_ty).unwrap_or(field_ty);
     if is_float_type(inner) {
         if let Expr::Lit(syn::ExprLit {
@@ -373,7 +373,7 @@ fn option_inner(ty: &Type) -> Option<&Type> {
 }
 
 /// Converts a `PascalCase` identifier to `snake_case` for generated fn names.
-fn to_snake(input: &str) -> String {
+pub(crate) fn to_snake(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for (index, ch) in input.chars().enumerate() {
         if ch.is_uppercase() {

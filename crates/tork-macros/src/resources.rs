@@ -7,9 +7,14 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Field, Fields, parse_macro_input};
+use syn::{Data, DeriveInput, Field, Fields, Type, parse_macro_input};
 
 use crate::common::krate;
+
+/// Returns `true` if the type's final path segment is `Arc`.
+fn is_arc(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path) if path.path.segments.last().map(|s| s.ident == "Arc").unwrap_or(false))
+}
 
 /// Expands `#[derive(Resources)]` over a named struct.
 pub fn expand(item: TokenStream) -> TokenStream {
@@ -61,17 +66,21 @@ fn expand_derive(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
         // Each resource type resolves itself from the registry, so it can be
         // injected directly (`db: Db`) or as a field of an `#[derive(Inject)]`
-        // service.
-        extractors.push(quote! {
-            impl #krate::FromRequest for #field_ty {
-                fn from_request(
-                    ctx: & #krate::RequestContext,
-                ) -> impl ::core::future::Future<Output = #krate::Result<Self>> + Send {
-                    let resolved = ctx.resource::<#field_ty>();
-                    async move { resolved }
+        // service. `Arc<T>` resources are covered by the blanket `FromRequest for
+        // Arc<T>` in the core crate (the orphan rules forbid generating one here),
+        // so only a registry insert is emitted for them.
+        if !is_arc(field_ty) {
+            extractors.push(quote! {
+                impl #krate::FromRequest for #field_ty {
+                    fn from_request(
+                        ctx: & #krate::RequestContext,
+                    ) -> impl ::core::future::Future<Output = #krate::Result<Self>> + Send {
+                        let resolved = ctx.resource::<#field_ty>();
+                        async move { resolved }
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     Ok(quote! {
