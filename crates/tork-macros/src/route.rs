@@ -9,11 +9,14 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitStr, Pat, Path,
-    PathArguments, ReturnType, Token, Type, bracketed,
+    Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitInt, LitStr, Pat, Path,
+    PathArguments, ReturnType, Token, Type, bracketed, parenthesized,
 };
 
-use crate::common::{krate, path_param_names};
+use crate::common::{
+    file_binding, file_kind, file_validation, krate, parse_file_args, parse_size, path_param_names,
+    text_binding, unwrap_multiplicity,
+};
 
 /// Parsed attributes of a route macro.
 struct RouteArgs {
@@ -29,10 +32,66 @@ struct RouteArgs {
     on_response: Vec<Path>,
     on_error: Vec<Path>,
     on_validation_error: Vec<Path>,
+    /// Route-level multipart upload limits, from `upload(...)`.
+    upload: Option<UploadArgs>,
     /// Enclosing router prefix, injected by `#[api_router]` so that path
     /// parameters declared in the prefix are classified correctly. Not part of
     /// the public attribute surface.
     prefix_hint: Option<LitStr>,
+}
+
+/// Route-level multipart upload limits parsed from `upload(...)`.
+#[derive(Default)]
+struct UploadArgs {
+    max_body_size: Option<usize>,
+    max_file_size: Option<usize>,
+    memory_threshold: Option<usize>,
+    max_files: Option<usize>,
+}
+
+impl Parse for UploadArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut args = UploadArgs::default();
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            match key.to_string().as_str() {
+                "max_body_size" => args.max_body_size = Some(parse_size(&input.parse()?)?),
+                "max_file_size" => args.max_file_size = Some(parse_size(&input.parse()?)?),
+                "memory_threshold" => args.memory_threshold = Some(parse_size(&input.parse()?)?),
+                "max_files" => args.max_files = Some(input.parse::<LitInt>()?.base10_parse()?),
+                other => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!("unknown upload option `{other}`"),
+                    ));
+                }
+            }
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<Token![,]>()?;
+        }
+        Ok(args)
+    }
+}
+
+/// Builds an `UploadConfig` expression from the route's `upload(...)` limits.
+fn upload_config_tokens(krate: &TokenStream, args: &UploadArgs) -> TokenStream {
+    let mut config = quote! { #krate::UploadConfig::new() };
+    if let Some(bytes) = args.max_body_size {
+        config = quote! { #config.max_body_size(#bytes) };
+    }
+    if let Some(bytes) = args.max_file_size {
+        config = quote! { #config.max_file_size(#bytes) };
+    }
+    if let Some(bytes) = args.memory_threshold {
+        config = quote! { #config.memory_threshold(#bytes) };
+    }
+    if let Some(count) = args.max_files {
+        config = quote! { #config.max_files(#count) };
+    }
+    config
 }
 
 impl Parse for RouteArgs {
@@ -55,6 +114,7 @@ impl Parse for RouteArgs {
             on_response: Vec::new(),
             on_error: Vec::new(),
             on_validation_error: Vec::new(),
+            upload: None,
             prefix_hint: None,
         };
 
@@ -65,6 +125,15 @@ impl Parse for RouteArgs {
             }
 
             let key: Ident = input.parse()?;
+
+            // `upload(...)` is a parenthesized list rather than `key = value`.
+            if key == "upload" {
+                let content;
+                parenthesized!(content in input);
+                args.upload = Some(content.parse()?);
+                continue;
+            }
+
             input.parse::<Token![=]>()?;
 
             match key.to_string().as_str() {
@@ -137,11 +206,12 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     // path parameters and dependencies.
     let multipart = has_form_params(&func);
     let (bindings, call_args, prelude, request_body) = if multipart {
+        let route_upload = args.upload.as_ref().map(|u| upload_config_tokens(&krate, u));
         let MultipartParts {
             bindings,
             call_args,
             prelude,
-        } = build_multipart_parts(&krate, &func, &full_path)?;
+        } = build_multipart_parts(&krate, &func, &full_path, &route_upload)?;
         (bindings, call_args, prelude, None)
     } else {
         let HandlerParts {
@@ -341,11 +411,22 @@ fn has_form_params(func: &ItemFn) -> bool {
     })
 }
 
+/// Builds the multipart body parse prelude with the route's upload override.
+fn multipart_prelude(krate: &TokenStream, route_upload: &Option<TokenStream>) -> TokenStream {
+    let config = route_upload
+        .clone()
+        .unwrap_or_else(|| quote! { #krate::UploadConfig::new() });
+    quote! {
+        let mut __form = #krate::__parse_multipart(&ctx, #config).await?;
+    }
+}
+
 /// Builds the bindings for a multipart handler: one parse, then a take per field.
 fn build_multipart_parts(
     krate: &TokenStream,
     func: &ItemFn,
     full_path: &str,
+    route_upload: &Option<TokenStream>,
 ) -> syn::Result<MultipartParts> {
     let placeholders = path_param_names(full_path);
     let mut bindings = Vec::new();
@@ -390,10 +471,19 @@ fn build_multipart_parts(
                     "a #[file] parameter must be FileBytes or UploadFile (optionally Option/Vec)",
                 )
             })?;
-            let field = attr_name(file_attr).unwrap_or_else(|| name.clone());
+            let args = match file_attr {
+                Some(attr) => parse_file_args(attr)?,
+                None => Default::default(),
+            };
+            let field = args.name.clone().unwrap_or_else(|| name.clone());
             bindings.push(file_binding(krate, &ident, kind, multiplicity, &field));
+            let validation = file_validation(krate, &ident, kind, multiplicity, &args);
+            if !validation.is_empty() {
+                bindings.push(validation);
+            }
         } else if let Some(attr) = form_attr {
-            let field = attr_name(Some(attr)).unwrap_or_else(|| name.clone());
+            let args = parse_file_args(attr)?;
+            let field = args.name.clone().unwrap_or_else(|| name.clone());
             bindings.push(text_binding(krate, &ident, inner, multiplicity, &field));
         } else if placeholders.contains(&name) {
             bindings.push(quote! {
@@ -408,127 +498,12 @@ fn build_multipart_parts(
         call_args.push(ident);
     }
 
-    let prelude = quote! {
-        let mut __form = #krate::__parse_multipart(&ctx, #krate::UploadConfig::new()).await?;
-    };
+    let prelude = multipart_prelude(krate, route_upload);
     Ok(MultipartParts {
         bindings,
         call_args,
         prelude,
     })
-}
-
-/// Whether a parameter binds one value, an optional value, or many.
-#[derive(Clone, Copy)]
-enum Multiplicity {
-    One,
-    Optional,
-    Many,
-}
-
-/// Which file type a parameter binds.
-#[derive(Clone, Copy)]
-enum FileKind {
-    Bytes,
-    Upload,
-}
-
-/// Splits a type into its multiplicity and inner type.
-fn unwrap_multiplicity(ty: &Type) -> (Multiplicity, &Type) {
-    if let Some(inner) = first_generic_arg(ty, &["Option"]) {
-        (Multiplicity::Optional, inner)
-    } else if let Some(inner) = first_generic_arg(ty, &["Vec"]) {
-        (Multiplicity::Many, inner)
-    } else {
-        (Multiplicity::One, ty)
-    }
-}
-
-/// Returns the file kind if `ty` is `FileBytes` or `UploadFile`.
-fn file_kind(ty: &Type) -> Option<FileKind> {
-    let Type::Path(path) = ty else { return None };
-    match path.path.segments.last()?.ident.to_string().as_str() {
-        "FileBytes" => Some(FileKind::Bytes),
-        "UploadFile" => Some(FileKind::Upload),
-        _ => None,
-    }
-}
-
-/// Builds the binding for a file parameter from `__form`.
-fn file_binding(
-    krate: &TokenStream,
-    ident: &Ident,
-    kind: FileKind,
-    multiplicity: Multiplicity,
-    name: &str,
-) -> TokenStream {
-    let missing = quote! {
-        || #krate::Error::unprocessable(::std::format!("missing file field `{}`", #name))
-    };
-    match (kind, multiplicity) {
-        (FileKind::Bytes, Multiplicity::One) => quote! {
-            let #ident = __form.take_file_bytes(#name).await?.ok_or_else(#missing)?;
-        },
-        (FileKind::Bytes, Multiplicity::Optional) => quote! {
-            let #ident = __form.take_file_bytes(#name).await?;
-        },
-        (FileKind::Bytes, Multiplicity::Many) => quote! {
-            let #ident = __form.take_file_bytes_list(#name).await?;
-        },
-        (FileKind::Upload, Multiplicity::One) => quote! {
-            let #ident = __form.take_upload_file(#name).ok_or_else(#missing)?;
-        },
-        (FileKind::Upload, Multiplicity::Optional) => quote! {
-            let #ident = __form.take_upload_file(#name);
-        },
-        (FileKind::Upload, Multiplicity::Many) => quote! {
-            let #ident = __form.take_upload_file_list(#name);
-        },
-    }
-}
-
-/// Builds the binding for a text (form) parameter from `__form`.
-fn text_binding(
-    krate: &TokenStream,
-    ident: &Ident,
-    inner: &Type,
-    multiplicity: Multiplicity,
-    name: &str,
-) -> TokenStream {
-    let missing = quote! {
-        || #krate::Error::unprocessable(::std::format!("missing form field `{}`", #name))
-    };
-    match multiplicity {
-        Multiplicity::One => quote! {
-            let #ident = __form.take_form_value::<#inner>(#name)?.ok_or_else(#missing)?;
-        },
-        Multiplicity::Optional => quote! {
-            let #ident = __form.take_form_value::<#inner>(#name)?;
-        },
-        Multiplicity::Many => quote! {
-            let #ident = __form.take_form_values::<#inner>(#name)?;
-        },
-    }
-}
-
-/// Reads the `name = ".."` override from a `#[file(...)]` / `#[form(...)]` attribute.
-fn attr_name(attr: Option<&Attribute>) -> Option<String> {
-    let attr = attr?;
-    if matches!(attr.meta, syn::Meta::Path(_)) {
-        return None;
-    }
-    let mut name = None;
-    let _ = attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("name") {
-            let value: LitStr = meta.value()?.parse()?;
-            name = Some(value.value());
-        } else {
-            // Other keys (max_size, content_types, sniff) are handled at runtime.
-            let _ = meta.value().and_then(|value| value.parse::<Expr>());
-        }
-        Ok(())
-    });
-    name
 }
 
 /// Returns a clone of `func` with the `#[file]` / `#[form]` parameter attributes

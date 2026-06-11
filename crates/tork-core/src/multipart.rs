@@ -340,6 +340,90 @@ where
     }
 }
 
+/// Validation rules for a single file field, built by the form macros.
+///
+/// Generated-code support, not part of the everyday API.
+#[doc(hidden)]
+pub struct FileRule {
+    pub max_size: Option<usize>,
+    pub content_types: &'static [&'static str],
+    pub sniff: bool,
+}
+
+/// Validates a buffered file against its rule.
+#[doc(hidden)]
+pub fn __validate_file_bytes(file: &FileBytes, rule: &FileRule) -> Result<()> {
+    check_size(file.len(), rule)?;
+    check_declared_type(file.content_type(), rule)?;
+    if rule.sniff {
+        check_sniffed_type(file.bytes(), rule)?;
+    }
+    Ok(())
+}
+
+/// Validates a spooled upload against its rule (sniffing a small prefix).
+#[doc(hidden)]
+pub async fn __validate_upload(file: &mut UploadFile, rule: &FileRule) -> Result<()> {
+    check_size(file.size() as usize, rule)?;
+    check_declared_type(file.content_type(), rule)?;
+    if rule.sniff {
+        file.seek_start().await?;
+        let prefix = file.read_chunk(512).await?.unwrap_or_default();
+        file.seek_start().await?;
+        check_sniffed_type(&prefix, rule)?;
+    }
+    Ok(())
+}
+
+/// Rejects a file that exceeds the rule's size limit.
+fn check_size(size: usize, rule: &FileRule) -> Result<()> {
+    if let Some(max) = rule.max_size {
+        if size > max {
+            return Err(Error::payload_too_large("uploaded file is too large")
+                .with_code("FILE_TOO_LARGE"));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects a file whose declared content type is not allowed.
+fn check_declared_type(declared: Option<&Mime>, rule: &FileRule) -> Result<()> {
+    if rule.content_types.is_empty() {
+        return Ok(());
+    }
+    let allowed = declared
+        .map(|mime| {
+            rule.content_types
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(mime.essence_str()))
+        })
+        .unwrap_or(false);
+    if !allowed {
+        return Err(Error::unprocessable("unsupported file content type")
+            .with_code("UNSUPPORTED_MEDIA_TYPE"));
+    }
+    Ok(())
+}
+
+/// Rejects a file whose sniffed (magic-byte) type is not allowed.
+fn check_sniffed_type(bytes: &[u8], rule: &FileRule) -> Result<()> {
+    if rule.content_types.is_empty() {
+        return Ok(());
+    }
+    if let Some(kind) = infer::get(bytes) {
+        let detected = kind.mime_type();
+        if !rule
+            .content_types
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(detected))
+        {
+            return Err(Error::unprocessable("file content does not match the declared type")
+                .with_code("UNSUPPORTED_MEDIA_TYPE"));
+        }
+    }
+    Ok(())
+}
+
 /// A single file part captured from a multipart body.
 struct FilePart {
     name: String,
@@ -662,6 +746,46 @@ mod tests {
         // The text field binds via the model.
         let bound = Multipart::<TokenForm>::from_request(&ctx).await.unwrap();
         assert_eq!(bound.0.token, "abc123");
+    }
+
+    #[test]
+    fn file_validation_enforces_size_type_and_sniff() {
+        let png_bytes = Bytes::from_static(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR");
+        let png = FileBytes::new(png_bytes, Some("a.png".to_owned()), Some("image/png".parse().unwrap()));
+        let rule = FileRule {
+            max_size: Some(1024),
+            content_types: &["image/png"],
+            sniff: true,
+        };
+        assert!(__validate_file_bytes(&png, &rule).is_ok());
+
+        // Declared content type not allowed.
+        let txt = FileBytes::new(Bytes::from_static(b"hi"), None, Some("text/plain".parse().unwrap()));
+        let only_png = FileRule {
+            max_size: None,
+            content_types: &["image/png"],
+            sniff: false,
+        };
+        assert_eq!(
+            __validate_file_bytes(&txt, &only_png).err().unwrap().code(),
+            "UNSUPPORTED_MEDIA_TYPE"
+        );
+
+        // Too large.
+        let big = FileBytes::new(Bytes::from(vec![0u8; 100]), None, None);
+        let small_limit = FileRule {
+            max_size: Some(10),
+            content_types: &[],
+            sniff: false,
+        };
+        assert_eq!(
+            __validate_file_bytes(&big, &small_limit).err().unwrap().code(),
+            "FILE_TOO_LARGE"
+        );
+
+        // Sniff mismatch: declared png but bytes are not png.
+        let fake = FileBytes::new(Bytes::from_static(b"GIF89a...."), None, Some("image/png".parse().unwrap()));
+        assert!(__validate_file_bytes(&fake, &rule).is_err());
     }
 
     #[tokio::test]

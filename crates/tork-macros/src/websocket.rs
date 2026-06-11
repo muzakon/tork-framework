@@ -11,7 +11,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{FnArg, Ident, ItemFn, LitStr, Pat, Token, Type, bracketed};
 
-use crate::common::{krate, path_param_names};
+use crate::common::{krate, parse_duration_ms, parse_size, path_param_names};
 
 /// Parsed attributes of `#[websocket(...)]`.
 struct WsArgs {
@@ -241,53 +241,6 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
             #builder
         }
     })
-}
-
-/// Parses a byte size such as `"64KB"`, `"1MB"`, or a plain byte count.
-fn parse_size(value: &LitStr) -> syn::Result<usize> {
-    let text = value.value();
-    let lower = text.trim().to_ascii_lowercase();
-    // Longest suffixes first so `kb` is not mistaken for `b`.
-    let units: [(&str, usize); 7] = [
-        ("mib", 1024 * 1024),
-        ("kib", 1024),
-        ("mb", 1024 * 1024),
-        ("kb", 1024),
-        ("m", 1024 * 1024),
-        ("k", 1024),
-        ("b", 1),
-    ];
-    for (suffix, multiplier) in units {
-        if let Some(number) = lower.strip_suffix(suffix) {
-            let parsed: usize = number.trim().parse().map_err(|_| {
-                syn::Error::new(value.span(), format!("invalid byte size `{text}`"))
-            })?;
-            return Ok(parsed * multiplier);
-        }
-    }
-    lower
-        .parse::<usize>()
-        .map_err(|_| syn::Error::new(value.span(), format!("invalid byte size `{text}`")))
-}
-
-/// Parses a duration such as `"60s"`, `"2m"`, `"500ms"`, or plain seconds.
-fn parse_duration_ms(value: &LitStr) -> syn::Result<u64> {
-    let text = value.value();
-    let lower = text.trim().to_ascii_lowercase();
-    let units: [(&str, u64); 4] = [("ms", 1), ("s", 1000), ("m", 60_000), ("h", 3_600_000)];
-    for (suffix, multiplier) in units {
-        if let Some(number) = lower.strip_suffix(suffix) {
-            let parsed: u64 = number.trim().parse().map_err(|_| {
-                syn::Error::new(value.span(), format!("invalid duration `{text}`"))
-            })?;
-            return Ok(parsed * multiplier);
-        }
-    }
-    // A bare number is interpreted as seconds.
-    lower
-        .parse::<u64>()
-        .map(|secs| secs * 1000)
-        .map_err(|_| syn::Error::new(value.span(), format!("invalid duration `{text}`")))
 }
 
 /// Returns `true` if `ty`'s final path segment is `WebSocket`.

@@ -4,17 +4,18 @@
 //! multipart body: file fields (`FileBytes` / `UploadFile`, optionally `Option` or
 //! `Vec`) via the file takers, and text fields via the typed value takers, then
 //! runs the `#[field(...)]` constraints. File fields are recognized by a `#[file]`
-//! attribute or by their type.
+//! attribute or by their type, and `#[file(max_size/content_types/sniff)]` is
+//! enforced after binding.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{
-    Attribute, Data, DeriveInput, Expr, Fields, GenericArgument, Ident, LitInt, LitStr,
-    PathArguments, Type, parse_macro_input,
-};
+use syn::{Data, DeriveInput, Expr, Fields, Ident, LitInt, parse_macro_input};
 
-use crate::common::krate;
+use crate::common::{
+    Multiplicity, file_binding, file_kind, file_validation, krate, parse_file_args, text_binding,
+    unwrap_multiplicity,
+};
 
 /// Expands `#[derive(FormModel)]`.
 pub fn expand(item: TokenStream) -> TokenStream {
@@ -53,23 +54,35 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     for field in fields {
         let field_ident = field.ident.as_ref().expect("named field");
-        let (multiplicity, inner) = multiplicity(&field.ty);
+        let (multiplicity, inner) = unwrap_multiplicity(&field.ty);
 
         let file_attr = field.attrs.iter().find(|attr| attr.path().is_ident("file"));
-        let is_file = file_attr.is_some() || is_file_type(inner).is_some();
+        let form_attr = field.attrs.iter().find(|attr| attr.path().is_ident("form"));
 
-        // The multipart field name defaults to the Rust field name.
-        let name = field_name(field, file_attr)?.unwrap_or_else(|| field_ident.to_string());
-
-        if is_file {
-            let kind = is_file_type(inner).ok_or_else(|| {
+        if file_attr.is_some() || file_kind(inner).is_some() {
+            let kind = file_kind(inner).ok_or_else(|| {
                 syn::Error::new_spanned(
                     &field.ty,
                     "a #[file] field must be a FileBytes or UploadFile (optionally Option/Vec)",
                 )
             })?;
+            let args = match file_attr {
+                Some(attr) => parse_file_args(attr)?,
+                None => Default::default(),
+            };
+            let name = args.name.clone().unwrap_or_else(|| field_ident.to_string());
             bindings.push(file_binding(&krate, field_ident, kind, multiplicity, &name));
+            let validation = file_validation(&krate, field_ident, kind, multiplicity, &args);
+            if !validation.is_empty() {
+                bindings.push(validation);
+            }
         } else {
+            let name = match form_attr {
+                Some(attr) => parse_file_args(attr)?
+                    .name
+                    .unwrap_or_else(|| field_ident.to_string()),
+                None => field_ident.to_string(),
+            };
             bindings.push(text_binding(&krate, field_ident, inner, multiplicity, &name));
             if let Some(constraints) = field_constraints(field)? {
                 checks.push(text_checks(&krate, field_ident, multiplicity, &name, &constraints));
@@ -81,7 +94,7 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     Ok(quote! {
         impl #krate::FromMultipart for #ident {
-            async fn from_multipart(form: &mut #krate::MultipartForm) -> #krate::Result<Self> {
+            async fn from_multipart(__form: &mut #krate::MultipartForm) -> #krate::Result<Self> {
                 #(#bindings)*
                 let mut __errors: ::std::vec::Vec<#krate::ErrorDetail> = ::std::vec::Vec::new();
                 #(#checks)*
@@ -96,98 +109,6 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
     })
-}
-
-/// How many values a field binds.
-#[derive(Clone, Copy)]
-enum Multiplicity {
-    One,
-    Optional,
-    Many,
-}
-
-/// Which file type a field binds.
-#[derive(Clone, Copy)]
-enum FileKind {
-    Bytes,
-    Upload,
-}
-
-/// Splits a field type into its multiplicity and inner type.
-fn multiplicity(ty: &Type) -> (Multiplicity, &Type) {
-    if let Some(inner) = generic_arg(ty, "Option") {
-        (Multiplicity::Optional, inner)
-    } else if let Some(inner) = generic_arg(ty, "Vec") {
-        (Multiplicity::Many, inner)
-    } else {
-        (Multiplicity::One, ty)
-    }
-}
-
-/// Returns the file kind if `ty` is `FileBytes` or `UploadFile`.
-fn is_file_type(ty: &Type) -> Option<FileKind> {
-    match last_segment(ty)?.to_string().as_str() {
-        "FileBytes" => Some(FileKind::Bytes),
-        "UploadFile" => Some(FileKind::Upload),
-        _ => None,
-    }
-}
-
-/// Builds the binding for a file field.
-fn file_binding(
-    krate: &TokenStream2,
-    ident: &Ident,
-    kind: FileKind,
-    multiplicity: Multiplicity,
-    name: &str,
-) -> TokenStream2 {
-    let missing = quote! {
-        || #krate::Error::unprocessable(::std::format!("missing file field `{}`", #name))
-    };
-    match (kind, multiplicity) {
-        (FileKind::Bytes, Multiplicity::One) => quote! {
-            let #ident = form.take_file_bytes(#name).await?.ok_or_else(#missing)?;
-        },
-        (FileKind::Bytes, Multiplicity::Optional) => quote! {
-            let #ident = form.take_file_bytes(#name).await?;
-        },
-        (FileKind::Bytes, Multiplicity::Many) => quote! {
-            let #ident = form.take_file_bytes_list(#name).await?;
-        },
-        (FileKind::Upload, Multiplicity::One) => quote! {
-            let #ident = form.take_upload_file(#name).ok_or_else(#missing)?;
-        },
-        (FileKind::Upload, Multiplicity::Optional) => quote! {
-            let #ident = form.take_upload_file(#name);
-        },
-        (FileKind::Upload, Multiplicity::Many) => quote! {
-            let #ident = form.take_upload_file_list(#name);
-        },
-    }
-}
-
-/// Builds the binding for a text field.
-fn text_binding(
-    krate: &TokenStream2,
-    ident: &Ident,
-    inner: &Type,
-    multiplicity: Multiplicity,
-    name: &str,
-) -> TokenStream2 {
-    let missing = quote! {
-        || #krate::Error::unprocessable(::std::format!("missing form field `{}`", #name))
-    };
-    match multiplicity {
-        Multiplicity::One => quote! {
-            let #ident = form.take_form_value::<#inner>(#name)?.ok_or_else(#missing)?;
-        },
-        Multiplicity::Optional => quote! {
-            let #ident = form.take_form_value::<#inner>(#name)?;
-        },
-        Multiplicity::Many => quote! {
-            let #ident = form.take_form_values::<#inner>(#name)?;
-        },
-    }
 }
 
 /// Numeric/length constraints parsed from a `#[field(...)]` attribute.
@@ -239,7 +160,9 @@ fn text_checks(
     let body = quote! { #(#body)* };
     match multiplicity {
         Multiplicity::One => quote! { { let __value = &#ident; #body } },
-        Multiplicity::Optional => quote! { if let ::core::option::Option::Some(__value) = &#ident { #body } },
+        Multiplicity::Optional => {
+            quote! { if let ::core::option::Option::Some(__value) = &#ident { #body } }
+        }
         // Repeated fields are not constraint-checked element by element in v1.
         Multiplicity::Many => quote! {},
     }
@@ -292,50 +215,4 @@ fn field_constraints(field: &syn::Field) -> syn::Result<Option<Constraints>> {
         Ok(())
     })?;
     Ok(Some(constraints))
-}
-
-/// Reads the `name = ".."` override from a `#[file(...)]` or `#[form(...)]` attribute.
-fn field_name(field: &syn::Field, file_attr: Option<&Attribute>) -> syn::Result<Option<String>> {
-    let attr = file_attr.or_else(|| field.attrs.iter().find(|attr| attr.path().is_ident("form")));
-    let Some(attr) = attr else { return Ok(None) };
-    // A bare `#[file]` / `#[form]` has no arguments.
-    if matches!(attr.meta, syn::Meta::Path(_)) {
-        return Ok(None);
-    }
-    let mut name = None;
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("name") {
-            let value: LitStr = meta.value()?.parse()?;
-            name = Some(value.value());
-        } else {
-            // Other keys (max_size, content_types, sniff) are handled elsewhere.
-            let _ = meta.value().and_then(|value| value.parse::<Expr>());
-        }
-        Ok(())
-    })?;
-    Ok(name)
-}
-
-/// Returns the inner type of `Wrapper<T>` when the outer segment matches `wrapper`.
-fn generic_arg<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
-    let Type::Path(path) = ty else { return None };
-    let segment = path.path.segments.last()?;
-    if segment.ident != wrapper {
-        return None;
-    }
-    let PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    args.args.iter().find_map(|arg| match arg {
-        GenericArgument::Type(inner) => Some(inner),
-        _ => None,
-    })
-}
-
-/// Returns the final path segment identifier of a type.
-fn last_segment(ty: &Type) -> Option<&Ident> {
-    match ty {
-        Type::Path(path) => path.path.segments.last().map(|segment| &segment.ident),
-        _ => None,
-    }
 }

@@ -100,3 +100,27 @@ async fn parameter_based_upload_binds_file_and_form() {
     assert_eq!(json["size"], 5);
     assert_eq!(json["token"], "abc123");
 }
+
+#[post("/avatar")]
+async fn upload_avatar(#[file(max_size = "3B")] avatar: FileBytes) -> tork::Result<i64> {
+    Ok(avatar.len() as i64)
+}
+
+#[tokio::test]
+async fn oversize_file_is_rejected() {
+    let app = App::new()
+        .include_router(Router::new().route(__tork_route_upload_avatar()))
+        .build()
+        .unwrap();
+
+    let body = "--X\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"a.bin\"\r\n\r\nhello\r\n--X--\r\n";
+    let request: http::Request<ReqBody> = http::Request::builder()
+        .method(Method::POST)
+        .uri("/avatar")
+        .header("content-type", "multipart/form-data; boundary=X")
+        .body(box_body(Full::new(Bytes::from(body))))
+        .unwrap();
+
+    let response = app.dispatch(request).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}

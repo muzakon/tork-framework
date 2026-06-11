@@ -34,7 +34,9 @@ pub use lifespan::{Lifespan, LifespanContext, ReadyContext};
 pub use middleware::{DuplicatePolicy, Middleware, Next, Request};
 pub use multipart::{FileBytes, Form, FromMultipart, Multipart, UploadConfig, UploadFile};
 #[doc(hidden)]
-pub use multipart::{MultipartForm, __parse_multipart};
+pub use multipart::{
+    FileRule, MultipartForm, __parse_multipart, __validate_file_bytes, __validate_upload,
+};
 // Re-exported so handlers can name `Mime` without depending on the `mime` crate.
 pub use mime;
 pub use resources::Resources;
