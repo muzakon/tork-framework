@@ -181,6 +181,81 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt;
 
     #[test]
+    fn env_filter_uses_explicit_level_and_fallback() {
+        std::env::remove_var("RUST_LOG");
+        let debug = env_filter("debug");
+        assert_eq!(debug.to_string(), "debug");
+
+        let fallback = env_filter("definitely not a log filter");
+        assert_eq!(fallback.to_string(), "info");
+
+        std::env::set_var("RUST_LOG", "warn,tork=trace");
+        let from_env = env_filter("error");
+        assert_eq!(from_env.to_string(), "warn,tork=trace");
+        std::env::remove_var("RUST_LOG");
+    }
+
+    #[test]
+    fn build_format_honors_explicit_json_and_console_preferences() {
+        let json = build_format(&LoggerConfig::new().format(LogFormat::Json).service_name("svc"));
+        match json {
+            TorkFormat::Json(format) => assert_eq!(format.service_name, "svc"),
+            other => panic!("expected json formatter, got {other:?}"),
+        }
+
+        let console = build_format(&LoggerConfig::new().format(LogFormat::Pretty).color(false));
+        match console {
+            TorkFormat::Console(format) => assert!(!format.color),
+            other => panic!("expected console formatter, got {other:?}"),
+        }
+
+        let compact = build_format(&LoggerConfig::new().format(LogFormat::Compact));
+        assert!(matches!(compact, TorkFormat::Console(_)));
+    }
+
+    #[test]
+    fn stdout_and_file_layers_cover_blocking_and_non_blocking_paths() {
+        let mut guards = Vec::new();
+        let config = LoggerConfig::new().format(LogFormat::Json).non_blocking(true);
+        let _ = stdout_layer(&config, &mut guards);
+        assert_eq!(guards.len(), 1);
+
+        let mut no_guards = Vec::new();
+        let _ = stdout_layer(&LoggerConfig::new().format(LogFormat::Pretty), &mut no_guards);
+        assert!(no_guards.is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = FileLogConfig::new(dir.path())
+            .prefix("hourly")
+            .rotation(Rotation::Hourly)
+            .non_blocking(true);
+        let mut file_guards = Vec::new();
+        let _ = file_layer(&LoggerConfig::new().level("debug"), &file, &mut file_guards);
+        assert_eq!(file_guards.len(), 1);
+
+        let daily = FileLogConfig::new(dir.path())
+            .prefix("daily")
+            .rotation(Rotation::Daily)
+            .non_blocking(false);
+        let mut daily_guards = Vec::new();
+        let _ = file_layer(&LoggerConfig::new(), &daily, &mut daily_guards);
+        assert!(daily_guards.is_empty());
+    }
+
+    #[test]
+    fn install_accepts_file_sink_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = LoggerConfig::new().file(
+            FileLogConfig::new(dir.path())
+                .prefix("app")
+                .rotation(Rotation::Never)
+                .non_blocking(false),
+        );
+
+        let _handle = install(&config);
+    }
+
+    #[test]
     fn file_layer_writes_json_records() {
         let dir = tempfile::tempdir().unwrap();
         let appender = rolling::never(dir.path(), "test.log");

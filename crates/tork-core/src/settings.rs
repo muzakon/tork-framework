@@ -279,6 +279,7 @@ mod tests {
     use super::*;
     use garde::Validate;
     use serde::Deserialize;
+    use std::io::Write;
 
     #[derive(Debug, Deserialize, Validate)]
     struct Nested {
@@ -303,6 +304,68 @@ mod tests {
 
     fn default_name() -> String {
         "Awesome API".to_owned()
+    }
+
+    #[test]
+    fn builder_methods_store_configuration_sources() {
+        let loader = SettingsLoader::<Sample>::default()
+            .env_file("config/.env.test")
+            .prefix("CFGTESTZ")
+            .config_file("config/base.toml")
+            .file("config/{env}.toml")
+            .secrets_dir("secrets")
+            .override_value("nested.port", 7000u16);
+
+        assert_eq!(loader.env_file.as_deref(), Some(Path::new("config/.env.test")));
+        assert_eq!(loader.prefix.as_deref(), Some("CFGTESTZ"));
+        assert_eq!(loader.config_file.as_deref(), Some("config/base.toml"));
+        assert_eq!(loader.files, vec!["config/{env}.toml"]);
+        assert_eq!(loader.secrets_dir.as_deref(), Some(Path::new("secrets")));
+        assert_eq!(loader.overrides["nested"]["port"], Value::from(7000u16));
+    }
+
+    #[test]
+    fn environment_name_uses_prefix_and_default() {
+        std::env::remove_var("ENV");
+        std::env::remove_var("CFGTESTENV_ENV");
+        assert_eq!(
+            SettingsLoader::<Sample>::new().environment_name(),
+            "development"
+        );
+
+        std::env::set_var("ENV", "staging");
+        std::env::set_var("CFGTESTENV_ENV", "production");
+        assert_eq!(SettingsLoader::<Sample>::new().environment_name(), "staging");
+        assert_eq!(
+            SettingsLoader::<Sample>::new()
+                .prefix("CFGTESTENV")
+                .environment_name(),
+            "production"
+        );
+
+        std::env::remove_var("ENV");
+        std::env::remove_var("CFGTESTENV_ENV");
+    }
+
+    #[test]
+    fn read_secrets_and_insert_nested_cover_edge_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("TOKEN"), "  shh \n").unwrap();
+        std::fs::write(dir.path().join("DB__PORT"), "5432").unwrap();
+
+        let secrets = read_secrets(dir.path());
+        assert_eq!(secrets["token"], "shh");
+        assert_eq!(secrets["db"]["port"], "5432");
+        assert!(read_secrets(&dir.path().join("missing")).is_empty());
+
+        let mut root = Map::new();
+        insert_nested(&mut root, &[], Value::from("ignored"));
+        assert!(root.is_empty());
+
+        root.insert("db".to_owned(), Value::from("scalar"));
+        insert_nested(&mut root, &["db", "host"], Value::from("localhost"));
+        assert_eq!(root["db"]["host"], "localhost");
     }
 
     #[test]
@@ -359,8 +422,6 @@ mod tests {
 
     #[test]
     fn environment_variable_overrides_a_config_file() {
-        use std::io::Write;
-
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut file = std::fs::File::create(&path).unwrap();
@@ -399,5 +460,59 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    }
+
+    #[test]
+    fn load_merges_env_file_environment_specific_file_and_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.toml");
+        let env_file = dir.path().join(".env");
+        let env_toml = dir.path().join("production.toml");
+        let secrets = dir.path().join("secrets");
+        std::fs::create_dir(&secrets).unwrap();
+
+        let mut base_file = std::fs::File::create(&base).unwrap();
+        writeln!(
+            base_file,
+            "name = \"Base\"\nitems = 3\ntoken = \"from-base\"\n\n[nested]\nhost = \"file.host\"\nport = 1111"
+        )
+        .unwrap();
+        std::fs::write(&env_file, "CFGTESTE_ENV=production\nCFGTESTE_ITEMS=9\n").unwrap();
+        let mut env_override = std::fs::File::create(&env_toml).unwrap();
+        writeln!(env_override, "name = \"Prod\"\n[nested]\nhost = \"prod.host\"").unwrap();
+        std::fs::write(secrets.join("TOKEN"), "from-secret\n").unwrap();
+
+        let value: Sample = SettingsLoader::new()
+            .env_file(&env_file)
+            .prefix("CFGTESTE")
+            .config_file(base.to_string_lossy().into_owned())
+            .file(dir.path().join("{env}.toml").to_string_lossy().into_owned())
+            .secrets_dir(&secrets)
+            .load()
+            .expect("load should succeed");
+
+        assert_eq!(value.name, "Prod");
+        assert_eq!(value.items, 9);
+        assert_eq!(value.nested.host, "prod.host");
+        assert_eq!(value.nested.port, 1111);
+        assert_eq!(value.token.expose(), "from-secret");
+
+        std::env::remove_var("CFGTESTE_ENV");
+        std::env::remove_var("CFGTESTE_ITEMS");
+    }
+
+    #[test]
+    fn load_reports_configuration_parse_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.toml");
+        std::fs::write(&path, "items = \"oops\"\ntoken = \"x\"\n[nested]\nhost = \"h\"\nport = 1").unwrap();
+
+        let error = SettingsLoader::<Sample>::new()
+            .config_file(path.to_string_lossy().into_owned())
+            .load()
+            .unwrap_err();
+
+        assert_eq!(error.code(), "CONFIG_LOAD_FAILED");
+        assert!(error.message().starts_with("failed to load configuration:"));
     }
 }

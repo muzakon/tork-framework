@@ -652,6 +652,7 @@ fn parse_error(error: multer::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use schemars::SchemaGenerator;
 
     fn spooled(data: &[u8]) -> SpooledTempFile {
         let mut storage = SpooledTempFile::new(1024 * 1024);
@@ -662,17 +663,47 @@ mod tests {
 
     #[test]
     fn file_bytes_reports_size_and_contents() {
-        let file = FileBytes::new(Bytes::from_static(b"hello"), Some("a.txt".to_owned()), None);
+        let file = FileBytes::new(
+            Bytes::from_static(b"hello"),
+            Some("a.txt".to_owned()),
+            Some("text/plain".parse().unwrap()),
+        );
         assert_eq!(file.len(), 5);
         assert!(!file.is_empty());
         assert_eq!(file.bytes(), b"hello");
+        assert_eq!(file.clone().into_bytes(), Bytes::from_static(b"hello"));
         assert_eq!(file.filename(), Some("a.txt"));
+        assert_eq!(file.content_type().map(Mime::essence_str), Some("text/plain"));
+    }
+
+    #[test]
+    fn upload_config_builders_and_defaults_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = UploadConfig::new()
+            .max_body_size(12)
+            .max_file_size(8)
+            .memory_threshold(4)
+            .max_files(2)
+            .temp_dir(dir.path());
+        let resolved = config.resolve();
+        assert_eq!(resolved.max_body_size, 12);
+        assert_eq!(resolved.max_file_size, 8);
+        assert_eq!(resolved.memory_threshold, 4);
+        assert_eq!(resolved.max_files, 2);
+        assert_eq!(config.temp_dir.as_deref(), Some(dir.path()));
+
+        let defaults = UploadConfig::new().resolve();
+        assert_eq!(defaults.max_body_size, DEFAULT_MAX_BODY_SIZE);
+        assert_eq!(defaults.max_file_size, DEFAULT_MAX_FILE_SIZE);
+        assert_eq!(defaults.memory_threshold, DEFAULT_MEMORY_THRESHOLD);
+        assert_eq!(defaults.max_files, DEFAULT_MAX_FILES);
     }
 
     #[tokio::test]
     async fn upload_file_reads_and_saves() {
         let mut file = UploadFile::new(Some("a.bin".to_owned()), None, 5, spooled(b"hello"));
         assert_eq!(file.size(), 5);
+        assert_eq!(file.filename(), Some("a.bin"));
         assert_eq!(file.read().await.unwrap(), Bytes::from_static(b"hello"));
 
         let dir = tempfile::tempdir().unwrap();
@@ -687,6 +718,45 @@ mod tests {
         assert_eq!(file.read_chunk(2).await.unwrap(), Some(Bytes::from_static(b"ab")));
         assert_eq!(file.read_chunk(2).await.unwrap(), Some(Bytes::from_static(b"cd")));
         assert_eq!(file.read_chunk(2).await.unwrap(), None);
+        file.seek_start().await.unwrap();
+        assert_eq!(file.read().await.unwrap(), Bytes::from_static(b"abcd"));
+    }
+
+    #[tokio::test]
+    async fn upload_validation_covers_sniff_and_declared_type_paths() {
+        let mut file = UploadFile::new(
+            Some("a.png".to_owned()),
+            Some("image/png".parse().unwrap()),
+            16,
+            spooled(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"),
+        );
+        let rule = FileRule {
+            max_size: Some(1024),
+            content_types: &["image/png"],
+            sniff: true,
+        };
+        __validate_upload(&mut file, &rule).await.unwrap();
+
+        let mut wrong = UploadFile::new(
+            Some("a.txt".to_owned()),
+            Some("text/plain".parse().unwrap()),
+            2,
+            spooled(b"hi"),
+        );
+        let error = __validate_upload(&mut wrong, &rule).await.unwrap_err();
+        assert_eq!(error.code(), "UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    #[tokio::test]
+    async fn upload_file_reports_consumed_storage() {
+        let mut file = UploadFile {
+            filename: None,
+            content_type: None,
+            size: 0,
+            storage: None,
+        };
+        let error = file.read().await.unwrap_err();
+        assert_eq!(error.message(), "upload file storage was already consumed");
     }
 
     #[test]
@@ -696,6 +766,14 @@ mod tests {
         let merged = route.merge(&app);
         assert_eq!(merged.resolve().max_file_size, 50 * 1024 * 1024);
         assert_eq!(merged.resolve().max_files, 5);
+    }
+
+    #[test]
+    fn default_form_schema_is_permissive_object() {
+        let mut generator = SchemaGenerator::default();
+        let schema = TokenForm::form_schema(&mut generator);
+        let schema_json = serde_json::to_value(&schema).unwrap();
+        assert_eq!(schema_json["type"], "object");
     }
 
     use crate::extract::PathParams;
@@ -730,6 +808,8 @@ mod tests {
         let form = Form::<Login>::from_request(&ctx).await.unwrap();
         assert_eq!(form.0.username, "ada");
         assert_eq!(form.0.password, "secret");
+        let login = form.into_inner();
+        assert_eq!(login.username, "ada");
     }
 
     struct TokenForm {
@@ -755,6 +835,7 @@ mod tests {
         // The text field binds via the model.
         let bound = Multipart::<TokenForm>::from_request(&ctx).await.unwrap();
         assert_eq!(bound.0.token, "abc123");
+        assert_eq!(bound.into_inner().token, "abc123");
     }
 
     #[test]
@@ -795,12 +876,22 @@ mod tests {
         // Sniff mismatch: declared png but bytes are not png.
         let fake = FileBytes::new(Bytes::from_static(b"GIF89a...."), None, Some("image/png".parse().unwrap()));
         assert!(__validate_file_bytes(&fake, &rule).is_err());
+
+        let unrestricted = FileRule {
+            max_size: None,
+            content_types: &[],
+            sniff: true,
+        };
+        assert!(__validate_file_bytes(&txt, &unrestricted).is_ok());
     }
 
     #[tokio::test]
     async fn multipart_form_takes_files_and_values() {
         let body = "--X\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhi\r\n\
-                    --X\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.bin\"\r\n\r\nDATA\r\n--X--\r\n";
+                    --X\r\nContent-Disposition: form-data; name=\"count\"\r\n\r\n1\r\n\
+                    --X\r\nContent-Disposition: form-data; name=\"count\"\r\n\r\n2\r\n\
+                    --X\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.bin\"\r\n\r\nDATA\r\n\
+                    --X\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"b.bin\"\r\n\r\nMORE\r\n--X--\r\n";
         let ctx = ctx_with("multipart/form-data; boundary=X", body.as_bytes());
         let mut form = __parse_multipart(&ctx, UploadConfig::new()).await.unwrap();
 
@@ -808,5 +899,86 @@ mod tests {
         assert_eq!(file.bytes(), b"DATA");
         assert_eq!(file.filename(), Some("a.bin"));
         assert_eq!(form.take_form_value::<String>("note").unwrap(), Some("hi".to_owned()));
+        assert_eq!(form.take_form_value::<String>("missing").unwrap(), None);
+        assert_eq!(form.take_form_values::<u32>("count").unwrap(), vec![1, 2]);
+        assert_eq!(form.take_form_values::<u32>("count").unwrap(), Vec::<u32>::new());
+
+        let remaining = form.take_file_bytes_list("doc").await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].bytes(), b"MORE");
+        assert!(form.take_file_bytes("doc").await.unwrap().is_none());
+        assert!(form.take_upload_file("doc").is_none());
+        assert!(form.take_upload_file_list("doc").is_empty());
+    }
+
+    #[tokio::test]
+    async fn multipart_form_rejects_invalid_values_and_limits() {
+        let body = "--X\r\nContent-Disposition: form-data; name=\"count\"\r\n\r\nabc\r\n--X--\r\n";
+        let ctx = ctx_with("multipart/form-data; boundary=X", body.as_bytes());
+        let mut form = __parse_multipart(&ctx, UploadConfig::new()).await.unwrap();
+        assert_eq!(
+            form.take_form_value::<u32>("count").unwrap_err().kind(),
+            crate::error::ErrorKind::UnprocessableEntity
+        );
+
+        let too_many = "--X\r\nContent-Disposition: form-data; name=\"a\"; filename=\"a.txt\"\r\n\r\nA\r\n\
+                        --X\r\nContent-Disposition: form-data; name=\"b\"; filename=\"b.txt\"\r\n\r\nB\r\n--X--\r\n";
+        let ctx = ctx_with("multipart/form-data; boundary=X", too_many.as_bytes());
+        let error = __parse_multipart(&ctx, UploadConfig::new().max_files(1))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "TOO_MANY_FILES");
+
+        let oversized_text = "--X\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n--X--\r\n";
+        let ctx = ctx_with("multipart/form-data; boundary=X", oversized_text.as_bytes());
+        let error = __parse_multipart(&ctx, UploadConfig::new().max_body_size(3))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), crate::error::ErrorKind::PayloadTooLarge);
+
+        let oversized_file = "--X\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\n\r\nhello\r\n--X--\r\n";
+        let ctx = ctx_with("multipart/form-data; boundary=X", oversized_file.as_bytes());
+        let error = __parse_multipart(&ctx, UploadConfig::new().max_file_size(3))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "FILE_TOO_LARGE");
+    }
+
+    #[tokio::test]
+    async fn multipart_parse_reports_content_type_errors() {
+        let request = http::Request::builder().body(()).unwrap().into_parts().0;
+        let body = crate::body::box_body(http_body_util::Full::new(Bytes::new()));
+        let ctx = RequestContext::new(request, PathParams::new(), Arc::new(StateMap::new()), body);
+        let error = MultipartForm::parse(&ctx, &UploadConfig::new()).await.unwrap_err();
+        assert_eq!(error.message(), "missing Content-Type for multipart form");
+
+        let ctx = ctx_with("multipart/form-data", b"");
+        let error = MultipartForm::parse(&ctx, &UploadConfig::new()).await.unwrap_err();
+        assert_eq!(error.message(), "invalid or missing multipart boundary");
+    }
+
+    #[tokio::test]
+    async fn parse_multipart_merges_route_and_app_config() {
+        let body = "--X\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\n\r\nhello\r\n--X--\r\n";
+        let head = http::Request::builder()
+            .header(CONTENT_TYPE, "multipart/form-data; boundary=X")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let mut state = StateMap::new();
+        state.insert(AppUploadConfig(UploadConfig::new().max_file_size(3)));
+        let body = crate::body::box_body(http_body_util::Full::new(Bytes::copy_from_slice(body.as_bytes())));
+        let ctx = RequestContext::new(head, PathParams::new(), Arc::new(state), body);
+        let error = __parse_multipart(&ctx, UploadConfig::new().max_file_size(10))
+            .await
+            .unwrap();
+        assert!(error.take_upload_file("doc").is_some());
+    }
+
+    #[test]
+    fn parse_error_includes_multipart_context() {
+        let error = parse_error(multer::Error::IncompleteStream);
+        assert!(error.message().starts_with("multipart parse error:"));
     }
 }
