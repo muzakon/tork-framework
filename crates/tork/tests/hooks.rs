@@ -3,10 +3,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::sync::oneshot;
-use tork::{App, IntoResponse, Router, StatusCode, get};
+use tork::testing::TestClient;
+use tork::{get, App, IntoResponse, Router, StatusCode};
 
 /// A user error mapped to `503` by default, recovered by an exception handler.
 #[derive(Debug, PartialEq, tork::AppError)]
@@ -51,24 +49,17 @@ fn contains(recorder: &Recorder, label: &str) -> bool {
     recorder.lock().unwrap().iter().any(|entry| entry == label)
 }
 
-/// Sends one `GET` request on a fresh connection and returns the raw response.
-async fn get_request(addr: std::net::SocketAddr, path: &str) -> String {
-    let mut stream = TcpStream::connect(addr).await.unwrap();
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-    stream.write_all(request.as_bytes()).await.unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).await.unwrap();
-    response
+/// Sends one `GET` request and returns the buffered response body.
+async fn get_request(client: &TestClient, path: &str) -> (u16, String) {
+    let response = client.get(path).send().await.unwrap();
+    let status = response.status();
+    let body = response.text().unwrap();
+    (status, body)
 }
 
 #[tokio::test]
 async fn hooks_observe_requests_handle_typed_errors_and_catch_panics() {
     let recorder: Recorder = Arc::new(Mutex::new(Vec::new()));
-
-    let (addr_tx, addr_rx) = oneshot::channel();
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let sender = Arc::new(Mutex::new(Some(addr_tx)));
 
     let request_rec = recorder.clone();
     let response_rec = recorder.clone();
@@ -106,15 +97,6 @@ async fn hooks_observe_requests_handle_typed_errors_and_catch_panics() {
                 StatusCode::IM_A_TEAPOT.into_response()
             }
         })
-        .on_ready(move |ctx| {
-            let sender = sender.clone();
-            async move {
-                if let Some(tx) = sender.lock().unwrap().take() {
-                    let _ = tx.send(ctx.addr());
-                }
-                Ok(())
-            }
-        })
         .include_router(
             Router::new()
                 .route(__tork_route_ok_handler())
@@ -122,32 +104,30 @@ async fn hooks_observe_requests_handle_typed_errors_and_catch_panics() {
                 .route(__tork_route_boom_handler()),
         );
 
-    let server = tokio::spawn(app.serve_with_shutdown("127.0.0.1:0", async move {
-        let _ = shutdown_rx.await;
-    }));
+    let client = TestClient::serve(app).bind_random_port().await.unwrap();
 
-    let addr = addr_rx.await.unwrap();
+    let (status, body) = get_request(&client, "/ok").await;
+    assert_eq!(status, 200, "ok response body: {body}");
 
-    let ok = get_request(addr, "/ok").await;
-    assert!(ok.contains("HTTP/1.1 200"), "ok response: {ok}");
+    let (status, body) = get_request(&client, "/db").await;
+    assert_eq!(status, 418, "db response body: {body}");
 
-    let db = get_request(addr, "/db").await;
-    assert!(db.contains("HTTP/1.1 418"), "db response: {db}");
+    let (status, body) = get_request(&client, "/boom").await;
+    assert_eq!(status, 500, "boom response body: {body}");
 
-    let boom = get_request(addr, "/boom").await;
-    assert!(boom.contains("HTTP/1.1 500"), "boom response: {boom}");
+    let (status, body) = get_request(&client, "/missing").await;
+    assert_eq!(status, 404, "missing response body: {body}");
 
-    let missing = get_request(addr, "/missing").await;
-    assert!(missing.contains("HTTP/1.1 404"), "missing response: {missing}");
-
-    let _ = shutdown_tx.send(());
-    let _ = server.await;
+    client.shutdown().await.unwrap();
 
     // Observability hooks ran for the successful request.
     assert!(contains(&recorder, "request:/ok"), "{recorder:?}");
     assert!(contains(&recorder, "response:200"), "{recorder:?}");
     // The typed error fired on_error (non-validation) and was mapped by the handler.
-    assert!(contains(&recorder, "error:SERVICE_UNAVAILABLE"), "{recorder:?}");
+    assert!(
+        contains(&recorder, "error:SERVICE_UNAVAILABLE"),
+        "{recorder:?}"
+    );
     assert!(contains(&recorder, "handled:db"), "{recorder:?}");
     // The panic was caught and observed.
     assert!(contains(&recorder, "panic:kaboom"), "{recorder:?}");

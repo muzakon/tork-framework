@@ -71,10 +71,8 @@ impl Matcher {
 
     /// Matches `method` and `path` against the route table.
     pub fn find(&self, method: &Method, path: &str) -> Match<'_> {
-        let normalized = normalize_request_path(path);
-
         if let Some(method_router) = self.by_method.get(method) {
-            if let Ok(matched) = method_router.at(&normalized) {
+            if let Ok(matched) = method_router.at(path) {
                 let mut params = PathParams::new();
                 for (name, value) in matched.params.iter() {
                     params.push(name.to_owned(), value.to_owned());
@@ -84,10 +82,29 @@ impl Matcher {
                     params,
                 };
             }
+
+            if let Some(normalized) = normalized_request_path(path) {
+                if let Ok(matched) = method_router.at(normalized) {
+                    let mut params = PathParams::new();
+                    for (name, value) in matched.params.iter() {
+                        params.push(name.to_owned(), value.to_owned());
+                    }
+                    return Match::Found {
+                        route: &self.routes[*matched.value],
+                        params,
+                    };
+                }
+            }
         }
 
-        if self.all_paths.at(&normalized).is_ok() {
+        if self.all_paths.at(path).is_ok() {
             Match::MethodNotAllowed
+        } else if let Some(normalized) = normalized_request_path(path) {
+            if self.all_paths.at(normalized).is_ok() {
+                Match::MethodNotAllowed
+            } else {
+                Match::NotFound
+            }
         } else {
             Match::NotFound
         }
@@ -99,33 +116,36 @@ impl Matcher {
     }
 }
 
-/// Normalizes an incoming request path so it matches a registered pattern.
+/// Returns a trailing-slash-trimmed view of `path` when normalization is needed.
 ///
 /// Registered paths drop their trailing slash (except the root), so incoming
-/// paths are normalized the same way before matching.
-fn normalize_request_path(path: &str) -> String {
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        "/".to_owned()
-    } else {
-        trimmed.to_owned()
+/// paths ending with `/` are retried without allocating in the common case where
+/// the request is already normalized.
+fn normalized_request_path(path: &str) -> Option<&str> {
+    if path == "/" || !path.ends_with('/') {
+        return None;
     }
+
+    let trimmed = path.trim_end_matches('/');
+    Some(if trimmed.is_empty() { "/" } else { trimmed })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::Result;
-    use crate::response::{Response, empty};
-    use crate::router::{BoxFuture, HandlerFn};
     use crate::extract::RequestContext;
+    use crate::response::{empty, Response};
+    use crate::router::{BoxFuture, HandlerFn};
     use http::StatusCode;
     use std::sync::Arc;
 
     fn dummy_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-            Box::pin(async { Ok(empty(StatusCode::OK)) })
-        })
+        Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async { Ok(empty(StatusCode::OK)) })
+            },
+        )
     }
 
     fn matcher() -> Matcher {
