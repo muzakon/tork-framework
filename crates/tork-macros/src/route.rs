@@ -9,8 +9,8 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitStr, Pat, Path, PathArguments,
-    ReturnType, Token, Type, bracketed,
+    Attribute, Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitStr, Pat, Path,
+    PathArguments, ReturnType, Token, Type, bracketed,
 };
 
 use crate::common::{krate, path_param_names};
@@ -132,11 +132,28 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
         Some(prefix) => format!("{}{}", prefix.value(), args.path.value()),
         None => args.path.value(),
     };
-    let HandlerParts {
-        bindings,
-        call_args,
-        request_body,
-    } = build_handler_parts(&krate, &func, &full_path)?;
+    // A handler with `#[file]` / `#[form]` parameters (or bare file types) reads a
+    // multipart body once and distributes the fields; otherwise the parameters are
+    // path parameters and dependencies.
+    let multipart = has_form_params(&func);
+    let (bindings, call_args, prelude, request_body) = if multipart {
+        let MultipartParts {
+            bindings,
+            call_args,
+            prelude,
+        } = build_multipart_parts(&krate, &func, &full_path)?;
+        (bindings, call_args, prelude, None)
+    } else {
+        let HandlerParts {
+            bindings,
+            call_args,
+            request_body,
+        } = build_handler_parts(&krate, &func, &full_path)?;
+        (bindings, call_args, TokenStream::new(), request_body)
+    };
+
+    // Re-emit the function without the form parameter attributes so it compiles.
+    let emit_func = strip_form_attrs(&func);
 
     let status_code = status_code_tokens(&krate, args.status_code.as_ref());
 
@@ -197,7 +214,7 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     };
 
     Ok(quote! {
-        #func
+        #emit_func
 
         #[doc(hidden)]
         #vis fn #route_fn() -> #krate::Route {
@@ -205,6 +222,7 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
                 |ctx: #krate::RequestContext|
                     -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
                     ::std::boxed::Box::pin(async move {
+                        #prelude
                         #(#bindings)*
                         #finish
                     })
@@ -300,6 +318,231 @@ pub(crate) fn build_handler_parts(
         call_args,
         request_body,
     })
+}
+
+/// The generated pieces for a multipart (form/file) handler.
+pub(crate) struct MultipartParts {
+    pub bindings: Vec<TokenStream>,
+    pub call_args: Vec<Ident>,
+    pub prelude: TokenStream,
+}
+
+/// Whether a handler has any `#[file]` / `#[form]` parameter or bare file type.
+fn has_form_params(func: &ItemFn) -> bool {
+    func.sig.inputs.iter().any(|input| match input {
+        FnArg::Typed(pat_type) => {
+            pat_type
+                .attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("file") || attr.path().is_ident("form"))
+                || file_kind(unwrap_multiplicity(&pat_type.ty).1).is_some()
+        }
+        FnArg::Receiver(_) => false,
+    })
+}
+
+/// Builds the bindings for a multipart handler: one parse, then a take per field.
+fn build_multipart_parts(
+    krate: &TokenStream,
+    func: &ItemFn,
+    full_path: &str,
+) -> syn::Result<MultipartParts> {
+    let placeholders = path_param_names(full_path);
+    let mut bindings = Vec::new();
+    let mut call_args = Vec::new();
+
+    for input in &func.sig.inputs {
+        let pat_type = match input {
+            FnArg::Typed(pat_type) => pat_type,
+            FnArg::Receiver(receiver) => {
+                return Err(syn::Error::new_spanned(receiver, "route handlers cannot take `self`"));
+            }
+        };
+        let ident = match pat_type.pat.as_ref() {
+            Pat::Ident(pat_ident) => pat_ident.ident.clone(),
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    "route handler parameters must be simple identifiers",
+                ));
+            }
+        };
+        let ty = pat_type.ty.as_ref();
+        let name = ident.to_string();
+
+        // A multipart handler cannot also declare another body encoding.
+        if body_inner_type(ty).is_some() || first_generic_arg(ty, &["Form", "Multipart"]).is_some() {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "a request can only have one body encoding: a handler with #[file]/#[form] \
+                 parameters cannot also take a JSON, Form, or Multipart body",
+            ));
+        }
+
+        let file_attr = pat_type.attrs.iter().find(|attr| attr.path().is_ident("file"));
+        let form_attr = pat_type.attrs.iter().find(|attr| attr.path().is_ident("form"));
+        let (multiplicity, inner) = unwrap_multiplicity(ty);
+
+        if file_attr.is_some() || file_kind(inner).is_some() {
+            let kind = file_kind(inner).ok_or_else(|| {
+                syn::Error::new_spanned(
+                    ty,
+                    "a #[file] parameter must be FileBytes or UploadFile (optionally Option/Vec)",
+                )
+            })?;
+            let field = attr_name(file_attr).unwrap_or_else(|| name.clone());
+            bindings.push(file_binding(krate, &ident, kind, multiplicity, &field));
+        } else if let Some(attr) = form_attr {
+            let field = attr_name(Some(attr)).unwrap_or_else(|| name.clone());
+            bindings.push(text_binding(krate, &ident, inner, multiplicity, &field));
+        } else if placeholders.contains(&name) {
+            bindings.push(quote! {
+                let #ident: #ty = #krate::__extract_path_param(&ctx, #name)?;
+            });
+        } else {
+            bindings.push(quote! {
+                let #ident = <#ty as #krate::FromRequest>::from_request(&ctx).await?;
+            });
+        }
+
+        call_args.push(ident);
+    }
+
+    let prelude = quote! {
+        let mut __form = #krate::__parse_multipart(&ctx, #krate::UploadConfig::new()).await?;
+    };
+    Ok(MultipartParts {
+        bindings,
+        call_args,
+        prelude,
+    })
+}
+
+/// Whether a parameter binds one value, an optional value, or many.
+#[derive(Clone, Copy)]
+enum Multiplicity {
+    One,
+    Optional,
+    Many,
+}
+
+/// Which file type a parameter binds.
+#[derive(Clone, Copy)]
+enum FileKind {
+    Bytes,
+    Upload,
+}
+
+/// Splits a type into its multiplicity and inner type.
+fn unwrap_multiplicity(ty: &Type) -> (Multiplicity, &Type) {
+    if let Some(inner) = first_generic_arg(ty, &["Option"]) {
+        (Multiplicity::Optional, inner)
+    } else if let Some(inner) = first_generic_arg(ty, &["Vec"]) {
+        (Multiplicity::Many, inner)
+    } else {
+        (Multiplicity::One, ty)
+    }
+}
+
+/// Returns the file kind if `ty` is `FileBytes` or `UploadFile`.
+fn file_kind(ty: &Type) -> Option<FileKind> {
+    let Type::Path(path) = ty else { return None };
+    match path.path.segments.last()?.ident.to_string().as_str() {
+        "FileBytes" => Some(FileKind::Bytes),
+        "UploadFile" => Some(FileKind::Upload),
+        _ => None,
+    }
+}
+
+/// Builds the binding for a file parameter from `__form`.
+fn file_binding(
+    krate: &TokenStream,
+    ident: &Ident,
+    kind: FileKind,
+    multiplicity: Multiplicity,
+    name: &str,
+) -> TokenStream {
+    let missing = quote! {
+        || #krate::Error::unprocessable(::std::format!("missing file field `{}`", #name))
+    };
+    match (kind, multiplicity) {
+        (FileKind::Bytes, Multiplicity::One) => quote! {
+            let #ident = __form.take_file_bytes(#name).await?.ok_or_else(#missing)?;
+        },
+        (FileKind::Bytes, Multiplicity::Optional) => quote! {
+            let #ident = __form.take_file_bytes(#name).await?;
+        },
+        (FileKind::Bytes, Multiplicity::Many) => quote! {
+            let #ident = __form.take_file_bytes_list(#name).await?;
+        },
+        (FileKind::Upload, Multiplicity::One) => quote! {
+            let #ident = __form.take_upload_file(#name).ok_or_else(#missing)?;
+        },
+        (FileKind::Upload, Multiplicity::Optional) => quote! {
+            let #ident = __form.take_upload_file(#name);
+        },
+        (FileKind::Upload, Multiplicity::Many) => quote! {
+            let #ident = __form.take_upload_file_list(#name);
+        },
+    }
+}
+
+/// Builds the binding for a text (form) parameter from `__form`.
+fn text_binding(
+    krate: &TokenStream,
+    ident: &Ident,
+    inner: &Type,
+    multiplicity: Multiplicity,
+    name: &str,
+) -> TokenStream {
+    let missing = quote! {
+        || #krate::Error::unprocessable(::std::format!("missing form field `{}`", #name))
+    };
+    match multiplicity {
+        Multiplicity::One => quote! {
+            let #ident = __form.take_form_value::<#inner>(#name)?.ok_or_else(#missing)?;
+        },
+        Multiplicity::Optional => quote! {
+            let #ident = __form.take_form_value::<#inner>(#name)?;
+        },
+        Multiplicity::Many => quote! {
+            let #ident = __form.take_form_values::<#inner>(#name)?;
+        },
+    }
+}
+
+/// Reads the `name = ".."` override from a `#[file(...)]` / `#[form(...)]` attribute.
+fn attr_name(attr: Option<&Attribute>) -> Option<String> {
+    let attr = attr?;
+    if matches!(attr.meta, syn::Meta::Path(_)) {
+        return None;
+    }
+    let mut name = None;
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("name") {
+            let value: LitStr = meta.value()?.parse()?;
+            name = Some(value.value());
+        } else {
+            // Other keys (max_size, content_types, sniff) are handled at runtime.
+            let _ = meta.value().and_then(|value| value.parse::<Expr>());
+        }
+        Ok(())
+    });
+    name
+}
+
+/// Returns a clone of `func` with the `#[file]` / `#[form]` parameter attributes
+/// removed, so the re-emitted function compiles.
+fn strip_form_attrs(func: &ItemFn) -> ItemFn {
+    let mut func = func.clone();
+    for input in &mut func.sig.inputs {
+        if let FnArg::Typed(pat_type) = input {
+            pat_type
+                .attrs
+                .retain(|attr| !(attr.path().is_ident("file") || attr.path().is_ident("form")));
+        }
+    }
+    func
 }
 
 /// Returns the `T` in a `Result<T>` / `tork::Result<T>` return type.

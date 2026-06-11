@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use tork::{
-    FileBytes, FormModel, FromRequest, Multipart, PathParams, RequestContext, StateMap, box_body,
+    App, FileBytes, FormModel, FromRequest, Multipart, Method, PathParams, ReqBody, RequestContext,
+    Router, StateMap, StatusCode, api_model, box_body, post,
 };
 
 #[derive(FormModel)]
@@ -56,4 +57,46 @@ async fn model_validation_rejects_a_short_token() {
         .err()
         .expect("validation should fail");
     assert_eq!(error.code(), "VALIDATION_ERROR");
+}
+
+#[api_model]
+struct FileInfoOut {
+    size: usize,
+    token: String,
+}
+
+#[post("/files")]
+async fn create_file(
+    #[file] file: FileBytes,
+    #[form] token: String,
+) -> tork::Result<FileInfoOut> {
+    Ok(FileInfoOut {
+        size: file.len(),
+        token,
+    })
+}
+
+#[tokio::test]
+async fn parameter_based_upload_binds_file_and_form() {
+    let app = App::new()
+        .include_router(Router::new().route(__tork_route_create_file()))
+        .build()
+        .unwrap();
+
+    let body = "--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhello\r\n\
+                --X\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nabc123\r\n--X--\r\n";
+    let request: http::Request<ReqBody> = http::Request::builder()
+        .method(Method::POST)
+        .uri("/files")
+        .header("content-type", "multipart/form-data; boundary=X")
+        .body(box_body(Full::new(Bytes::from(body))))
+        .unwrap();
+
+    let response = app.dispatch(request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["size"], 5);
+    assert_eq!(json["token"], "abc123");
 }
