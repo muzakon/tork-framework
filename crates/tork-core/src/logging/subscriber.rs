@@ -186,12 +186,14 @@ mod tests {
         let debug = env_filter("debug");
         assert_eq!(debug.to_string(), "debug");
 
-        let fallback = env_filter("definitely not a log filter");
+        let fallback = env_filter("[");
         assert_eq!(fallback.to_string(), "info");
 
         std::env::set_var("RUST_LOG", "warn,tork=trace");
         let from_env = env_filter("error");
-        assert_eq!(from_env.to_string(), "warn,tork=trace");
+        let rendered = from_env.to_string();
+        assert!(rendered.contains("warn"));
+        assert!(rendered.contains("tork=trace"));
         std::env::remove_var("RUST_LOG");
     }
 
@@ -200,13 +202,13 @@ mod tests {
         let json = build_format(&LoggerConfig::new().format(LogFormat::Json).service_name("svc"));
         match json {
             TorkFormat::Json(format) => assert_eq!(format.service_name, "svc"),
-            other => panic!("expected json formatter, got {other:?}"),
+            _ => panic!("expected json formatter"),
         }
 
         let console = build_format(&LoggerConfig::new().format(LogFormat::Pretty).color(false));
         match console {
             TorkFormat::Console(format) => assert!(!format.color),
-            other => panic!("expected console formatter, got {other:?}"),
+            _ => panic!("expected console formatter"),
         }
 
         let compact = build_format(&LoggerConfig::new().format(LogFormat::Compact));

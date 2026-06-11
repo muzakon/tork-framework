@@ -1,5 +1,6 @@
 //! Integration tests for the in-process `TestClient` (HTTP).
 
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,6 +28,36 @@ struct Item {
 #[post("/items")]
 async fn create_item(item: Valid<Item>) -> tork::Result<Item> {
     Ok(item.into_inner())
+}
+
+#[api_model]
+struct Counter {
+    value: i32,
+}
+
+struct ItemId(String);
+
+impl FromStr for ItemId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+#[tork::put("/items/{id}")]
+async fn replace_item(id: ItemId, body: Valid<Counter>) -> tork::Result<serde_json::Value> {
+    Ok(json!({ "id": id.0, "value": body.into_inner().value, "method": "put" }))
+}
+
+#[tork::patch("/items/{id}")]
+async fn patch_item(id: ItemId, body: Valid<Counter>) -> tork::Result<serde_json::Value> {
+    Ok(json!({ "id": id.0, "value": body.into_inner().value, "method": "patch" }))
+}
+
+#[tork::delete("/items/{id}")]
+async fn delete_item(id: ItemId) -> tork::Result<serde_json::Value> {
+    Ok(json!({ "id": id.0, "method": "delete" }))
 }
 
 #[api_model]
@@ -235,6 +266,69 @@ async fn resource_override_wins() {
         response.json::<serde_json::Value>().await.unwrap()["greeting"],
         "override"
     );
+}
+
+#[derive(Clone)]
+struct SequenceState(u32);
+
+#[derive(Clone, Inject)]
+struct SequenceDependency {
+    state: Arc<SequenceState>,
+}
+
+#[get("/dependency")]
+async fn dependency_value(value: SequenceDependency) -> tork::Result<serde_json::Value> {
+    Ok(json!({ "value": value.state.0 }))
+}
+
+#[tokio::test]
+async fn builder_override_dependency_with_and_extra_http_verbs_work() {
+    let next = Arc::new(std::sync::Mutex::new(0u32));
+    let app = App::new().include_router(
+        Router::new()
+            .route(__tork_route_replace_item())
+            .route(__tork_route_patch_item())
+            .route(__tork_route_delete_item())
+            .route(__tork_route_dependency_value()),
+    );
+    let client = TestClient::builder(app)
+        .override_dependency_with({
+            let next = next.clone();
+            move || {
+                let mut guard = next.lock().unwrap();
+                *guard += 1;
+                SequenceDependency {
+                    state: Arc::new(SequenceState(*guard)),
+                }
+            }
+        })
+        .build()
+        .await
+        .unwrap();
+
+    let response = client
+        .put("/items/abc")
+        .json(&json!({ "value": 7 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.json::<serde_json::Value>().await.unwrap(), json!({ "id": "abc", "value": 7, "method": "put" }));
+
+    let response = client
+        .patch("/items/abc")
+        .json(&json!({ "value": 8 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.json::<serde_json::Value>().await.unwrap(), json!({ "id": "abc", "value": 8, "method": "patch" }));
+
+    let response = client.delete("/items/abc").send().await.unwrap();
+    assert_eq!(response.json::<serde_json::Value>().await.unwrap(), json!({ "id": "abc", "method": "delete" }));
+
+    let first = client.get("/dependency").send().await.unwrap();
+    let second = client.get("/dependency").send().await.unwrap();
+    assert_eq!(first.json::<serde_json::Value>().await.unwrap()["value"], 1);
+    assert_eq!(second.json::<serde_json::Value>().await.unwrap()["value"], 2);
 }
 
 #[derive(Clone)]

@@ -4,7 +4,8 @@ use futures_util::stream;
 use serde_json::json;
 use tork::testing::TestClient;
 use tork::{
-    App, BearerToken, Router, Sse, WebSocket, WsCloseCode, WsMessage, api_model, get, sse, websocket,
+    App, BearerToken, FromRequest, RequestContext, Router, Sse, WebSocket, WsCloseCode, WsMessage,
+    api_model, get, sse, websocket,
 };
 
 #[websocket("/ws")]
@@ -18,6 +19,40 @@ async fn ws_echo(socket: WebSocket) -> tork::Result<()> {
             _ => {}
         }
     }
+    Ok(())
+}
+
+struct WsRequestMeta {
+    token: Option<String>,
+    trace: Option<String>,
+}
+
+impl FromRequest for WsRequestMeta {
+    fn from_request(
+        ctx: &RequestContext,
+    ) -> impl std::future::Future<Output = tork::Result<Self>> + Send {
+        let token = ctx.uri().query().and_then(|query| {
+            query.split('&').find_map(|part| {
+                let (name, value) = part.split_once('=')?;
+                (name == "token").then(|| value.to_owned())
+            })
+        });
+        let trace = ctx
+            .headers()
+            .get("x-trace")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        async move { Ok(Self { token, trace }) }
+    }
+}
+
+#[websocket("/meta")]
+async fn ws_meta(socket: WebSocket, meta: WsRequestMeta) -> tork::Result<()> {
+    let mut socket = socket.accept().await?;
+    socket
+        .send_json(&json!({ "token": meta.token, "trace": meta.trace }))
+        .await?;
+    socket.close(WsCloseCode::NormalClosure, "meta").await?;
     Ok(())
 }
 
@@ -73,7 +108,11 @@ async fn websocket_typed_json_message() {
 #[tokio::test]
 async fn websocket_send_json_and_receive_binary_json() {
     let app = App::new()
-        .include_router(Router::new().route(__tork_route_ws_echo()))
+        .include_router(
+            Router::new()
+                .route(__tork_route_ws_echo())
+                .route(__tork_route_ws_meta()),
+        )
         .build_test()
         .await
         .unwrap();
@@ -89,6 +128,19 @@ async fn websocket_send_json_and_receive_binary_json() {
     assert_eq!(data, json!({ "value": 9 }));
 
     ws.close().await.unwrap();
+
+    let mut meta = client
+        .websocket("/meta")
+        .query("token", "abc")
+        .header("x-trace", "trace-1")
+        .subprotocol("json")
+        .connect()
+        .await
+        .unwrap();
+    let data = meta.receive_json::<serde_json::Value>().await.unwrap();
+    assert_eq!(data, json!({ "token": "abc", "trace": "trace-1" }));
+    let close = meta.receive_close().await.unwrap();
+    assert_eq!(close.reason, "meta");
 }
 
 #[tokio::test]

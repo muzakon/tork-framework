@@ -671,9 +671,11 @@ mod tests {
         assert_eq!(file.len(), 5);
         assert!(!file.is_empty());
         assert_eq!(file.bytes(), b"hello");
-        assert_eq!(file.clone().into_bytes(), Bytes::from_static(b"hello"));
         assert_eq!(file.filename(), Some("a.txt"));
         assert_eq!(file.content_type().map(Mime::essence_str), Some("text/plain"));
+
+        let bytes = FileBytes::new(Bytes::from_static(b"hello"), None, None).into_bytes();
+        assert_eq!(bytes, Bytes::from_static(b"hello"));
     }
 
     #[test]
@@ -918,29 +920,32 @@ mod tests {
         let mut form = __parse_multipart(&ctx, UploadConfig::new()).await.unwrap();
         assert_eq!(
             form.take_form_value::<u32>("count").unwrap_err().kind(),
-            crate::error::ErrorKind::UnprocessableEntity
+            crate::error::ErrorKind::Unprocessable
         );
 
         let too_many = "--X\r\nContent-Disposition: form-data; name=\"a\"; filename=\"a.txt\"\r\n\r\nA\r\n\
                         --X\r\nContent-Disposition: form-data; name=\"b\"; filename=\"b.txt\"\r\n\r\nB\r\n--X--\r\n";
         let ctx = ctx_with("multipart/form-data; boundary=X", too_many.as_bytes());
-        let error = __parse_multipart(&ctx, UploadConfig::new().max_files(1))
-            .await
-            .unwrap_err();
+        let error = match __parse_multipart(&ctx, UploadConfig::new().max_files(1)).await {
+            Ok(_) => panic!("expected too many files error"),
+            Err(error) => error,
+        };
         assert_eq!(error.code(), "TOO_MANY_FILES");
 
         let oversized_text = "--X\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n--X--\r\n";
         let ctx = ctx_with("multipart/form-data; boundary=X", oversized_text.as_bytes());
-        let error = __parse_multipart(&ctx, UploadConfig::new().max_body_size(3))
-            .await
-            .unwrap_err();
+        let error = match __parse_multipart(&ctx, UploadConfig::new().max_body_size(3)).await {
+            Ok(_) => panic!("expected payload too large"),
+            Err(error) => error,
+        };
         assert_eq!(error.kind(), crate::error::ErrorKind::PayloadTooLarge);
 
         let oversized_file = "--X\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\n\r\nhello\r\n--X--\r\n";
         let ctx = ctx_with("multipart/form-data; boundary=X", oversized_file.as_bytes());
-        let error = __parse_multipart(&ctx, UploadConfig::new().max_file_size(3))
-            .await
-            .unwrap_err();
+        let error = match __parse_multipart(&ctx, UploadConfig::new().max_file_size(3)).await {
+            Ok(_) => panic!("expected file too large"),
+            Err(error) => error,
+        };
         assert_eq!(error.code(), "FILE_TOO_LARGE");
     }
 
@@ -949,11 +954,17 @@ mod tests {
         let request = http::Request::builder().body(()).unwrap().into_parts().0;
         let body = crate::body::box_body(http_body_util::Full::new(Bytes::new()));
         let ctx = RequestContext::new(request, PathParams::new(), Arc::new(StateMap::new()), body);
-        let error = MultipartForm::parse(&ctx, &UploadConfig::new()).await.unwrap_err();
+        let error = match MultipartForm::parse(&ctx, &UploadConfig::new()).await {
+            Ok(_) => panic!("expected missing content type"),
+            Err(error) => error,
+        };
         assert_eq!(error.message(), "missing Content-Type for multipart form");
 
         let ctx = ctx_with("multipart/form-data", b"");
-        let error = MultipartForm::parse(&ctx, &UploadConfig::new()).await.unwrap_err();
+        let error = match MultipartForm::parse(&ctx, &UploadConfig::new()).await {
+            Ok(_) => panic!("expected invalid boundary"),
+            Err(error) => error,
+        };
         assert_eq!(error.message(), "invalid or missing multipart boundary");
     }
 
@@ -970,10 +981,10 @@ mod tests {
         state.insert(AppUploadConfig(UploadConfig::new().max_file_size(3)));
         let body = crate::body::box_body(http_body_util::Full::new(Bytes::copy_from_slice(body.as_bytes())));
         let ctx = RequestContext::new(head, PathParams::new(), Arc::new(state), body);
-        let error = __parse_multipart(&ctx, UploadConfig::new().max_file_size(10))
+        let mut form = __parse_multipart(&ctx, UploadConfig::new().max_file_size(10))
             .await
             .unwrap();
-        assert!(error.take_upload_file("doc").is_some());
+        assert!(form.take_upload_file("doc").is_some());
     }
 
     #[test]
