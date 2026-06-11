@@ -457,27 +457,9 @@ impl App {
         let addr = addr.as_ref();
         self.validate_lifecycle()
             .inspect_err(|error| eprintln!("{}", error.message()))?;
-
-        // Startup: lifespans (in order) or event hooks.
-        if !self.lifespan.is_empty() {
-            for index in 0..self.lifespan.len() {
-                let ctx = LifespanContext::new();
-                if let Err(error) = self.lifespan[index].startup(ctx, &mut self.state).await {
-                    // Roll back the lifespans that already started, in reverse.
-                    for started in (0..index).rev() {
-                        let _ = self.lifespan[started].shutdown().await;
-                    }
-                    eprintln!("{}", error.message());
-                    return Err(error);
-                }
-            }
-        } else {
-            for hook in &self.on_startup {
-                hook()
-                    .await
-                    .inspect_err(|error| eprintln!("{}", error.message()))?;
-            }
-        }
+        self.run_startup()
+            .await
+            .inspect_err(|error| eprintln!("{}", error.message()))?;
 
         let mut lifespan = std::mem::take(&mut self.lifespan);
         let on_shutdown = std::mem::take(&mut self.on_shutdown);
@@ -503,21 +485,88 @@ impl App {
 
         run_with_shutdown(app, listener, shutdown).await;
 
-        // Shutdown: lifespans in reverse order, or event hooks. Errors are logged.
-        if !lifespan.is_empty() {
-            for cell in lifespan.iter_mut().rev() {
-                if let Err(error) = cell.shutdown().await {
-                    eprintln!("tork: shutdown failed: {}", error.message());
+        run_shutdown(&mut lifespan, &on_shutdown).await;
+        Ok(())
+    }
+
+    /// Runs the startup phase: lifespans in registration order (rolling back the
+    /// already-started ones on failure), or the `on_startup` hooks. Mutates the
+    /// state map with each lifespan's registered resources.
+    async fn run_startup(&mut self) -> Result<()> {
+        if !self.lifespan.is_empty() {
+            for index in 0..self.lifespan.len() {
+                let ctx = LifespanContext::new();
+                if let Err(error) = self.lifespan[index].startup(ctx, &mut self.state).await {
+                    for started in (0..index).rev() {
+                        let _ = self.lifespan[started].shutdown().await;
+                    }
+                    return Err(error);
                 }
             }
         } else {
-            for hook in &on_shutdown {
-                if let Err(error) = hook().await {
-                    eprintln!("tork: shutdown hook failed: {}", error.message());
-                }
+            for hook in &self.on_startup {
+                hook().await?;
             }
         }
+        Ok(())
+    }
 
+    /// Builds the application for in-process testing.
+    ///
+    /// Runs the startup phase (lifespans or `on_startup` hooks) and finalizes the
+    /// app without binding a socket, returning a [`TestApp`] that the
+    /// [`TestClient`](crate::testing::TestClient) drives. The `on_ready` hooks are
+    /// not run, since there is no bound address.
+    pub async fn build_test(mut self) -> Result<TestApp> {
+        self.validate_lifecycle()?;
+        self.run_startup().await?;
+        let lifespan = std::mem::take(&mut self.lifespan);
+        let on_shutdown = std::mem::take(&mut self.on_shutdown);
+        let inner = Arc::new(self.build()?);
+        Ok(TestApp {
+            inner,
+            lifespan,
+            on_shutdown,
+        })
+    }
+}
+
+/// Runs the shutdown phase: lifespans in reverse order, or the `on_shutdown`
+/// hooks. Errors are logged rather than propagated, as shutdown is best-effort.
+async fn run_shutdown(lifespan: &mut [Box<dyn ErasedLifespan>], on_shutdown: &[Hook]) {
+    if !lifespan.is_empty() {
+        for cell in lifespan.iter_mut().rev() {
+            if let Err(error) = cell.shutdown().await {
+                eprintln!("tork: shutdown failed: {}", error.message());
+            }
+        }
+    } else {
+        for hook in on_shutdown {
+            if let Err(error) = hook().await {
+                eprintln!("tork: shutdown hook failed: {}", error.message());
+            }
+        }
+    }
+}
+
+/// An application built for in-process testing.
+///
+/// Produced by [`App::build_test`] and consumed by
+/// [`TestClient`](crate::testing::TestClient). Holds the finalized app plus the
+/// lifespans and `on_shutdown` hooks so [`shutdown`](TestApp::shutdown) can run
+/// the teardown that a real server would run on stop.
+pub struct TestApp {
+    // Read by the test client, which lands in a later commit of this phase.
+    #[allow(dead_code)]
+    pub(crate) inner: Arc<AppInner>,
+    pub(crate) lifespan: Vec<Box<dyn ErasedLifespan>>,
+    pub(crate) on_shutdown: Vec<Hook>,
+}
+
+impl TestApp {
+    /// Runs the shutdown phase (lifespans in reverse, or `on_shutdown` hooks).
+    pub async fn shutdown(mut self) -> Result<()> {
+        run_shutdown(&mut self.lifespan, &self.on_shutdown).await;
         Ok(())
     }
 }

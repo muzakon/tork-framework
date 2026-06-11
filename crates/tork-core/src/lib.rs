@@ -30,7 +30,7 @@ mod sse;
 mod state;
 mod ws;
 
-pub use app::{App, AppInner};
+pub use app::{App, AppInner, TestApp};
 pub use lifespan::{Lifespan, LifespanContext, ReadyContext};
 pub use middleware::{DuplicatePolicy, Middleware, Next, Request};
 pub use multipart::{FileBytes, Form, FromMultipart, Multipart, UploadConfig, UploadFile};
