@@ -23,6 +23,7 @@ use crate::router::{
     BoxFuture, Route, Router, SharedErrorHook, SharedRequestHook, SharedResponseHook,
     SharedValidationErrorHook,
 };
+use crate::multipart::{AppUploadConfig, UploadConfig};
 use crate::ws::{
     AppWsConfig, WebSocketConfig, WsConnectHook, WsConnectInfo, WsDisconnectHook, WsDisconnectInfo,
     WsHooks,
@@ -88,6 +89,7 @@ pub struct App {
     ws_config: Option<WebSocketConfig>,
     on_ws_connect: Vec<WsConnectHook>,
     on_ws_disconnect: Vec<WsDisconnectHook>,
+    upload_config: Option<UploadConfig>,
 }
 
 impl Default for App {
@@ -119,6 +121,7 @@ impl App {
             ws_config: None,
             on_ws_connect: Vec::new(),
             on_ws_disconnect: Vec::new(),
+            upload_config: None,
         }
     }
 
@@ -293,6 +296,14 @@ impl App {
         self
     }
 
+    /// Sets default multipart upload limits for every form/file route.
+    ///
+    /// A route's own `#[post("/p", upload(...))]` limits override these defaults.
+    pub fn upload_config(mut self, config: UploadConfig) -> Self {
+        self.upload_config = Some(config);
+        self
+    }
+
     /// Enables the panic boundary: a panic in a handler is caught and turned into
     /// a `500` response instead of dropping the connection.
     ///
@@ -368,6 +379,7 @@ impl App {
             ws_config,
             on_ws_connect,
             on_ws_disconnect,
+            upload_config,
             ..
         } = self;
 
@@ -381,6 +393,10 @@ impl App {
                 connect: on_ws_connect,
                 disconnect: on_ws_disconnect,
             });
+        }
+        // Make the default upload config available to form/file handlers.
+        if let Some(config) = upload_config {
+            state.insert(AppUploadConfig(config));
         }
 
         let mut routes = Vec::new();

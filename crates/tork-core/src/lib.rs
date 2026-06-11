@@ -17,6 +17,7 @@ mod extract;
 mod hooks;
 mod lifespan;
 pub mod middleware;
+mod multipart;
 mod openapi;
 mod realtime;
 mod resources;
@@ -31,6 +32,11 @@ mod ws;
 pub use app::{App, AppInner};
 pub use lifespan::{Lifespan, LifespanContext, ReadyContext};
 pub use middleware::{DuplicatePolicy, Middleware, Next, Request};
+pub use multipart::{FileBytes, UploadConfig, UploadFile};
+#[doc(hidden)]
+pub use multipart::{MultipartForm, __parse_multipart};
+// Re-exported so handlers can name `Mime` without depending on the `mime` crate.
+pub use mime;
 pub use resources::Resources;
 pub use server::TorkService;
 pub use body::{BoxError, ReqBody, RespBody, box_body};
