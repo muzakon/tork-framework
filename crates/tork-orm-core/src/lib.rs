@@ -15,12 +15,15 @@ pub mod driver;
 mod database;
 mod error;
 mod executor;
+mod model;
 mod row;
 mod value;
 
 pub use database::Database;
+pub use dialect::SqlType;
 pub use error::{ErrorKind, OrmError, Result};
 pub use executor::Executor;
+pub use model::{ColumnDef, ForeignKeyDef, FromRow, Model};
 pub use row::Row;
 pub use value::{BindValue, FromValue, Value};
 

@@ -20,8 +20,6 @@
 #![forbid(unsafe_code)]
 
 pub use tork_orm_core::*;
-// The derive macros land in the next commits; the glob is empty until then.
-#[allow(unused_imports)]
 pub use tork_orm_macros::*;
 
 /// The common imports for working with the ORM.
@@ -31,6 +29,7 @@ pub use tork_orm_macros::*;
 /// types here.
 pub mod prelude {
     pub use crate::{
-        BindValue, Database, ErrorKind, Executor, FromValue, OrmError, Result, Row, Value,
+        BindValue, ColumnDef, Database, ErrorKind, Executor, ForeignKeyDef, FromRow, FromValue,
+        Model, OrmError, Result, Row, SqlType, Value,
     };
 }
