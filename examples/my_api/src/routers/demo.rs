@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use tork::{
-    FileBytes, Form, LastEventId, Multipart, RequestEvent, Sse, SseEvent, WebSocket, WsMessage,
-    api_router, get, post, sse, websocket,
+    FileBytes, Form, LastEventId, Logger, Multipart, RequestEvent, Sse, SseEvent, WebSocket,
+    WsMessage, api_router, get, post, sse, websocket,
 };
 
 use crate::core::app_state::{ChatHub, Config};
@@ -63,9 +63,14 @@ pub mod demo_router {
         Ok(Sse::events(events))
     }
 
-    /// Returns the loaded configuration, showing settings injected as a resource.
+    /// Returns the loaded configuration, showing settings injected as a resource
+    /// and a context-aware logger injected alongside it.
     #[get("/info", response_model = InfoOut, summary = "Show the loaded configuration")]
-    pub async fn info(config: Arc<Config>) -> tork::Result<InfoOut> {
+    pub async fn info(config: Arc<Config>, logger: Logger) -> tork::Result<InfoOut> {
+        logger
+            .info("Reporting configuration")
+            .field("app_name", config.app_name.clone())
+            .emit();
         Ok(InfoOut {
             app_name: config.app_name.clone(),
             environment: config.environment.clone(),

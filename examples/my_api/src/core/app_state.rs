@@ -8,7 +8,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tork::{Error, Hub, LifespanContext, Resources, Result, SecretString, settings};
+use tork::{
+    Error, Hub, LifespanContext, LogFormat, Logger, LoggerConfig, Resources, Result, SecretString,
+    settings,
+};
 
 use crate::models::chat::ChatMessage;
 use crate::models::order::OrderOut;
@@ -101,6 +104,31 @@ impl UserStore {
     }
 }
 
+/// Logging settings, nested inside [`Config`].
+#[settings]
+pub struct LoggingConfig {
+    /// Maximum log level (`trace`/`debug`/`info`/`warn`/`error`).
+    #[setting(default = "info")]
+    pub level: String,
+    /// Output format (`auto`/`pretty`/`compact`/`json`).
+    #[setting(default)]
+    pub format: LogFormat,
+    /// Whether to emit the automatic HTTP request log.
+    #[setting(default = true)]
+    pub request_logs: bool,
+}
+
+impl LoggingConfig {
+    /// Builds the framework logger configuration from these settings.
+    pub fn to_logger(&self) -> LoggerConfig {
+        LoggerConfig::new()
+            .level(self.level.clone())
+            .format(self.format)
+            .service_name("my_api")
+            .request_logs(self.request_logs)
+    }
+}
+
 /// Network settings, nested inside [`Config`].
 #[settings]
 pub struct ServerConfig {
@@ -136,18 +164,22 @@ pub struct Config {
     /// Network settings. Defaults to `ServerConfig`'s own defaults when absent.
     #[setting(nested, default)]
     pub server: ServerConfig,
+    /// Logging settings.
+    #[setting(nested, default)]
+    pub logging: LoggingConfig,
     /// A sample secret; override it through the environment in production.
     #[setting(secret, default = "dev-placeholder-key")]
     pub api_key: SecretString,
 }
 
 /// The application's resource container.
+///
+/// Configuration is loaded in `main` (so it can configure logging) and registered
+/// there as `Arc<Config>`; this container provides the remaining resources.
 #[derive(Clone, Resources)]
 pub struct AppState {
     #[resource]
     pub store: UserStore,
-    #[resource]
-    pub config: Arc<Config>,
     #[resource]
     pub chat: ChatHub,
 }
@@ -156,18 +188,15 @@ pub struct AppState {
 impl AppState {
     /// Acquires the application's resources at startup.
     async fn startup(_ctx: LifespanContext) -> Result<Self> {
-        // Load and validate configuration once; a failure aborts the boot.
-        let config = Arc::new(Config::load()?);
         Ok(AppState {
             store: UserStore::seed(),
-            config,
             chat: ChatHub(Hub::new()),
         })
     }
 
     /// Releases the application's resources at shutdown.
     async fn shutdown(self) -> Result<()> {
-        eprintln!("my_api: application stopped");
+        Logger::new("Lifecycle").info("application stopped").emit();
         Ok(())
     }
 }

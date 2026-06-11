@@ -1,13 +1,15 @@
 //! Binary entrypoint for the example application.
 
-use tork::middleware::{Compression, Cors, RequestId, Trace};
+use std::sync::Arc;
+
+use tork::middleware::{Compression, Cors, RequestId};
 use tork::{
-    App, AsyncApi, ErrorContext, HeaderName, HeaderValue, IntoResponse, Next, OpenApi, PanicEvent,
-    Request, RequestEvent, Response, ResponseEvent, Result, WebSocketConfig, WsConnectInfo,
-    WsDisconnectInfo, middleware,
+    App, AsyncApi, ErrorContext, HeaderName, HeaderValue, IntoResponse, Logger, Next, OpenApi,
+    PanicEvent, Request, Response, Result, WebSocketConfig, WsConnectInfo, WsDisconnectInfo,
+    middleware,
 };
 
-use my_api::core::app_state::AppState;
+use my_api::core::app_state::{AppState, Config};
 use my_api::core::errors::RepoError;
 use my_api::routers::{demo, health, users};
 
@@ -28,13 +30,25 @@ async fn add_process_time(req: Request, next: Next) -> Result<Response> {
 
 /// Maps a `RepoError` into a tailored response.
 async fn handle_repo_error(error: RepoError, ctx: ErrorContext) -> Response {
-    eprintln!("my_api: repo error on {}: {error}", ctx.path());
+    Logger::new("ExceptionHandler")
+        .error("repository error")
+        .field("path", ctx.path().to_owned())
+        .error(&error)
+        .emit();
     tork::Error::service_unavailable("the data store is temporarily unavailable").into_response()
 }
 
 #[tork::main]
 async fn main() -> tork::Result<()> {
+    // Load configuration first so it can configure logging, then register it as a
+    // resource for handlers and services.
+    let config = Config::load()?;
+    let logger = config.logging.to_logger();
+    let config = Arc::new(config);
+
     App::new()
+        .logger(logger)
+        .state(config)
         .lifespan::<AppState>()
         .catch_panics()
         .websocket_config(
@@ -43,18 +57,19 @@ async fn main() -> tork::Result<()> {
                 .idle_timeout_secs(300),
         )
         .on_ws_connect(|info: WsConnectInfo| async move {
-            println!("ws connect {}", info.path());
+            Logger::new("WebSocket")
+                .info("connected")
+                .field("path", info.path().to_owned())
+                .emit();
         })
         .on_ws_disconnect(|info: WsDisconnectInfo| async move {
-            println!(
-                "ws disconnect {} after {:.1?} ({:?})",
-                info.path(),
-                info.duration(),
-                info.close_code()
-            );
+            Logger::new("WebSocket")
+                .info("disconnected")
+                .field("path", info.path().to_owned())
+                .field("duration_ms", info.duration().as_millis() as u64)
+                .emit();
         })
         .middleware(RequestId::new())
-        .middleware(Trace::new())
         .middleware(add_process_time)
         .middleware(
             Cors::new()
@@ -67,20 +82,12 @@ async fn main() -> tork::Result<()> {
         .include_router(health::router())
         .include_router(demo::router())
         .exception_handler::<RepoError, _, _>(handle_repo_error)
-        .on_request(|event: RequestEvent| async move {
-            println!("--> {} {}", event.method(), event.path());
-        })
-        .on_response(|event: ResponseEvent| async move {
-            println!(
-                "<-- {} {} {} ({:.1?})",
-                event.method(),
-                event.path(),
-                event.status(),
-                event.elapsed()
-            );
-        })
         .on_panic(|event: PanicEvent| async move {
-            eprintln!("my_api: handler panicked on {}: {}", event.path(), event.message());
+            Logger::new("ExceptionHandler")
+                .error("handler panicked")
+                .field("path", event.path().to_owned())
+                .field("message", event.message().to_owned())
+                .emit();
         })
         .openapi(
             OpenApi::new()
@@ -95,10 +102,6 @@ async fn main() -> tork::Result<()> {
                 .version("1.0.0")
                 .json("/asyncapi.json"),
         )
-        .on_ready(|ctx| async move {
-            println!("my_api listening on {}", ctx.addr());
-            Ok(())
-        })
         .serve("0.0.0.0:8000")
         .await
 }
