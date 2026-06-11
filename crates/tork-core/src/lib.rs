@@ -32,7 +32,7 @@ mod ws;
 pub use app::{App, AppInner};
 pub use lifespan::{Lifespan, LifespanContext, ReadyContext};
 pub use middleware::{DuplicatePolicy, Middleware, Next, Request};
-pub use multipart::{FileBytes, UploadConfig, UploadFile};
+pub use multipart::{FileBytes, Form, FromMultipart, Multipart, UploadConfig, UploadFile};
 #[doc(hidden)]
 pub use multipart::{MultipartForm, __parse_multipart};
 // Re-exported so handlers can name `Mime` without depending on the `mime` crate.

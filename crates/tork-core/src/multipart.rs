@@ -10,13 +10,16 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use bytes::Bytes;
+use garde::Validate;
 use http::header::CONTENT_TYPE;
 use http_body_util::BodyDataStream;
 use mime::Mime;
+use serde::de::DeserializeOwned;
 use tempfile::SpooledTempFile;
 
 use crate::error::{Error, Result};
-use crate::extract::RequestContext;
+use crate::extract::body::read_body_capped;
+use crate::extract::{FromRequest, RequestContext};
 
 /// Default cap on the total decoded size of a multipart body.
 const DEFAULT_MAX_BODY_SIZE: usize = 16 * 1024 * 1024;
@@ -272,6 +275,68 @@ impl UploadFile {
             Ok((storage, ()))
         })
         .await
+    }
+}
+
+/// An `application/x-www-form-urlencoded` request body, deserialized and validated.
+///
+/// For form submissions without files. With files, use [`Multipart<T>`].
+pub struct Form<T>(pub T);
+
+impl<T> Form<T> {
+    /// Unwraps the parsed form value.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> FromRequest for Form<T>
+where
+    T: DeserializeOwned + Validate<Context = ()> + Send,
+{
+    fn from_request(
+        ctx: &RequestContext,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send {
+        let taken = ctx.take_body();
+        async move {
+            let bytes = read_body_capped(taken?).await?;
+            let value: T = serde_urlencoded::from_bytes(&bytes)
+                .map_err(|_| Error::unprocessable("request body is not a valid form"))?;
+            value.validate().map_err(Error::from_garde_report)?;
+            Ok(Form(value))
+        }
+    }
+}
+
+/// Builds a value from a parsed multipart body.
+///
+/// Implemented by `#[derive(FormModel)]`, which binds each field (text or file)
+/// and runs its validation.
+pub trait FromMultipart: Sized {
+    /// Binds `Self` from the parsed multipart form.
+    fn from_multipart(
+        form: &mut MultipartForm,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send;
+}
+
+/// A `multipart/form-data` request body bound to a form model.
+pub struct Multipart<T>(pub T);
+
+impl<T> Multipart<T> {
+    /// Unwraps the bound form value.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> FromRequest for Multipart<T>
+where
+    T: FromMultipart + Send,
+{
+    async fn from_request(ctx: &RequestContext) -> Result<Self> {
+        let mut form = __parse_multipart(ctx, UploadConfig::new()).await?;
+        let value = T::from_multipart(&mut form).await?;
+        Ok(Multipart(value))
     }
 }
 
@@ -538,5 +603,77 @@ mod tests {
         let merged = route.merge(&app);
         assert_eq!(merged.resolve().max_file_size, 50 * 1024 * 1024);
         assert_eq!(merged.resolve().max_files, 5);
+    }
+
+    use crate::extract::PathParams;
+    use crate::state::StateMap;
+    use std::sync::Arc;
+
+    fn ctx_with(content_type: &str, body: &[u8]) -> RequestContext {
+        let head = http::Request::builder()
+            .header(CONTENT_TYPE, content_type)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let body = crate::body::box_body(http_body_util::Full::new(Bytes::copy_from_slice(body)));
+        RequestContext::new(head, PathParams::new(), Arc::new(StateMap::new()), body)
+    }
+
+    #[derive(serde::Deserialize, garde::Validate)]
+    struct Login {
+        #[garde(length(min = 1))]
+        username: String,
+        #[garde(skip)]
+        password: String,
+    }
+
+    #[tokio::test]
+    async fn form_parses_urlencoded_body() {
+        let ctx = ctx_with(
+            "application/x-www-form-urlencoded",
+            b"username=ada&password=secret",
+        );
+        let form = Form::<Login>::from_request(&ctx).await.unwrap();
+        assert_eq!(form.0.username, "ada");
+        assert_eq!(form.0.password, "secret");
+    }
+
+    struct TokenForm {
+        token: String,
+    }
+
+    impl FromMultipart for TokenForm {
+        async fn from_multipart(form: &mut MultipartForm) -> Result<Self> {
+            let token = form
+                .take_form_value::<String>("token")?
+                .ok_or_else(|| Error::unprocessable("missing token"))?;
+            Ok(TokenForm { token })
+        }
+    }
+
+    #[tokio::test]
+    async fn multipart_binds_a_text_field_and_a_file() {
+        let body = "--X\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nabc123\r\n\
+                    --X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\
+                    Content-Type: text/plain\r\n\r\nhello\r\n--X--\r\n";
+        let ctx = ctx_with("multipart/form-data; boundary=X", body.as_bytes());
+
+        // The text field binds via the model.
+        let bound = Multipart::<TokenForm>::from_request(&ctx).await.unwrap();
+        assert_eq!(bound.0.token, "abc123");
+    }
+
+    #[tokio::test]
+    async fn multipart_form_takes_files_and_values() {
+        let body = "--X\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhi\r\n\
+                    --X\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.bin\"\r\n\r\nDATA\r\n--X--\r\n";
+        let ctx = ctx_with("multipart/form-data; boundary=X", body.as_bytes());
+        let mut form = __parse_multipart(&ctx, UploadConfig::new()).await.unwrap();
+
+        let file = form.take_file_bytes("doc").await.unwrap().expect("file present");
+        assert_eq!(file.bytes(), b"DATA");
+        assert_eq!(file.filename(), Some("a.bin"));
+        assert_eq!(form.take_form_value::<String>("note").unwrap(), Some("hi".to_owned()));
     }
 }
