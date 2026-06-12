@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::HeaderValue;
-use http_body::{Frame, SizeHint};
 use http_body_util::{BodyExt, Full, StreamBody};
 use futures_util::stream;
 use tork::testing::{LogRecorder, TestClient};
@@ -461,7 +460,7 @@ async fn https_redirect_preserves_path_and_query() {
 
 #[tokio::test]
 async fn proxy_headers_spoofing_bypasses_trusted_host_without_proxy_headers() {
-    use tork::middleware::{ProxyHeaders, TrustedHost};
+    use tork::middleware::TrustedHost;
 
     let app = Arc::new(
         App::new()

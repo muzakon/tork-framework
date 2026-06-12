@@ -336,6 +336,54 @@ mod tests {
         assert!(args.sniff);
         assert!(has_file_rule(&args));
     }
+
+    #[test]
+    fn parse_file_args_defaults_and_rule_tokens_cover_helper_branches() {
+        let bare: Attribute = parse_quote!(#[file]);
+        let args = parse_file_args(&bare).unwrap();
+        assert_eq!(args.name, None);
+        assert_eq!(args.max_size, None);
+        assert!(args.content_types.is_empty());
+        assert!(!has_file_rule(&args));
+        let rendered = file_rule_tokens(&krate(), &args).to_string();
+        assert!(rendered.contains("FileRule"));
+        assert!(rendered.contains("None"));
+
+        let attr: Attribute = parse_quote!(#[file(max_size = "1KB")]);
+        let args = parse_file_args(&attr).unwrap();
+        assert!(has_file_rule(&args));
+
+        let ident: Ident = parse_quote!(avatar);
+        let file = file_binding(
+            &krate(),
+            &ident,
+            FileKind::Upload,
+            Multiplicity::Optional,
+            "avatar",
+        )
+        .to_string();
+        assert!(file.contains("take_upload_file"));
+
+        let text = text_binding(
+            &krate(),
+            &ident,
+            &parse_quote!(String),
+            Multiplicity::Many,
+            "tags",
+        )
+        .to_string();
+        assert!(text.contains("take_form_values"));
+
+        let validation = file_validation(
+            &krate(),
+            &ident,
+            FileKind::Bytes,
+            Multiplicity::Many,
+            &args,
+        )
+        .to_string();
+        assert!(validation.contains("__validate_file_bytes"));
+    }
 }
 
 /// Builds the schema property value for one form field, and whether it is

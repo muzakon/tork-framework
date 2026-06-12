@@ -266,6 +266,41 @@ mod tests {
     }
 
     #[test]
+    fn ignores_non_realtime_routes_and_omits_empty_components() {
+        let routes = vec![Route::new(Method::GET, "/ping", dummy_handler())];
+
+        let document = AsyncApi::new().build_document(&routes);
+
+        assert!(document["channels"].as_object().unwrap().is_empty());
+        assert!(document["operations"].as_object().unwrap().is_empty());
+        assert!(document.get("components").is_none());
+    }
+
+    #[test]
+    fn documents_one_sided_stream_and_websocket_channels() {
+        let routes = vec![
+            Route::new(Method::GET, "/ticks", dummy_handler()).streaming(),
+            Route::new(Method::GET, "/in/{room}", dummy_handler())
+                .websocket()
+                .ws_incoming::<serde_json::Value>(),
+            Route::new(Method::GET, "/out/{room}", dummy_handler())
+                .websocket()
+                .ws_outgoing::<serde_json::Value>(),
+        ];
+
+        let document = AsyncApi::new().build_document(&routes);
+
+        assert_eq!(document["channels"]["ticks"]["address"], "/ticks");
+        assert!(document["channels"]["ticks"]["messages"]["data"].is_null());
+        assert!(document["channels"]["in_room"]["messages"]["incoming"].is_object());
+        assert!(document["channels"]["in_room"]["messages"].get("outgoing").is_none());
+        assert!(document["channels"]["out_room"]["messages"]["outgoing"].is_object());
+        assert!(document["channels"]["out_room"]["messages"].get("incoming").is_none());
+        assert_eq!(document["operations"]["in_room_receive"]["action"], "receive");
+        assert_eq!(document["operations"]["out_room_send"]["action"], "send");
+    }
+
+    #[test]
     fn provider_registers_custom_json_route() {
         let provider = AsyncApi::new()
             .title("Realtime")

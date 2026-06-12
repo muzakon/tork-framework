@@ -227,9 +227,7 @@ async fn upload_file_save_to_rejects_path_traversal() {
 }
 
 struct SymlinkState {
-    upload_dir: PathBuf,
     symlink_path: PathBuf,
-    target_file: PathBuf,
 }
 
 #[post("/upload-symlink")]
@@ -257,9 +255,7 @@ async fn upload_file_save_to_rejects_symlink_attack() {
 
     let app = App::new()
         .state(Arc::new(SymlinkState {
-            upload_dir: upload_dir.clone(),
             symlink_path: symlink_path.clone(),
-            target_file: target_file.clone(),
         }))
         .include_router(Router::new().route(__tork_route_upload_symlink()))
         .on_ready(move |ctx| {
