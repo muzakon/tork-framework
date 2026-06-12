@@ -533,6 +533,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn route_tag_deduplicates_repeated_tags() {
+        let route = get("/x").tag("a").tag("a").tag("b");
+        assert_eq!(route.meta().tags, vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    #[test]
+    fn route_meta_default_has_empty_collections() {
+        let meta = RouteMeta::default();
+        assert!(meta.summary.is_none());
+        assert!(meta.description.is_none());
+        assert!(meta.tags.is_empty());
+        assert!(meta.request_schema.is_none());
+        assert!(meta.response_schema.is_none());
+    }
+
     #[tokio::test]
     async fn router_hooks_propagate_to_routes_outer_to_inner() {
         use crate::hooks::{RequestEvent, RequestInfo};
