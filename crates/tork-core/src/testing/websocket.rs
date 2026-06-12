@@ -427,4 +427,48 @@ mod tests {
 
         let _ = server.await;
     }
+
+    #[tokio::test]
+    async fn client_io_duplex_poll_shutdown_completes() {
+        use tokio::io::AsyncWriteExt;
+        let (left, _right) = tokio::io::duplex(16);
+        let mut io = ClientIo::Duplex(left);
+        // Shutdown should complete without error.
+        io.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_io_tcp_poll_shutdown_completes() {
+        use tokio::io::AsyncWriteExt;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut io = ClientIo::Tcp(stream);
+        io.shutdown().await.unwrap();
+        let _ = server.await;
+    }
+
+    #[test]
+    fn builder_keeps_query_parameters() {
+        let shared = Arc::new(Shared {
+            transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
+            default_headers: HeaderMap::new(),
+            cookies: std::sync::Mutex::new(CookieJar::default()),
+        });
+
+        let builder = TestWebSocketBuilder::new(shared, "/ws")
+            .query("a", "1")
+            .query("b", "two");
+
+        assert_eq!(
+            builder.query,
+            vec![
+                ("a".to_owned(), "1".to_owned()),
+                ("b".to_owned(), "two".to_owned()),
+            ]
+        );
+    }
 }
