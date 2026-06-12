@@ -501,8 +501,40 @@ impl TestClientBuilder {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::body::{BoxError, RespBody};
+    use crate::response::Response as TorkResponse;
+    use crate::router::{BoxFuture, HandlerFn, Route, Router};
     use bytes::Bytes;
     use http::header::{CONTENT_TYPE, COOKIE};
+    use http_body::Frame;
+    use http_body_util::{BodyExt, StreamBody};
+    use futures_util::stream;
+    use std::sync::Arc;
+
+    fn json_handler() -> HandlerFn {
+        Arc::new(|_ctx: crate::extract::RequestContext| -> BoxFuture<'static, crate::Result<TorkResponse>> {
+            Box::pin(async { Ok(crate::json_response(crate::StatusCode::OK, &serde_json::json!({ "ok": true }))) })
+        })
+    }
+
+    fn stream_handler() -> HandlerFn {
+        Arc::new(|_ctx: crate::extract::RequestContext| -> BoxFuture<'static, crate::Result<TorkResponse>> {
+            Box::pin(async {
+                let frames = stream::iter(vec![
+                    Ok::<_, BoxError>(Frame::data(Bytes::from_static(b"one"))),
+                    Ok(Frame::data(Bytes::from_static(b"two"))),
+                ]);
+                let body = RespBody::stream(StreamBody::new(frames));
+                let mut response = TorkResponse::new(body);
+                *response.status_mut() = crate::StatusCode::OK;
+                response.headers_mut().insert(
+                    CONTENT_TYPE,
+                    http::HeaderValue::from_static("text/event-stream"),
+                );
+                Ok(response)
+            })
+        })
+    }
 
     fn shared() -> Shared {
         let mut default_headers = HeaderMap::new();
@@ -555,5 +587,52 @@ mod tests {
 
         assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
         assert!(error.message().starts_with("invalid request URI:"));
+    }
+
+    #[tokio::test]
+    async fn real_port_transport_exercises_execute_and_execute_streaming() {
+        let app = App::new()
+            .include_router(
+                Router::new()
+                    .route(Route::new(Method::GET, "/json", json_handler()))
+                    .route(Route::new(Method::GET, "/stream", stream_handler())),
+            )
+            ;
+        let client = TestClient::serve(app).bind_random_port().await.unwrap();
+
+        assert!(client.local_addr().is_some());
+        assert!(client.shared.transport.address().is_some());
+
+        let request = client
+            .shared
+            .build_request(Method::GET, "/json", &[], Vec::new(), PendingBody::default())
+            .unwrap();
+        let (status, headers, bytes) = client.shared.transport.execute(request).await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[CONTENT_TYPE], "application/json");
+        assert!(bytes.contains(&b'o'));
+
+        let request = client
+            .shared
+            .build_request(Method::GET, "/stream", &[], Vec::new(), PendingBody::default())
+            .unwrap();
+        let (status, headers, mut body) = client
+            .shared
+            .transport
+            .execute_streaming(request)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[CONTENT_TYPE], "text/event-stream");
+        let mut saw_data = false;
+        while let Some(frame) = body.frame().await {
+            let frame = frame.unwrap();
+            if frame.into_data().is_ok() {
+                saw_data = true;
+            }
+        }
+        assert!(saw_data);
+
+        client.shutdown().await.unwrap();
     }
 }

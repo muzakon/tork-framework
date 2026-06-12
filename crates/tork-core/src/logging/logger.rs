@@ -258,6 +258,41 @@ mod tests {
         assert!(!output.contains("tenant"), "{output}");
     }
 
+    #[test]
+    fn trace_debug_warn_error_span_and_instrument_cover_helper_methods() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let layer = tracing_subscriber::fmt::layer()
+            .event_format(TorkFormat::Json(JsonFormat {
+                service_name: "svc".to_owned(),
+            }))
+            .with_writer(BufWriter(buffer.clone()));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            Logger::framework("boot")
+                .trace("trace")
+                .emit();
+            Logger::new("worker")
+                .debug("debug")
+                .emit();
+            Logger::new("worker")
+                .warn("warn")
+                .emit();
+            Logger::new("worker")
+                .error("error")
+                .emit();
+            let _ = Logger::new("worker").span("span").enter();
+            let _ = Logger::new("worker").instrument("task");
+        });
+
+        let bytes = buffer.lock().unwrap().clone();
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("\"message\":\"trace\""), "{output}");
+        assert!(output.contains("\"message\":\"debug\""), "{output}");
+        assert!(output.contains("\"message\":\"warn\""), "{output}");
+        assert!(output.contains("\"message\":\"error\""), "{output}");
+    }
+
     #[tokio::test]
     async fn from_request_uses_request_metadata_and_default_context() {
         let head = http::Request::builder()
