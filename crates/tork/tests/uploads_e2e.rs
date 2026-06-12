@@ -162,26 +162,26 @@ async fn uploads_bind_over_tcp() {
 
 struct UploadState {
     upload_dir: PathBuf,
+    outside_path: PathBuf,
 }
 
 #[post("/upload")]
 async fn upload_save(mut file: UploadFile, state: Arc<UploadState>) -> tork::Result<serde_json::Value> {
-    let safe_path = state.upload_dir.join("safe.txt");
-    file.save_to(&safe_path).await?;
+    file.save_to_dir(&state.upload_dir, "safe.txt").await?;
     Ok(serde_json::json!({ "status": "ok" }))
 }
 
-#[post("/upload-traversal")]
-async fn upload_traversal(mut file: UploadFile, state: Arc<UploadState>) -> tork::Result<serde_json::Value> {
-    let traversal_path = state.upload_dir.join("../etc/passwd");
-    file.save_to(&traversal_path).await?;
+#[post("/upload-invalid-path")]
+async fn upload_invalid_path(mut file: UploadFile, state: Arc<UploadState>) -> tork::Result<serde_json::Value> {
+    file.save_to(&state.outside_path).await?;
     Ok(serde_json::json!({ "status": "ok" }))
 }
 
 #[tokio::test]
-async fn upload_file_save_to_rejects_path_traversal() {
+async fn upload_file_save_to_dir_is_safe_and_save_to_rejects_invalid_paths() {
     let temp_dir = TempDir::new().unwrap();
     let upload_dir = temp_dir.path().join("uploads");
+    let outside_path = temp_dir.path().join("../outside.txt");
     fs::create_dir_all(&upload_dir).unwrap();
 
     let (addr_tx, addr_rx) = oneshot::channel();
@@ -189,11 +189,14 @@ async fn upload_file_save_to_rejects_path_traversal() {
     let sender = Arc::new(Mutex::new(Some(addr_tx)));
 
     let app = App::new()
-        .state(Arc::new(UploadState { upload_dir: upload_dir.clone() }))
+        .state(Arc::new(UploadState {
+            upload_dir: upload_dir.clone(),
+            outside_path,
+        }))
         .include_router(
             Router::new()
                 .route(__tork_route_upload_save())
-                .route(__tork_route_upload_traversal()),
+                .route(__tork_route_upload_invalid_path()),
         )
         .on_ready(move |ctx| {
             let sender = sender.clone();
@@ -216,11 +219,10 @@ async fn upload_file_save_to_rejects_path_traversal() {
     let response = post_request(addr, "/upload", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
     assert!(response.contains("HTTP/1.1 200"), "safe upload status: {response}");
 
-    let response = post_request(addr, "/upload-traversal", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 4") || response.contains("HTTP/1.1 5"), "traversal upload should fail: {response}");
+    let response = post_request(addr, "/upload-invalid-path", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
+    assert!(response.contains("HTTP/1.1 400"), "invalid upload path should fail: {response}");
 
     assert!(upload_dir.join("safe.txt").exists());
-    assert!(!PathBuf::from("/etc/passwd").exists() || !fs::read_to_string("/etc/passwd").unwrap_or_default().contains("hello!"));
 
     let _ = shutdown_tx.send(());
     let _ = server.await;
@@ -277,14 +279,10 @@ async fn upload_file_save_to_rejects_symlink_attack() {
     let multipart = "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nmalicious\r\n--B--\r\n";
 
     let response = post_request(addr, "/upload-symlink", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
-    // Current buggy behavior: follows symlinks when saving files
-    // This is a known issue (current-risks.md #22)
-    assert!(response.contains("HTTP/1.1 200"), "symlink upload currently succeeds: {response}");
+    assert!(response.contains("HTTP/1.1 400"), "symlink upload should fail: {response}");
 
-    // The target file is overwritten because symlinks are followed
-    // This demonstrates the vulnerability
     let content = fs::read_to_string(&target_file).unwrap();
-    assert_eq!(content, "malicious");
+    assert_eq!(content, "original");
 
     let _ = shutdown_tx.send(());
     let _ = server.await;

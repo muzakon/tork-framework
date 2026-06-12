@@ -5,8 +5,9 @@
 //! (in memory up to a threshold, then on disk). Handlers consume fields as
 //! [`FileBytes`] (buffered), [`UploadFile`] (spooled), or typed text values.
 
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
 use bytes::Bytes;
@@ -268,14 +269,81 @@ impl UploadFile {
     /// Writes the file to `path`.
     pub async fn save_to<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path = path.as_ref().to_path_buf();
+        validate_save_path(&path)?;
+        self.write_to_path(path).await
+    }
+
+    /// Writes the file into `dir` using a single safe `file_name`.
+    pub async fn save_to_dir<P: AsRef<Path>>(
+        &mut self,
+        dir: P,
+        file_name: impl AsRef<str>,
+    ) -> Result<PathBuf> {
+        let dir = dir.as_ref().to_path_buf();
+        let file_name = file_name.as_ref().to_owned();
+        let target = build_safe_target(&dir, &file_name)?;
+        ensure_target_is_not_symlink(&target)?;
+        self.write_to_path(target.clone()).await?;
+        Ok(target)
+    }
+
+    async fn write_to_path(&mut self, path: PathBuf) -> Result<()> {
         self.with_storage(move |mut storage| {
             storage.seek(SeekFrom::Start(0))?;
-            let mut output = std::fs::File::create(&path)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
             std::io::copy(&mut storage, &mut output)?;
             Ok((storage, ()))
         })
         .await
     }
+}
+
+fn build_safe_target(dir: &Path, file_name: &str) -> Result<PathBuf> {
+    let name_path = Path::new(file_name);
+    let mut components = name_path.components();
+    let Some(Component::Normal(_)) = components.next() else {
+        return Err(Error::bad_request("upload destination filename is not allowed")
+            .with_code("UPLOAD_PATH_INVALID"));
+    };
+    if components.next().is_some() {
+        return Err(Error::bad_request("upload destination filename is not allowed")
+            .with_code("UPLOAD_PATH_INVALID"));
+    }
+    Ok(dir.join(file_name))
+}
+
+fn validate_save_path(path: &Path) -> Result<()> {
+    if path.is_absolute() {
+        return Err(
+            Error::bad_request("upload destination path is not allowed")
+                .with_code("UPLOAD_PATH_INVALID"),
+        );
+    }
+
+    if path.components().any(|component| matches!(component, Component::ParentDir)) {
+        return Err(
+            Error::bad_request("upload destination path is not allowed")
+                .with_code("UPLOAD_PATH_INVALID"),
+        );
+    }
+
+    ensure_target_is_not_symlink(path)?;
+    Ok(())
+}
+
+fn ensure_target_is_not_symlink(path: &Path) -> Result<()> {
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(
+                Error::bad_request("upload destination path is not allowed")
+                    .with_code("UPLOAD_PATH_SYMLINK"),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// An `application/x-www-form-urlencoded` request body, deserialized and validated.
@@ -709,8 +777,7 @@ mod tests {
         assert_eq!(file.read().await.unwrap(), Bytes::from_static(b"hello"));
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.bin");
-        file.save_to(&path).await.unwrap();
+        let path = file.save_to_dir(dir.path(), "out.bin").await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
     }
 
