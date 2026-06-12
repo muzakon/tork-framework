@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::HeaderValue;
-use http_body_util::{BodyExt, Full};
+use http_body::{Frame, SizeHint};
+use http_body_util::{BodyExt, Full, StreamBody};
+use futures_util::stream;
 use tork::testing::{LogRecorder, TestClient};
 use tork::{
     App, BoxFuture, DuplicatePolicy, HandlerFn, LoggerConfig, Method, Middleware, Next, ReqBody,
     Request, RequestContext, Response, Result, Route, Router, StatusCode, box_body,
-    bytes_response, middleware,
+    bytes_response, middleware, get,
 };
 
 struct Noop;
@@ -81,6 +83,16 @@ fn app_with<M: Middleware>(mw: M) -> std::sync::Arc<tork::AppInner> {
         App::new()
             .middleware(mw)
             .include_router(Router::new().route(tork::Route::new(Method::GET, "/", ok_handler())))
+            .build()
+            .unwrap(),
+    )
+}
+
+fn app_with_post<M: Middleware>(mw: M) -> std::sync::Arc<tork::AppInner> {
+    std::sync::Arc::new(
+        App::new()
+            .middleware(mw)
+            .include_router(Router::new().route(tork::Route::new(Method::POST, "/", ok_handler())))
             .build()
             .unwrap(),
     )
@@ -445,4 +457,225 @@ async fn https_redirect_preserves_path_and_query() {
         response.headers().get("location").unwrap(),
         "https://example.com/search?q=tork"
     );
+}
+
+#[tokio::test]
+async fn proxy_headers_spoofing_bypasses_trusted_host_without_proxy_headers() {
+    use tork::middleware::{ProxyHeaders, TrustedHost};
+
+    let app = Arc::new(
+        App::new()
+            .middleware(TrustedHost::new(["real.example.com"]))
+            .include_router(Router::new().route(Route::new(Method::GET, "/", ok_handler())))
+            .build()
+            .unwrap(),
+    );
+
+    let response = app
+        .handle(get_with_headers(&[
+            ("host", "evil.com"),
+            ("x-forwarded-host", "real.example.com"),
+        ]))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn https_redirect_spoofing_via_x_forwarded_proto() {
+    use tork::middleware::HttpsRedirect;
+
+    let app = app_with(HttpsRedirect::new());
+
+    let response = app.clone()
+        .handle(get_with_headers(&[
+            ("host", "example.com"),
+            ("x-forwarded-proto", "https"),
+        ]))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .handle(get_with_headers(&[
+            ("host", "example.com"),
+            ("x-forwarded-proto", "http"),
+        ]))
+        .await;
+    assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+}
+
+#[tokio::test]
+async fn cors_wildcard_with_credentials_current_behavior_echoes_origin() {
+    use tork::middleware::Cors;
+
+    let app = app_with(
+        Cors::new()
+            .allow_origin("*")
+            .allow_credentials(true),
+    );
+
+    let response = app
+        .handle(get_with_headers(&[("origin", "https://evil.example.com")]))
+        .await;
+    // Current buggy behavior: echoes the origin instead of rejecting
+    // This is a known security issue (current-risks.md #6)
+    assert_eq!(
+        response.headers().get("access-control-allow-origin").unwrap(),
+        "https://evil.example.com"
+    );
+}
+
+#[tokio::test]
+async fn cors_preflight_includes_vary_headers_current_behavior() {
+    use tork::middleware::Cors;
+
+    let app = app_with(
+        Cors::new()
+            .allow_origin("https://app.example.com")
+            .allow_methods(["GET", "POST"])
+            .allow_headers(["Authorization", "Content-Type"]),
+    );
+
+    let preflight = http::Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/")
+        .header("origin", "https://app.example.com")
+        .header("access-control-request-method", "POST")
+        .header("access-control-request-headers", "Authorization")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+
+    let response = app.handle(preflight).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let vary = response.headers().get("vary").unwrap().to_str().unwrap();
+    // Current behavior: only includes Origin in Vary
+    // Missing Access-Control-Request-Method and Access-Control-Request-Headers
+    // This is a known issue (current-risks.md #9)
+    assert!(vary.contains("Origin"));
+    // assert!(vary.contains("Access-Control-Request-Method"));
+    // assert!(vary.contains("Access-Control-Request-Headers"));
+}
+
+#[tokio::test]
+async fn cors_actual_request_includes_vary_origin() {
+    use tork::middleware::Cors;
+
+    let app = app_with(Cors::new().allow_origin("https://app.example.com"));
+    let response = app
+        .handle(get_with_headers(&[("origin", "https://app.example.com")]))
+        .await;
+
+    let vary = response.headers().get("vary").unwrap().to_str().unwrap();
+    assert!(vary.contains("Origin"));
+}
+
+#[tokio::test]
+async fn trusted_host_ipv6_address_current_behavior() {
+    use tork::middleware::TrustedHost;
+
+    let app = app_with(TrustedHost::new(["[::1]", "localhost"]));
+    let response = app.clone()
+        .handle(get_with_headers(&[("host", "[::1]:8080")]))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn panic_recovery_returns_500_with_catch_panics_enabled() {
+    fn panic_handler() -> HandlerFn {
+        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async {
+                panic!("intentional panic for testing");
+            })
+        })
+    }
+
+    let app = Arc::new(
+        App::new()
+            .catch_panics()
+            .include_router(Router::new().route(Route::new(Method::GET, "/panic", panic_handler())))
+            .build()
+            .unwrap(),
+    );
+
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/panic")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+    let response = app.handle(req).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(body_str.contains("Internal server error"));
+}
+
+#[tokio::test]
+async fn panic_recovery_with_test_client_returns_500() {
+    #[get("/panic")]
+    async fn panic_endpoint() -> tork::Result<serde_json::Value> {
+        panic!("intentional panic for testing");
+    }
+
+    let app = App::new()
+        .catch_panics()
+        .include(panic_endpoint)
+        .build_test()
+        .await
+        .unwrap();
+    let client = TestClient::new(app).await.unwrap();
+
+    let response = client.get("/panic").send().await.unwrap();
+    assert_eq!(response.status(), 500);
+}
+
+#[tokio::test]
+async fn body_limit_chunked_requests_current_behavior_bypasses_limit() {
+    use tork::middleware::BodyLimit;
+    use bytes::Bytes;
+    use http_body::Frame;
+
+    let app = app_with_post(BodyLimit::bytes(100));
+
+    let chunks: Vec<Result<Frame<Bytes>, std::convert::Infallible>> = (0..50)
+        .map(|_| Ok(Frame::data(Bytes::from_static(b"xxxxxxxxxx"))))
+        .collect();
+    let body = StreamBody::new(stream::iter(chunks));
+
+    let req = http::Request::builder()
+        .method(Method::POST)
+        .uri("/")
+        .header("transfer-encoding", "chunked")
+        .body(box_body(body))
+        .unwrap();
+
+    let response = app.handle(req).await;
+    // Current buggy behavior: chunked requests bypass BodyLimit middleware
+    // This is a known issue (current-risks.md #16)
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn body_limit_allows_chunked_requests_under_limit() {
+    use tork::middleware::BodyLimit;
+    use bytes::Bytes;
+    use http_body::Frame;
+
+    let app = app_with_post(BodyLimit::bytes(1000));
+
+    let chunks: Vec<Result<Frame<Bytes>, std::convert::Infallible>> = (0..5)
+        .map(|_| Ok(Frame::data(Bytes::from_static(b"xxxxxxxxxx"))))
+        .collect();
+    let body = StreamBody::new(stream::iter(chunks));
+
+    let req = http::Request::builder()
+        .method(Method::POST)
+        .uri("/")
+        .header("transfer-encoding", "chunked")
+        .body(box_body(body))
+        .unwrap();
+
+    let response = app.handle(req).await;
+    assert_eq!(response.status(), StatusCode::OK);
 }

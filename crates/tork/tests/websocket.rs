@@ -126,3 +126,37 @@ async fn upgrade_is_rejected_when_a_dependency_fails() {
 
     let _ = shutdown.send(());
 }
+
+#[tokio::test]
+async fn websocket_origin_header_is_present_in_handshake() {
+    let (addr, shutdown) = start().await;
+
+    let request = http::Request::builder()
+        .method("GET")
+        .uri(format!("ws://{addr}/ws"))
+        .header("Host", addr.to_string())
+        .header("Origin", "https://evil.example.com")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+
+    let result = connect_async(request).await;
+
+    // Currently the framework accepts any origin (no validation)
+    // This test documents the current behavior - a proper implementation
+    // would reject untrusted origins with 403
+    match result {
+        Ok((mut socket, _response)) => {
+            socket.close(None).await.unwrap();
+        }
+        Err(WsClientError::Http(response)) => {
+            panic!("unexpected HTTP error: {}", response.status());
+        }
+        other => panic!("expected successful connection, got {other:?}"),
+    }
+
+    let _ = shutdown.send(());
+}
