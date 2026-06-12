@@ -27,6 +27,7 @@ multer.workspace = true
 tempfile.workspace = true
 mime.workspace = true
 infer.workspace = true
+ipnet.workspace = true
 garde.workspace = true
 schemars.workspace = true
 figment.workspace = true

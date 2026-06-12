@@ -6,6 +6,7 @@ use http::header::{
     ACCESS_CONTROL_REQUEST_METHOD, ORIGIN, VARY,
 };
 use http::{HeaderValue, Method, StatusCode};
+use tracing::warn;
 
 use crate::error::Result;
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
@@ -96,16 +97,32 @@ impl Cors {
     fn allow_origin_value(&self, request: &Request) -> Option<HeaderValue> {
         let origin = request.headers().get(ORIGIN)?.to_str().ok()?;
         let any = self.origins.iter().any(|o| o == WILDCARD);
+        if any && self.credentials {
+            warn!("tork: rejecting wildcard CORS configuration because credentials are enabled");
+            return None;
+        }
         let allowed = any || self.origins.iter().any(|o| o == origin);
         if !allowed {
             return None;
         }
-        // `*` cannot be combined with credentials; echo the origin in that case.
-        if any && !self.credentials {
+        if any {
             Some(HeaderValue::from_static(WILDCARD))
         } else {
             HeaderValue::from_str(origin).ok()
         }
+    }
+
+    fn insert_vary(headers: &mut http::HeaderMap, preflight: bool) {
+        headers.insert(
+            VARY,
+            if preflight {
+                HeaderValue::from_static(
+                    "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+                )
+            } else {
+                HeaderValue::from_static("Origin")
+            },
+        );
     }
 }
 
@@ -124,9 +141,9 @@ impl Middleware for Cors {
         if is_preflight {
             let mut response = empty(StatusCode::NO_CONTENT);
             let headers = response.headers_mut();
+            Self::insert_vary(headers, true);
             if let Some(origin) = allow_origin {
                 headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-                headers.insert(VARY, HeaderValue::from_static("Origin"));
             }
             if let Some(methods) = &self.methods {
                 headers.insert(ACCESS_CONTROL_ALLOW_METHODS, methods.clone());
@@ -150,7 +167,7 @@ impl Middleware for Cors {
             if let Some(origin) = allow_origin {
                 let headers = response.headers_mut();
                 headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-                headers.insert(VARY, HeaderValue::from_static("Origin"));
+                Self::insert_vary(headers, false);
                 if let Some(expose) = expose {
                     headers.insert(ACCESS_CONTROL_EXPOSE_HEADERS, expose);
                 }
@@ -222,11 +239,11 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_with_credentials_echoes_origin() {
+    fn wildcard_with_credentials_is_rejected() {
         let cors = Cors::new().allow_origin("*").allow_credentials(true);
         let value = cors.allow_origin_value(&request(Some("https://app.example.com")));
 
-        assert_eq!(value.unwrap(), "https://app.example.com");
+        assert!(value.is_none());
     }
 
     #[test]
@@ -247,5 +264,15 @@ mod tests {
     #[test]
     fn join_handles_single_value() {
         assert_eq!(join(["GET"]).unwrap(), "GET");
+    }
+
+    #[test]
+    fn preflight_vary_includes_method_and_headers() {
+        let mut headers = http::HeaderMap::new();
+        Cors::insert_vary(&mut headers, true);
+        assert_eq!(
+            headers.get(VARY).unwrap(),
+            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        );
     }
 }

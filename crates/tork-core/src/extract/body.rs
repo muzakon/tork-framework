@@ -46,7 +46,7 @@ pub(crate) async fn read_body_capped(mut body: ReqBody) -> Result<Bytes> {
     let mut buffer = BytesMut::new();
 
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| Error::bad_request("request body could not be read"))?;
+        let frame = frame.map_err(map_body_error)?;
 
         if let Ok(data) = frame.into_data() {
             if buffer.len() + data.len() > MAX_BODY_BYTES {
@@ -57,6 +57,13 @@ pub(crate) async fn read_body_capped(mut body: ReqBody) -> Result<Bytes> {
     }
 
     Ok(buffer.freeze())
+}
+
+fn map_body_error(error: crate::body::BoxError) -> Error {
+    match error.downcast::<Error>() {
+        Ok(error) => *error,
+        Err(_) => Error::bad_request("request body could not be read"),
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +107,18 @@ mod tests {
         let error = read_body_capped(body).await.unwrap_err();
         assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
         assert_eq!(error.message(), "request body is too large");
+    }
+
+    #[tokio::test]
+    async fn preserves_payload_too_large_errors_from_the_body() {
+        let body = crate::body::box_body(http_body_util::StreamBody::new(futures_util::stream::iter(vec![
+            Ok::<_, crate::body::BoxError>(http_body::Frame::data(Bytes::from_static(b"hello"))),
+            Err::<http_body::Frame<Bytes>, _>(Box::new(Error::payload_too_large("request body too large")) as crate::body::BoxError),
+        ])));
+
+        let error = read_body_capped(body).await.unwrap_err();
+        assert_eq!(error.kind(), crate::error::ErrorKind::PayloadTooLarge);
+        assert_eq!(error.message(), "request body too large");
     }
 
     #[tokio::test]

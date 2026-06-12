@@ -45,6 +45,7 @@ pub use multipart::{
 };
 // Re-exported so handlers can name `Mime` without depending on the `mime` crate.
 pub use mime;
+pub use ipnet::IpNet;
 pub use resources::Resources;
 pub use server::TorkService;
 pub use body::{BoxError, ReqBody, RespBody, box_body};

@@ -74,6 +74,7 @@ multer = "3.1"
 tempfile = "3.27"
 mime = "0.3.17"
 infer = "0.19"
+ipnet = "2.11"
 
 # Validation and JSON Schema generation.
 garde = { version = "0.23", features = ["derive", "email"] }

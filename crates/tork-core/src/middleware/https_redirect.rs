@@ -5,18 +5,16 @@ use http::header::{HOST, LOCATION};
 use http::{HeaderValue, StatusCode};
 
 use crate::constants::TEXT_PLAIN_UTF8;
+use crate::extract::scheme_from_extensions;
 use crate::error::Result;
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
 use crate::response::{Response, bytes_response};
 use crate::router::BoxFuture;
 
-/// Header set by a terminating proxy to convey the original scheme.
-const FORWARDED_PROTO: &str = "x-forwarded-proto";
-
 /// Redirects plain-HTTP requests to HTTPS with a `308 Permanent Redirect`.
 ///
-/// The scheme is taken from the `X-Forwarded-Proto` header (set by a terminating
-/// proxy) when present, otherwise from the request URI.
+/// The scheme is taken from trusted proxy normalization when present, otherwise
+/// from the request URI.
 pub struct HttpsRedirect;
 
 impl HttpsRedirect {
@@ -68,12 +66,8 @@ impl Middleware for HttpsRedirect {
 
 /// Returns `true` if the request arrived over HTTPS.
 fn is_https(request: &Request) -> bool {
-    if let Some(proto) = request
-        .headers()
-        .get(FORWARDED_PROTO)
-        .and_then(|value| value.to_str().ok())
-    {
-        return proto.eq_ignore_ascii_case("https");
+    if let Some(scheme) = scheme_from_extensions(request.extensions()) {
+        return scheme == crate::extract::RequestScheme::Https;
     }
     request.uri().scheme_str() == Some("https")
 }
@@ -83,19 +77,24 @@ mod tests {
     use super::*;
     use http_body_util::Full;
     use crate::body::box_body;
+    use crate::extract::RequestScheme;
 
-    fn request(uri: &str, forwarded_proto: Option<&str>) -> Request {
-        let mut builder = http::Request::builder().method("GET").uri(uri);
-        if let Some(value) = forwarded_proto {
-            builder = builder.header(FORWARDED_PROTO, value);
+    fn request(uri: &str, scheme: Option<RequestScheme>) -> Request {
+        let mut request = http::Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(box_body(Full::new(Bytes::new())))
+            .unwrap();
+        if let Some(scheme) = scheme {
+            request.extensions_mut().insert(scheme);
         }
-        builder.body(box_body(Full::new(Bytes::new()))).unwrap()
+        request
     }
 
     #[test]
-    fn forwarded_proto_takes_priority() {
-        assert!(is_https(&request("/", Some("https"))));
-        assert!(!is_https(&request("/", Some("http"))));
+    fn trusted_scheme_extension_takes_priority() {
+        assert!(is_https(&request("/", Some(RequestScheme::Https))));
+        assert!(!is_https(&request("/", Some(RequestScheme::Http))));
     }
 
     #[test]
