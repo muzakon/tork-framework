@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::error::Error as WsClientError;
-use tork::{App, BearerToken, Router, WebSocket, WsMessage, api_model, websocket};
+use tork::{App, BearerToken, Router, WebSocket, WebSocketConfig, WsMessage, api_model, websocket};
 
 #[websocket("/ws")]
 async fn echo(socket: WebSocket) -> tork::Result<()> {
@@ -64,32 +64,37 @@ fn websocket_records_asyncapi_metadata() {
 }
 
 /// Starts the server and returns the bound address plus a shutdown handle.
-async fn start() -> (std::net::SocketAddr, oneshot::Sender<()>) {
+async fn start_with_app(app: App) -> (std::net::SocketAddr, oneshot::Sender<()>) {
     let (addr_tx, addr_rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let sender = Arc::new(Mutex::new(Some(addr_tx)));
 
-    let app = App::new()
-        .include_router(
-            Router::new()
-                .route(__tork_route_echo())
-                .route(__tork_route_guarded()),
-        )
-        .on_ready(move |ctx| {
-            let sender = sender.clone();
-            async move {
-                if let Some(tx) = sender.lock().unwrap().take() {
-                    let _ = tx.send(ctx.addr());
-                }
-                Ok(())
+    let app = app.on_ready(move |ctx| {
+        let sender = sender.clone();
+        async move {
+            if let Some(tx) = sender.lock().unwrap().take() {
+                let _ = tx.send(ctx.addr());
             }
-        });
+            Ok(())
+        }
+    });
 
     tokio::spawn(app.serve_with_shutdown("127.0.0.1:0", async move {
         let _ = shutdown_rx.await;
     }));
 
     (addr_rx.await.unwrap(), shutdown_tx)
+}
+
+async fn start() -> (std::net::SocketAddr, oneshot::Sender<()>) {
+    start_with_app(
+        App::new().include_router(
+            Router::new()
+                .route(__tork_route_echo())
+                .route(__tork_route_guarded()),
+        ),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -128,7 +133,7 @@ async fn upgrade_is_rejected_when_a_dependency_fails() {
 }
 
 #[tokio::test]
-async fn websocket_origin_header_is_present_in_handshake() {
+async fn websocket_rejects_cross_origin_browser_handshakes_by_default() {
     let (addr, shutdown) = start().await;
 
     let request = http::Request::builder()
@@ -145,18 +150,65 @@ async fn websocket_origin_header_is_present_in_handshake() {
 
     let result = connect_async(request).await;
 
-    // Currently the framework accepts any origin (no validation)
-    // This test documents the current behavior - a proper implementation
-    // would reject untrusted origins with 403
     match result {
-        Ok((mut socket, _response)) => {
-            socket.close(None).await.unwrap();
-        }
         Err(WsClientError::Http(response)) => {
-            panic!("unexpected HTTP error: {}", response.status());
+            assert_eq!(response.status(), 403);
         }
-        other => panic!("expected successful connection, got {other:?}"),
+        other => panic!("expected an HTTP rejection, got {other:?}"),
     }
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn websocket_accepts_same_origin_browser_handshakes() {
+    let (addr, shutdown) = start().await;
+
+    let request = http::Request::builder()
+        .method("GET")
+        .uri(format!("ws://{addr}/ws"))
+        .header("Host", addr.to_string())
+        .header("Origin", format!("http://{addr}"))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+
+    let (mut socket, _response) = connect_async(request).await.unwrap();
+    socket.close(None).await.unwrap();
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn websocket_origin_allowlist_can_opt_in_to_cross_origin_clients() {
+    let (addr, shutdown) = start_with_app(
+        App::new()
+            .websocket_config(WebSocketConfig::new().allow_origin("https://evil.example.com"))
+            .include_router(
+                Router::new()
+                    .route(__tork_route_echo())
+                    .route(__tork_route_guarded()),
+            ),
+    )
+    .await;
+
+    let request = http::Request::builder()
+        .method("GET")
+        .uri(format!("ws://{addr}/ws"))
+        .header("Host", addr.to_string())
+        .header("Origin", "https://evil.example.com")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+
+    let (mut socket, _response) = connect_async(request).await.unwrap();
+    socket.close(None).await.unwrap();
 
     let _ = shutdown.send(());
 }

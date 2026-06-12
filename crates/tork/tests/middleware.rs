@@ -182,15 +182,15 @@ async fn https_redirect_redirects_plain_http() {
         "https://example.com/"
     );
 
-    // Already HTTPS (per the proxy header) passes through.
+    // An untrusted forwarded scheme is ignored.
     let passed = app_with(HttpsRedirect::new())
         .handle(get_with_headers(&[("x-forwarded-proto", "https")]))
         .await;
-    assert_eq!(passed.status(), StatusCode::OK);
+    assert_eq!(passed.status(), StatusCode::PERMANENT_REDIRECT);
 }
 
 #[tokio::test]
-async fn proxy_headers_rewrites_host_for_trusted_host() {
+async fn proxy_headers_ignore_untrusted_forwarded_host() {
     use tork::middleware::{ProxyHeaders, TrustedHost};
 
     let app = Arc::new(
@@ -209,7 +209,33 @@ async fn proxy_headers_rewrites_host_for_trusted_host() {
             ("x-forwarded-host", "real.example.com"),
         ]))
         .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn proxy_headers_rewrite_host_for_trusted_proxies() {
+    use tork::middleware::{ProxyHeaders, TrustedHost};
+
+    let client = TestClient::serve(
+        App::new()
+            .middleware(ProxyHeaders::new().trust_loopback())
+            .middleware(TrustedHost::new(["real.example.com"]))
+            .include_router(Router::new().route(Route::new(Method::GET, "/", ok_handler()))),
+    )
+    .bind_random_port()
+    .await
+    .unwrap();
+
+    let response = client
+        .get("/")
+        .header("host", "proxy.internal")
+        .header("x-forwarded-host", "real.example.com")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+
+    client.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -406,7 +432,7 @@ async fn trusted_host_accepts_host_with_port() {
 }
 
 #[tokio::test]
-async fn cors_with_credentials_echoes_origin_and_sets_max_age() {
+async fn cors_wildcard_with_credentials_fails_closed_and_keeps_other_headers() {
     use tork::middleware::Cors;
 
     let app = app_with(
@@ -426,10 +452,10 @@ async fn cors_with_credentials_echoes_origin_and_sets_max_age() {
         .unwrap();
 
     let response = app.handle(preflight).await;
-    assert_eq!(
-        response.headers().get("access-control-allow-origin").unwrap(),
-        "https://app.example.com"
-    );
+    assert!(response
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
     assert_eq!(
         response
             .headers()
@@ -491,7 +517,7 @@ async fn https_redirect_spoofing_via_x_forwarded_proto() {
             ("x-forwarded-proto", "https"),
         ]))
         .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
 
     let response = app
         .handle(get_with_headers(&[
@@ -503,7 +529,33 @@ async fn https_redirect_spoofing_via_x_forwarded_proto() {
 }
 
 #[tokio::test]
-async fn cors_wildcard_with_credentials_current_behavior_echoes_origin() {
+async fn https_redirect_honors_trusted_proxy_scheme() {
+    use tork::middleware::{HttpsRedirect, ProxyHeaders};
+
+    let client = TestClient::serve(
+        App::new()
+            .middleware(ProxyHeaders::new().trust_loopback())
+            .middleware(HttpsRedirect::new())
+            .include_router(Router::new().route(Route::new(Method::GET, "/", ok_handler()))),
+    )
+    .bind_random_port()
+    .await
+    .unwrap();
+
+    let response = client
+        .get("/")
+        .header("host", "example.com")
+        .header("x-forwarded-proto", "https")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cors_wildcard_with_credentials_is_rejected() {
     use tork::middleware::Cors;
 
     let app = app_with(
@@ -515,16 +567,14 @@ async fn cors_wildcard_with_credentials_current_behavior_echoes_origin() {
     let response = app
         .handle(get_with_headers(&[("origin", "https://evil.example.com")]))
         .await;
-    // Current buggy behavior: echoes the origin instead of rejecting
-    // This is a known security issue (current-risks.md #6)
-    assert_eq!(
-        response.headers().get("access-control-allow-origin").unwrap(),
-        "https://evil.example.com"
-    );
+    assert!(response
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
 }
 
 #[tokio::test]
-async fn cors_preflight_includes_vary_headers_current_behavior() {
+async fn cors_preflight_includes_full_vary_headers() {
     use tork::middleware::Cors;
 
     let app = app_with(
@@ -547,12 +597,9 @@ async fn cors_preflight_includes_vary_headers_current_behavior() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let vary = response.headers().get("vary").unwrap().to_str().unwrap();
-    // Current behavior: only includes Origin in Vary
-    // Missing Access-Control-Request-Method and Access-Control-Request-Headers
-    // This is a known issue (current-risks.md #9)
     assert!(vary.contains("Origin"));
-    // assert!(vary.contains("Access-Control-Request-Method"));
-    // assert!(vary.contains("Access-Control-Request-Headers"));
+    assert!(vary.contains("Access-Control-Request-Method"));
+    assert!(vary.contains("Access-Control-Request-Headers"));
 }
 
 #[tokio::test]
@@ -580,7 +627,7 @@ async fn trusted_host_ipv6_address_current_behavior() {
 }
 
 #[tokio::test]
-async fn panic_recovery_returns_500_with_catch_panics_enabled() {
+async fn panic_recovery_returns_500_by_default() {
     fn panic_handler() -> HandlerFn {
         Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             Box::pin(async {
@@ -591,7 +638,6 @@ async fn panic_recovery_returns_500_with_catch_panics_enabled() {
 
     let app = Arc::new(
         App::new()
-            .catch_panics()
             .include_router(Router::new().route(Route::new(Method::GET, "/panic", panic_handler())))
             .build()
             .unwrap(),
@@ -618,7 +664,6 @@ async fn panic_recovery_with_test_client_returns_500() {
     }
 
     let app = App::new()
-        .catch_panics()
         .include(panic_endpoint)
         .build_test()
         .await
@@ -630,7 +675,7 @@ async fn panic_recovery_with_test_client_returns_500() {
 }
 
 #[tokio::test]
-async fn body_limit_chunked_requests_current_behavior_bypasses_limit() {
+async fn body_limit_chunked_requests_are_rejected_once_the_stream_crosses_the_limit() {
     use tork::middleware::BodyLimit;
     use bytes::Bytes;
     use http_body::Frame;
@@ -650,9 +695,7 @@ async fn body_limit_chunked_requests_current_behavior_bypasses_limit() {
         .unwrap();
 
     let response = app.handle(req).await;
-    // Current buggy behavior: chunked requests bypass BodyLimit middleware
-    // This is a known issue (current-risks.md #16)
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]
