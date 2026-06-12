@@ -7,9 +7,10 @@
 //! dependencies. There is no blanket implementation, which keeps the trait free
 //! of coherence conflicts.
 
+use std::net::SocketAddr;
 use std::sync::Mutex;
 
-use http::{HeaderMap, Method, Uri};
+use http::{Extensions, HeaderMap, Method, Uri};
 use hyper::upgrade::OnUpgrade;
 
 use crate::body::ReqBody;
@@ -75,6 +76,34 @@ pub struct RequestContext {
     upgrade: Mutex<Option<Upgrade>>,
 }
 
+/// The remote TCP peer address, propagated from the accept loop when present.
+#[derive(Clone, Copy)]
+pub(crate) struct RequestPeerAddr(pub(crate) SocketAddr);
+
+/// The effective request scheme after trusted proxy normalization.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestScheme {
+    Http,
+    Https,
+}
+
+impl RequestScheme {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            RequestScheme::Http => "http",
+            RequestScheme::Https => "https",
+        }
+    }
+}
+
+pub(crate) fn peer_addr_from_extensions(extensions: &Extensions) -> Option<SocketAddr> {
+    extensions.get::<RequestPeerAddr>().map(|peer| peer.0)
+}
+
+pub(crate) fn scheme_from_extensions(extensions: &Extensions) -> Option<RequestScheme> {
+    extensions.get::<RequestScheme>().copied()
+}
+
 impl RequestContext {
     /// Builds a new request context.
     ///
@@ -132,6 +161,17 @@ impl RequestContext {
     /// Returns the request headers.
     pub fn headers(&self) -> &HeaderMap {
         &self.head.headers
+    }
+
+    /// Returns the remote TCP peer address, when the request came through the
+    /// real server rather than an in-process test transport.
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        peer_addr_from_extensions(&self.head.extensions)
+    }
+
+    /// Returns the effective request scheme after trusted proxy normalization.
+    pub fn scheme(&self) -> Option<&'static str> {
+        scheme_from_extensions(&self.head.extensions).map(RequestScheme::as_str)
     }
 
     /// Returns the full request head.

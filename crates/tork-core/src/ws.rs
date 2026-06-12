@@ -19,7 +19,8 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use garde::Validate;
 use http::Method;
 use http::header::{
-    CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE,
+    CONNECTION, HOST, ORIGIN, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION,
+    UPGRADE,
 };
 use http::{HeaderValue, StatusCode};
 use hyper::upgrade::{OnUpgrade, Upgraded};
@@ -36,7 +37,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TgClos
 
 use crate::body::RespBody;
 use crate::error::{Error, Result};
-use crate::extract::RequestContext;
+use crate::extract::{RequestContext, RequestScheme, scheme_from_extensions};
 use crate::response::Response;
 use crate::router::BoxFuture;
 
@@ -192,6 +193,13 @@ pub struct WebSocketConfig {
     max_message_size: Option<usize>,
     max_frame_size: Option<usize>,
     idle_timeout: Option<Duration>,
+    origin_policy: Option<WsOriginPolicy>,
+}
+
+#[derive(Clone)]
+enum WsOriginPolicy {
+    Any,
+    Allowlist(Vec<String>),
 }
 
 impl WebSocketConfig {
@@ -233,12 +241,28 @@ impl WebSocketConfig {
         self.idle_timeout(Duration::from_secs(secs))
     }
 
+    /// Allows a browser `Origin` for this WebSocket endpoint.
+    pub fn allow_origin(mut self, origin: impl Into<String>) -> Self {
+        match &mut self.origin_policy {
+            Some(WsOriginPolicy::Allowlist(allowed)) => allowed.push(origin.into()),
+            _ => self.origin_policy = Some(WsOriginPolicy::Allowlist(vec![origin.into()])),
+        }
+        self
+    }
+
+    /// Allows any browser `Origin`.
+    pub fn allow_any_origin(mut self) -> Self {
+        self.origin_policy = Some(WsOriginPolicy::Any);
+        self
+    }
+
     /// Returns a copy with each unset field taken from `base` (route over app).
     pub(crate) fn merge(self, base: &WebSocketConfig) -> Self {
         Self {
             max_message_size: self.max_message_size.or(base.max_message_size),
             max_frame_size: self.max_frame_size.or(base.max_frame_size),
             idle_timeout: self.idle_timeout.or(base.idle_timeout),
+            origin_policy: self.origin_policy.or_else(|| base.origin_policy.clone()),
         }
     }
 
@@ -648,7 +672,8 @@ impl WebSocketConn {
 /// API. A request that is not a valid WebSocket upgrade is rejected with a
 /// `400 Bad Request` (code `NOT_A_WEBSOCKET`), before the connection is opened.
 #[doc(hidden)]
-pub fn __ws_handshake(ctx: &RequestContext) -> Result<Response> {
+pub fn __ws_handshake(ctx: &RequestContext, route: WebSocketConfig) -> Result<Response> {
+    validate_origin(ctx, &route)?;
     let headers = ctx.headers();
 
     let is_websocket = headers
@@ -694,6 +719,88 @@ pub fn __ws_handshake(ctx: &RequestContext) -> Result<Response> {
     headers.insert(CONNECTION, HeaderValue::from_static("upgrade"));
     headers.insert(SEC_WEBSOCKET_ACCEPT, accept);
     Ok(response)
+}
+
+fn validate_origin(ctx: &RequestContext, route: &WebSocketConfig) -> Result<()> {
+    let Some(origin) = ctx.headers().get(ORIGIN).and_then(|value| value.to_str().ok()) else {
+        return Ok(());
+    };
+
+    let policy = effective_config(ctx, route).origin_policy;
+    match policy {
+        Some(WsOriginPolicy::Any) => Ok(()),
+        Some(WsOriginPolicy::Allowlist(allowed)) => {
+            let actual = parse_origin(origin)
+                .ok_or_else(|| Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))?;
+            let matches = allowed
+                .iter()
+                .filter_map(|origin| parse_origin(origin))
+                .any(|allowed| allowed == actual);
+            if matches {
+                Ok(())
+            } else {
+                Err(Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))
+            }
+        }
+        None => {
+            let actual = parse_origin(origin)
+                .ok_or_else(|| Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))?;
+            let expected = expected_same_origin(ctx)
+                .ok_or_else(|| Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))?;
+            if actual == expected {
+                Ok(())
+            } else {
+                Err(Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))
+            }
+        }
+    }
+}
+
+fn effective_config(ctx: &RequestContext, route: &WebSocketConfig) -> WebSocketConfig {
+    let base = ctx.state()
+        .get::<AppWsConfig>()
+        .map(|config| config.0.clone())
+        .unwrap_or_default();
+    route.clone().merge(&base)
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ParsedOrigin {
+    scheme: &'static str,
+    host: String,
+    port: u16,
+}
+
+fn parse_origin(origin: &str) -> Option<ParsedOrigin> {
+    let uri: http::Uri = origin.parse().ok()?;
+    let scheme = match uri.scheme_str()? {
+        "http" => "http",
+        "https" => "https",
+        _ => return None,
+    };
+    let authority = uri.authority()?;
+    Some(ParsedOrigin {
+        scheme,
+        host: authority.host().to_ascii_lowercase(),
+        port: authority.port_u16().unwrap_or(default_port(scheme)),
+    })
+}
+
+fn expected_same_origin(ctx: &RequestContext) -> Option<ParsedOrigin> {
+    let scheme = scheme_from_extensions(&ctx.head().extensions)
+        .unwrap_or(RequestScheme::Http)
+        .as_str();
+    let host = ctx.headers().get(HOST)?.to_str().ok()?;
+    let authority: http::uri::Authority = host.parse().ok()?;
+    Some(ParsedOrigin {
+        scheme,
+        host: authority.host().to_ascii_lowercase(),
+        port: authority.port_u16().unwrap_or(default_port(scheme)),
+    })
+}
+
+fn default_port(scheme: &str) -> u16 {
+    if scheme == "https" { 443 } else { 80 }
 }
 
 /// Deserializes a JSON message and runs its `garde` validation.
@@ -802,6 +909,10 @@ mod tests {
             ("sec-websocket-version", "13"),
             ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
         ]
+    }
+
+    fn default_route_config() -> WebSocketConfig {
+        WebSocketConfig::new()
     }
 
     #[test]
@@ -915,7 +1026,7 @@ mod tests {
     #[test]
     fn handshake_validates_required_headers() {
         let ctx = request_context(&[]);
-        let error = match __ws_handshake(&ctx) {
+        let error = match __ws_handshake(&ctx, default_route_config()) {
             Ok(_) => panic!("expected handshake rejection"),
             Err(error) => error,
         };
@@ -927,7 +1038,7 @@ mod tests {
             ("sec-websocket-version", "13"),
             ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
         ]);
-        let error = match __ws_handshake(&ctx) {
+        let error = match __ws_handshake(&ctx, default_route_config()) {
             Ok(_) => panic!("expected handshake rejection"),
             Err(error) => error,
         };
@@ -942,7 +1053,7 @@ mod tests {
             ("sec-websocket-version", "12"),
             ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
         ]);
-        let error = match __ws_handshake(&ctx) {
+        let error = match __ws_handshake(&ctx, default_route_config()) {
             Ok(_) => panic!("expected handshake rejection"),
             Err(error) => error,
         };
@@ -953,7 +1064,7 @@ mod tests {
             ("connection", "upgrade"),
             ("sec-websocket-version", "13"),
         ]);
-        let error = match __ws_handshake(&ctx) {
+        let error = match __ws_handshake(&ctx, default_route_config()) {
             Ok(_) => panic!("expected handshake rejection"),
             Err(error) => error,
         };
@@ -963,11 +1074,74 @@ mod tests {
     #[test]
     fn handshake_builds_switching_protocols_response() {
         let ctx = request_context(&websocket_headers());
-        let response = __ws_handshake(&ctx).unwrap();
+        let response = __ws_handshake(&ctx, default_route_config()).unwrap();
         assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
         assert_eq!(response.headers()[UPGRADE], "websocket");
         assert_eq!(response.headers()[CONNECTION], "upgrade");
         assert!(response.headers().contains_key(SEC_WEBSOCKET_ACCEPT));
+    }
+
+    #[test]
+    fn handshake_rejects_cross_origin_by_default_and_accepts_same_origin() {
+        let ctx = request_context(&[
+            ("host", "example.com"),
+            ("origin", "https://evil.example.com"),
+            ("upgrade", "websocket"),
+            ("connection", "upgrade"),
+            ("sec-websocket-version", "13"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ]);
+        let error = match __ws_handshake(&ctx, default_route_config()) {
+            Ok(_) => panic!("expected handshake rejection"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), crate::ErrorKind::Forbidden);
+        assert_eq!(error.code(), "WS_ORIGIN_FORBIDDEN");
+
+        let mut head = http::Request::builder()
+            .method(Method::GET)
+            .uri("/ws")
+            .header("host", "example.com")
+            .header("origin", "https://example.com")
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        head.extensions.insert(RequestScheme::Https);
+        let ctx = RequestContext::new(
+            head,
+            PathParams::new(),
+            Arc::new(StateMap::new()),
+            box_body(Full::new(Bytes::new())),
+        );
+        let response = __ws_handshake(&ctx, default_route_config()).unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    }
+
+    #[test]
+    fn allowlists_and_allow_any_origin_override_same_origin_policy() {
+        let ctx = request_context(&[
+            ("host", "example.com"),
+            ("origin", "https://evil.example.com"),
+            ("upgrade", "websocket"),
+            ("connection", "upgrade"),
+            ("sec-websocket-version", "13"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ]);
+
+        let response = __ws_handshake(
+            &ctx,
+            WebSocketConfig::new().allow_origin("https://evil.example.com"),
+        )
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+        let response = __ws_handshake(&ctx, WebSocketConfig::new().allow_any_origin()).unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
     }
 
     #[test]

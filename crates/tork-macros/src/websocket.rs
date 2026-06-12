@@ -22,6 +22,8 @@ struct WsArgs {
     max_message_size: Option<usize>,
     max_frame_size: Option<usize>,
     idle_timeout_ms: Option<u64>,
+    origins: Vec<LitStr>,
+    allow_any_origin: bool,
     incoming: Option<Type>,
     outgoing: Option<Type>,
     /// Enclosing router prefix, injected by `#[api_router]`.
@@ -45,6 +47,8 @@ impl Parse for WsArgs {
             max_message_size: None,
             max_frame_size: None,
             idle_timeout_ms: None,
+            origins: Vec::new(),
+            allow_any_origin: false,
             incoming: None,
             outgoing: None,
             prefix_hint: None,
@@ -75,6 +79,10 @@ impl Parse for WsArgs {
                     let value: LitStr = input.parse()?;
                     args.idle_timeout_ms = Some(parse_duration_ms(&value)?);
                 }
+                "allow_any_origin" => {
+                    let value: syn::LitBool = input.parse()?;
+                    args.allow_any_origin = value.value;
+                }
                 "incoming" => args.incoming = Some(input.parse()?),
                 "outgoing" => args.outgoing = Some(input.parse()?),
                 "tags" => {
@@ -82,6 +90,12 @@ impl Parse for WsArgs {
                     bracketed!(content in input);
                     let items = Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?;
                     args.tags = items.into_iter().collect();
+                }
+                "origins" => {
+                    let content;
+                    bracketed!(content in input);
+                    let items = Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?;
+                    args.origins = items.into_iter().collect();
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -140,6 +154,12 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
         config_expr =
             quote! { #config_expr.idle_timeout(::core::time::Duration::from_millis(#ms)) };
     }
+    for origin in &args.origins {
+        config_expr = quote! { #config_expr.allow_origin(#origin) };
+    }
+    if args.allow_any_origin {
+        config_expr = quote! { #config_expr.allow_any_origin() };
+    }
 
     // Bind each parameter: the `WebSocket` parameter is the socket, the rest are
     // path parameters or dependencies. Bindings run before the upgrade is spawned.
@@ -172,7 +192,7 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
         if is_websocket_type(ty) {
             socket_count += 1;
             bindings.push(quote! {
-                let #ident = #krate::WebSocket::from_request_context(&ctx, #config_expr)?;
+                let #ident = #krate::WebSocket::from_request_context(&ctx, __ws_config.clone())?;
             });
         } else if placeholders.contains(&name) {
             bindings.push(quote! {
@@ -226,9 +246,10 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
                 |ctx: #krate::RequestContext|
                     -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
                     ::std::boxed::Box::pin(async move {
+                        let __ws_config = #config_expr;
                         // Validate the handshake and resolve dependencies before
                         // the upgrade; any failure rejects with an HTTP error.
-                        let __response = #krate::__ws_handshake(&ctx)?;
+                        let __response = #krate::__ws_handshake(&ctx, __ws_config.clone())?;
                         #(#bindings)*
                         #krate::__rt::spawn(async move {
                             if let ::core::result::Result::Err(__error) =
@@ -269,7 +290,7 @@ mod tests {
     #[test]
     fn ws_args_parse_options_and_reject_unknown_keys() {
         let args: WsArgs = parse_str(
-            "\"/ws\", summary = \"sum\", description = \"desc\", max_message_size = \"2kb\", max_frame_size = \"1kb\", idle_timeout = \"5s\", incoming = Inbound, outgoing = Outbound, tags = [\"chat\"], __prefix = \"/api\"",
+            "\"/ws\", summary = \"sum\", description = \"desc\", max_message_size = \"2kb\", max_frame_size = \"1kb\", idle_timeout = \"5s\", incoming = Inbound, outgoing = Outbound, tags = [\"chat\"], origins = [\"https://app.example.com\"], allow_any_origin = true, __prefix = \"/api\"",
         )
         .unwrap();
         assert_eq!(args.path.value(), "/ws");
@@ -278,6 +299,8 @@ mod tests {
         assert_eq!(args.max_frame_size, Some(1024));
         assert_eq!(args.idle_timeout_ms, Some(5000));
         assert_eq!(args.tags.len(), 1);
+        assert_eq!(args.origins.len(), 1);
+        assert!(args.allow_any_origin);
         assert_eq!(args.prefix_hint.unwrap().value(), "/api");
 
         let error = match parse_str::<WsArgs>("\"/ws\", nope = 1") {
@@ -323,7 +346,7 @@ mod tests {
     #[test]
     fn expand_ws_emits_handshake_bindings_and_metadata() {
         let args: WsArgs = parse_str(
-            "\"/ws/{room}\", summary = \"sum\", description = \"desc\", max_message_size = \"2kb\", max_frame_size = \"1kb\", idle_timeout = \"10s\", incoming = InMsg, outgoing = OutMsg, tags = [\"chat\"]",
+            "\"/ws/{room}\", summary = \"sum\", description = \"desc\", max_message_size = \"2kb\", max_frame_size = \"1kb\", idle_timeout = \"10s\", incoming = InMsg, outgoing = OutMsg, tags = [\"chat\"], origins = [\"https://app.example.com\"]",
         )
         .unwrap();
         let func: ItemFn = parse_quote! {
@@ -332,6 +355,7 @@ mod tests {
         let tokens = expand_ws(args, func).unwrap().to_string();
         assert!(tokens.contains("__ws_handshake"));
         assert!(tokens.contains("WebSocketConfig :: new () . max_message_size"));
+        assert!(tokens.contains(". allow_origin (\"https://app.example.com\")"));
         assert!(tokens.contains("__extract_path_param"));
         assert!(tokens.contains("FromRequest"));
         assert!(tokens.contains(". websocket ()"));
@@ -445,6 +469,16 @@ mod tests {
         assert!(tokens.contains("5000"));
         assert!(!tokens.contains("max_message_size"));
         assert!(!tokens.contains("max_frame_size"));
+    }
+
+    #[test]
+    fn expand_ws_allow_any_origin_alone() {
+        let args: WsArgs = parse_str("\"/ws\", allow_any_origin = true").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("allow_any_origin"));
     }
 
     #[test]

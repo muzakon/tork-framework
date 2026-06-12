@@ -17,6 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::app::AppInner;
 use crate::body::{RespBody, box_body};
 use crate::constants::GRACEFUL_SHUTDOWN_TIMEOUT;
+use crate::extract::RequestPeerAddr;
 
 /// A Hyper [`Service`] that hands each request to the application.
 ///
@@ -26,12 +27,23 @@ use crate::constants::GRACEFUL_SHUTDOWN_TIMEOUT;
 #[derive(Clone)]
 pub struct TorkService {
     app: Arc<AppInner>,
+    peer_addr: Option<std::net::SocketAddr>,
 }
 
 impl TorkService {
     /// Creates a service backed by the given application core.
     pub fn new(app: Arc<AppInner>) -> Self {
-        Self { app }
+        Self {
+            app,
+            peer_addr: None,
+        }
+    }
+
+    pub(crate) fn with_peer_addr(app: Arc<AppInner>, peer_addr: std::net::SocketAddr) -> Self {
+        Self {
+            app,
+            peer_addr: Some(peer_addr),
+        }
     }
 }
 
@@ -42,9 +54,13 @@ impl Service<Request<Incoming>> for TorkService {
 
     fn call(&self, request: Request<Incoming>) -> Self::Future {
         let app = self.app.clone();
+        let peer_addr = self.peer_addr;
         Box::pin(async move {
             // Erase the connection body into the runtime's request body type.
-            let (parts, incoming) = request.into_parts();
+            let (mut parts, incoming) = request.into_parts();
+            if let Some(peer_addr) = peer_addr {
+                parts.extensions.insert(RequestPeerAddr(peer_addr));
+            }
             let request = Request::from_parts(parts, box_body(incoming));
             Ok(app.handle(request).await)
         })
@@ -105,7 +121,7 @@ async fn handle_accepted_connection<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (stream, _peer) = match accepted {
+    let (stream, peer) = match accepted {
         Ok(pair) => pair,
         // Transient accept errors (for example, fd exhaustion) should
         // not bring the server down; skip and keep accepting.
@@ -113,7 +129,7 @@ where
     };
 
     let io = TokioIo::new(stream);
-    let service = TorkService::new(app.clone());
+    let service = TorkService::with_peer_addr(app.clone(), peer);
     let connection = builder.serve_connection_with_upgrades(io, service);
     let watched = graceful.watch(connection.into_owned());
 
