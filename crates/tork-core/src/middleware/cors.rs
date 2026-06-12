@@ -236,4 +236,16 @@ mod tests {
         assert!(cors.allow_origin_value(&request(Some("https://evil.example.com"))).is_none());
         assert!(cors.allow_origin_value(&request(None)).is_none());
     }
+
+    #[test]
+    fn exact_allow_list_accepts_listed_origin() {
+        let cors = Cors::new().allow_origin("https://good.example.com");
+        let value = cors.allow_origin_value(&request(Some("https://good.example.com")));
+        assert_eq!(value.unwrap(), "https://good.example.com");
+    }
+
+    #[test]
+    fn join_handles_single_value() {
+        assert_eq!(join(["GET"]).unwrap(), "GET");
+    }
 }
