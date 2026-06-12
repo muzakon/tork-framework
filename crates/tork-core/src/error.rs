@@ -609,4 +609,135 @@ mod tests {
         assert_eq!(error.details()[0].field, "name");
         assert_eq!(error.details()[0].issue, "TOO_SHORT");
     }
+
+    #[test]
+    fn status_mapping_covers_every_kind() {
+        use ErrorKind::*;
+        assert_eq!(BadRequest.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(Unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(Forbidden.status(), StatusCode::FORBIDDEN);
+        assert_eq!(NotFound.status(), StatusCode::NOT_FOUND);
+        assert_eq!(MethodNotAllowed.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(Conflict.status(), StatusCode::CONFLICT);
+        assert_eq!(Unprocessable.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(PayloadTooLarge.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(TooManyRequests.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(Internal.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(ServiceUnavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(GatewayTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[test]
+    fn code_mapping_covers_every_kind() {
+        use ErrorKind::*;
+        assert_eq!(BadRequest.code(), "BAD_REQUEST");
+        assert_eq!(Unauthorized.code(), "UNAUTHORIZED");
+        assert_eq!(Forbidden.code(), "FORBIDDEN");
+        assert_eq!(NotFound.code(), "NOT_FOUND");
+        assert_eq!(MethodNotAllowed.code(), "METHOD_NOT_ALLOWED");
+        assert_eq!(Conflict.code(), "CONFLICT");
+        assert_eq!(Unprocessable.code(), "UNPROCESSABLE_ENTITY");
+        assert_eq!(PayloadTooLarge.code(), "PAYLOAD_TOO_LARGE");
+        assert_eq!(TooManyRequests.code(), "TOO_MANY_REQUESTS");
+        assert_eq!(Internal.code(), "INTERNAL_SERVER_ERROR");
+        assert_eq!(ServiceUnavailable.code(), "SERVICE_UNAVAILABLE");
+        assert_eq!(GatewayTimeout.code(), "GATEWAY_TIMEOUT");
+    }
+
+    #[test]
+    fn method_not_allowed_constructor_uses_method_not_allowed_kind() {
+        let error = Error::method_not_allowed("GET not allowed");
+        assert_eq!(error.kind(), ErrorKind::MethodNotAllowed);
+        assert_eq!(error.message(), "GET not allowed");
+    }
+
+    #[test]
+    fn conflict_constructor_uses_conflict_kind() {
+        let error = Error::conflict("duplicate key");
+        assert_eq!(error.kind(), ErrorKind::Conflict);
+        assert_eq!(error.message(), "duplicate key");
+    }
+
+    #[test]
+    fn too_many_requests_constructor_uses_too_many_requests_kind() {
+        let error = Error::too_many_requests("slow down");
+        assert_eq!(error.kind(), ErrorKind::TooManyRequests);
+        assert_eq!(error.message(), "slow down");
+    }
+
+    #[test]
+    fn service_unavailable_constructor_uses_service_unavailable_kind() {
+        let error = Error::service_unavailable("maintenance");
+        assert_eq!(error.kind(), ErrorKind::ServiceUnavailable);
+        assert_eq!(error.message(), "maintenance");
+    }
+
+    #[test]
+    fn error_trait_source_returns_attached_source() {
+        use std::error::Error as _;
+        let error = Error::internal("boom").with_source(SampleCause("inner"));
+        let source = error.source().expect("source should be present");
+        assert_eq!(source.to_string(), "inner");
+    }
+
+    #[test]
+    fn error_trait_source_is_none_when_unset() {
+        use std::error::Error as _;
+        let error = Error::internal("boom");
+        assert!(error.source().is_none());
+    }
+
+    #[test]
+    fn take_source_restores_state_when_downcast_defensively_fails() {
+        // Simulate a state where the recorded TypeId points to SampleCause
+        // but the boxed source is something else. This exercises the
+        // defensive downcast-failure branch (line ~318 in source).
+        let mut error = Error::internal("boom");
+        error.source = Some(Box::new(OtherCause));
+        error.source_type = Some(TypeId::of::<SampleCause>());
+
+        // The take must return None and the state must be preserved.
+        assert!(error.take_source::<SampleCause>().is_none());
+        assert_eq!(error.source_type, Some(TypeId::of::<SampleCause>()));
+    }
+
+    #[test]
+    fn sample_cause_display_formats_inner_message() {
+        assert_eq!(SampleCause("payload").to_string(), "payload");
+    }
+
+    #[test]
+    fn other_cause_display_formats_inner_message() {
+        assert_eq!(OtherCause.to_string(), "other");
+    }
+
+    #[test]
+    fn fallback_body_constant_is_valid_json() {
+        let parsed: Value = serde_json::from_slice(FALLBACK_ERROR_BODY).unwrap();
+        assert_eq!(parsed["status"], 500);
+        assert_eq!(parsed["code"], "INTERNAL_SERVER_ERROR");
+    }
+
+    #[test]
+    fn classify_issue_recognizes_email_format() {
+        assert_eq!(classify_issue("email is not valid"), "INVALID_FORMAT");
+        assert_eq!(classify_issue("Email is invalid"), "INVALID_FORMAT");
+    }
+
+    #[test]
+    fn classify_issue_recognizes_too_long() {
+        assert_eq!(classify_issue("length is greater than 10"), "TOO_LONG");
+    }
+
+    #[test]
+    fn classify_issue_recognizes_strict_numeric_bounds() {
+        assert_eq!(classify_issue("value must be greater than 0"), "TOO_SMALL");
+        assert_eq!(classify_issue("value must be less than 100"), "TOO_LARGE");
+    }
+
+    #[test]
+    fn classify_issue_falls_back_to_generic() {
+        assert_eq!(classify_issue("something unrelated"), "INVALID");
+        assert_eq!(classify_issue(""), "INVALID");
+    }
 }
