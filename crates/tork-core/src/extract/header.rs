@@ -163,4 +163,74 @@ mod tests {
         let resume = SseResume::<i64>::from_request(&ctx).await.unwrap();
         assert_eq!(resume.into_inner(), None);
     }
+
+    #[tokio::test]
+    async fn bearer_token_happy_path() {
+        let ctx = context_with(Some(("Authorization", "Bearer abc123")));
+        let token = BearerToken::from_request(&ctx).await.unwrap();
+        assert_eq!(token.token(), "abc123");
+    }
+
+    #[tokio::test]
+    async fn bearer_token_missing_header_is_unauthorized() {
+        let ctx = context_with(None);
+        let error = match BearerToken::from_request(&ctx).await {
+            Ok(_) => panic!("missing header must fail"),
+            Err(e) => e,
+        };
+        assert_eq!(error.kind(), crate::error::ErrorKind::Unauthorized);
+        assert_eq!(error.message(), "missing Authorization header");
+    }
+
+    #[tokio::test]
+    async fn bearer_token_invalid_utf8_header_is_unauthorized() {
+        let mut builder = http::Request::builder();
+        builder = builder.header("Authorization", http::HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap());
+        let head = builder.body(()).unwrap().into_parts().0;
+        let body = box_body(Full::new(Bytes::new()));
+        let ctx = RequestContext::new(head, PathParams::new(), Arc::new(StateMap::new()), body);
+
+        let error = match BearerToken::from_request(&ctx).await {
+            Ok(_) => panic!("non-utf8 must fail"),
+            Err(e) => e,
+        };
+        assert_eq!(error.kind(), crate::error::ErrorKind::Unauthorized);
+        assert_eq!(error.message(), "invalid Authorization header");
+    }
+
+    #[tokio::test]
+    async fn bearer_token_wrong_scheme_is_unauthorized() {
+        for scheme in ["Basic dXNlcjpwYXNz", "Token xyz", "BearerLower xyz", ""] {
+            let ctx = context_with(Some(("Authorization", scheme)));
+            let error = match BearerToken::from_request(&ctx).await {
+                Ok(_) => panic!("scheme `{scheme}` must fail"),
+                Err(e) => e,
+            };
+            assert_eq!(error.kind(), crate::error::ErrorKind::Unauthorized);
+            assert_eq!(error.message(), "expected a bearer token");
+        }
+    }
+
+    #[tokio::test]
+    async fn last_event_id_into_inner_some_branch() {
+        let ctx = context_with(Some(("last-event-id", "hello")));
+        let id = LastEventId::from_request(&ctx).await.unwrap();
+        assert_eq!(id.into_inner(), Some("hello".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn sse_resume_missing_header_yields_none() {
+        let ctx = context_with(None);
+        let resume = SseResume::<u32>::from_request(&ctx).await.unwrap();
+        assert_eq!(resume.last_id(), None);
+        assert_eq!(resume.into_inner(), None);
+    }
+
+    #[tokio::test]
+    async fn sse_resume_valid_value_is_accessible_via_both_accessors() {
+        let ctx = context_with(Some(("last-event-id", "42")));
+        let resume = SseResume::<u32>::from_request(&ctx).await.unwrap();
+        assert_eq!(resume.last_id().copied(), Some(42));
+        assert_eq!(resume.into_inner(), Some(42));
+    }
 }
