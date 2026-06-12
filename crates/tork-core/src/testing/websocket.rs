@@ -325,8 +325,34 @@ fn decode_error(error: serde_json::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use crate::app::App;
+    use super::super::cookie::CookieJar;
+    use super::super::client::{Shared, Transport};
+    use http::HeaderMap;
+    use std::sync::Arc;
     use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn builder_ignores_invalid_headers_and_keeps_query_and_subprotocols() {
+        let shared = Arc::new(Shared {
+            transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
+            default_headers: HeaderMap::new(),
+            cookies: std::sync::Mutex::new(CookieJar::default()),
+        });
+
+        let builder = TestWebSocketBuilder::new(shared, "/ws")
+            .header("x-good", "ok")
+            .header("bad name", "ignored")
+            .header("x-bad-value", "line\nbreak")
+            .query("room", "main hall")
+            .subprotocol("json")
+            .subprotocol("binary");
+
+        assert_eq!(builder.headers.len(), 1);
+        assert_eq!(builder.query, vec![("room".to_owned(), "main hall".to_owned())]);
+        assert_eq!(builder.subprotocols, vec!["json".to_owned(), "binary".to_owned()]);
+    }
 
     #[test]
     fn rejected_error_uses_stable_code() {

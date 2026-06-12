@@ -315,6 +315,21 @@ mod tests {
     }
 
     #[test]
+    fn build_document_keeps_custom_info_fields() {
+        let routes = vec![Route::new(Method::GET, "/events", dummy_handler()).streaming()];
+        let document = AsyncApi::new()
+            .title("Realtime")
+            .version("2.0.0")
+            .description("Event stream docs")
+            .build_document(&routes);
+
+        assert_eq!(document["info"]["title"], "Realtime");
+        assert_eq!(document["info"]["version"], "2.0.0");
+        assert_eq!(document["info"]["description"], "Event stream docs");
+        assert_eq!(document["channels"]["events"]["address"], "/events");
+    }
+
+    #[test]
     fn channel_name_covers_root_and_placeholders() {
         assert_eq!(channel_name("/"), "root");
         assert_eq!(channel_name("/chat/{room}/members"), "chat_room_members");

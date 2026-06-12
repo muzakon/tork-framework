@@ -814,6 +814,35 @@ mod tests {
     }
 
     #[test]
+    fn helper_functions_cover_default_multipart_and_non_matching_types() {
+        let krate = krate();
+        let func: ItemFn = parse_quote! {
+            async fn plain(id: String, dep: MyDep) -> tork::Result<Output> { todo!() }
+        };
+
+        assert!(!has_form_params(&func));
+        let parts = build_handler_parts(&krate, &func, "/users/{id}").unwrap();
+        assert_eq!(parts.call_args.len(), 2);
+        assert!(parts.request_body.is_none());
+        assert!(parts.bindings[0].to_string().contains("__extract_path_param"));
+        assert!(parts.bindings[1].to_string().contains("FromRequest"));
+
+        let default_prelude = multipart_prelude(&krate, &None).to_string();
+        assert!(default_prelude.contains("UploadConfig :: new"));
+
+        let override_prelude = multipart_prelude(
+            &krate,
+            &Some(quote!(tork::UploadConfig::new().max_files(1))),
+        )
+        .to_string();
+        assert!(override_prelude.contains("max_files"));
+
+        assert!(body_inner_type(&parse_quote!(tork::Form<Input>)).is_none());
+        assert!(first_generic_arg(&parse_quote!(std::result::Result<Item, E>), &["Result"]).is_some());
+        assert!(first_generic_arg(&parse_quote!(std::vec::Vec<Item>), &["Result"]).is_none());
+    }
+
+    #[test]
     fn route_impl_emits_metadata_and_response_model_chains() {
         let args: RouteArgs = parse_quote!(
             "/items/{id}",
