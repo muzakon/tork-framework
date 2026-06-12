@@ -338,4 +338,160 @@ mod tests {
         assert!(tokens.contains(". ws_incoming :: < InMsg > ()"));
         assert!(tokens.contains(". ws_outgoing :: < OutMsg > ()"));
     }
+
+    #[test]
+    fn ws_args_parse_rejects_missing_path() {
+        let error = match parse_str::<WsArgs>("") {
+            Ok(_) => panic!("empty input must fail"),
+            Err(e) => e,
+        };
+        assert!(error.to_string().contains("expected a route path string"));
+    }
+
+    #[test]
+    fn ws_args_parse_rejects_non_string_path() {
+        let error = match parse_str::<WsArgs>("summary = \"x\"") {
+            Ok(_) => panic!("non-string path must fail"),
+            Err(e) => e,
+        };
+        assert!(error.to_string().contains("expected a route path string"));
+    }
+
+    #[test]
+    fn ws_args_parse_tolerates_trailing_comma() {
+        let args: WsArgs = parse_str("\"/ws\",").unwrap();
+        assert_eq!(args.path.value(), "/ws");
+    }
+
+    #[test]
+    fn ws_args_parse_rejects_wrong_typed_values() {
+        for input in [
+            "\"/ws\", summary = 1",
+            "\"/ws\", description = 1",
+            "\"/ws\", incoming = 42",
+            "\"/ws\", outgoing = 42",
+        ] {
+            assert!(
+                parse_str::<WsArgs>(input).is_err(),
+                "input must fail: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn ws_args_parse_rejects_invalid_size_and_duration() {
+        assert!(parse_str::<WsArgs>("\"/ws\", max_message_size = \"oops\"").is_err());
+        assert!(parse_str::<WsArgs>("\"/ws\", max_frame_size = \"wat\"").is_err());
+        assert!(parse_str::<WsArgs>("\"/ws\", idle_timeout = \"soon\"").is_err());
+    }
+
+    #[test]
+    fn expand_ws_with_prefix_hint_concatenates_path() {
+        let args: WsArgs = parse_str("\"/{room}\", __prefix = \"/api\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket, room: String) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("__extract_path_param"));
+        assert!(tokens.contains("\"room\""));
+    }
+
+    #[test]
+    fn expand_ws_emits_hidden_route_and_handler_functions() {
+        let args: WsArgs = parse_str("\"/ws\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("__tork_route_chat"));
+        assert!(tokens.contains("__tork_handler_chat"));
+        assert!(tokens.contains("Method :: GET"));
+    }
+
+    #[test]
+    fn expand_ws_max_message_size_alone() {
+        let args: WsArgs = parse_str("\"/ws\", max_message_size = \"2kb\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("max_message_size"));
+        assert!(tokens.contains("2048"));
+        assert!(!tokens.contains("max_frame_size"));
+        assert!(!tokens.contains("idle_timeout"));
+    }
+
+    #[test]
+    fn expand_ws_max_frame_size_alone() {
+        let args: WsArgs = parse_str("\"/ws\", max_frame_size = \"1kb\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("max_frame_size"));
+        assert!(tokens.contains("1024"));
+        assert!(!tokens.contains("max_message_size"));
+        assert!(!tokens.contains("idle_timeout"));
+    }
+
+    #[test]
+    fn expand_ws_idle_timeout_alone() {
+        let args: WsArgs = parse_str("\"/ws\", idle_timeout = \"5s\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("idle_timeout"));
+        assert!(tokens.contains("5000"));
+        assert!(!tokens.contains("max_message_size"));
+        assert!(!tokens.contains("max_frame_size"));
+    }
+
+    #[test]
+    fn expand_ws_rejects_more_than_one_websocket_param() {
+        let args: WsArgs = parse_str("\"/ws\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(a: tork::WebSocket, b: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let error = match expand_ws(args, func) {
+            Ok(_) => panic!("two WebSocket params must fail"),
+            Err(e) => e,
+        };
+        assert!(error.to_string().contains("exactly one `WebSocket` parameter"));
+    }
+
+    #[test]
+    fn expand_ws_omits_optional_attrs_when_absent() {
+        let args: WsArgs = parse_str("\"/ws\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(!tokens.contains("summary"), "summary should not appear");
+        assert!(!tokens.contains("description"), "description should not appear");
+        assert!(!tokens.contains("tag"), "tag should not appear");
+        assert!(!tokens.contains("max_message_size"));
+        assert!(!tokens.contains("max_frame_size"));
+        assert!(!tokens.contains("idle_timeout"));
+        assert!(!tokens.contains("ws_incoming"));
+        assert!(!tokens.contains("ws_outgoing"));
+    }
+
+    #[test]
+    fn expand_ws_emits_description_only() {
+        let args: WsArgs = parse_str("\"/ws\", description = \"d\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn chat(socket: tork::WebSocket) -> tork::Result<()> { Ok(()) }
+        };
+        let tokens = expand_ws(args, func).unwrap().to_string();
+        assert!(tokens.contains("description"));
+        assert!(tokens.contains("\"d\""));
+    }
+
+    #[test]
+    fn is_websocket_type_rejects_non_path_types() {
+        assert!(!is_websocket_type(&parse_quote!(&str)));
+        assert!(!is_websocket_type(&parse_quote!(String)));
+        assert!(!is_websocket_type(&parse_quote!(Vec<u8>)));
+    }
 }
