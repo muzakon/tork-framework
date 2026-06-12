@@ -78,4 +78,48 @@ mod tests {
         assert_eq!(parts.headers["content-type"], APPLICATION_JSON);
         assert!(String::from_utf8(body.to_vec()).unwrap().contains("INTERNAL_SERVER_ERROR"));
     }
+
+    #[tokio::test]
+    async fn json_response_does_not_leak_serialize_error_message() {
+        let response = json_response(StatusCode::OK, &BrokenSerialize);
+        let (_, body) = into_body_bytes(response).await;
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !body_str.contains("boom"),
+            "serialization error message leaked into response body: {body_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn json_wrapper_serializes_payload_with_default_ok_status() {
+        let response = Json(Payload { ok: true }).into_response();
+        let (parts, body) = into_body_bytes(response).await;
+
+        assert_eq!(parts.status, StatusCode::OK);
+        assert_eq!(parts.headers["content-type"], APPLICATION_JSON);
+        assert_eq!(body, Bytes::from_static(br#"{"ok":true}"#));
+    }
+
+    #[tokio::test]
+    async fn json_wrapper_accepts_dynamic_json_value() {
+        let value = serde_json::json!({ "name": "alice", "age": 30 });
+        let response = Json(value).into_response();
+        let (parts, body) = into_body_bytes(response).await;
+
+        assert_eq!(parts.status, StatusCode::OK);
+        assert_eq!(parts.headers["content-type"], APPLICATION_JSON);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["name"], "alice");
+        assert_eq!(parsed["age"], 30);
+    }
+
+    #[tokio::test]
+    async fn json_response_preserves_custom_status_code() {
+        let response = json_response(StatusCode::ACCEPTED, &Payload { ok: false });
+        let (parts, body) = into_body_bytes(response).await;
+
+        assert_eq!(parts.status, StatusCode::ACCEPTED);
+        assert_eq!(parts.headers["content-type"], APPLICATION_JSON);
+        assert_eq!(body, Bytes::from_static(br#"{"ok":false}"#));
+    }
 }
