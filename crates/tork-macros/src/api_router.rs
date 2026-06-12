@@ -208,9 +208,19 @@ mod tests {
     fn is_route_attr_matches_supported_macros() {
         let get_attr: Attribute = parse_quote!(#[get("/")]);
         let sse_attr: Attribute = parse_quote!(#[tork::sse("/stream")]);
+        let ws_attr: Attribute = parse_quote!(#[tork::websocket("/ws")]);
+        let post_sse_attr: Attribute = parse_quote!(#[tork::post_sse("/stream")]);
+        let put_attr: Attribute = parse_quote!(#[put("/")]);
+        let patch_attr: Attribute = parse_quote!(#[patch("/")]);
+        let delete_attr: Attribute = parse_quote!(#[delete("/")]);
         let other: Attribute = parse_quote!(#[derive(Clone)]);
         assert!(is_route_attr(&get_attr));
         assert!(is_route_attr(&sse_attr));
+        assert!(is_route_attr(&ws_attr));
+        assert!(is_route_attr(&post_sse_attr));
+        assert!(is_route_attr(&put_attr));
+        assert!(is_route_attr(&patch_attr));
+        assert!(is_route_attr(&delete_attr));
         assert!(!is_route_attr(&other));
     }
 
