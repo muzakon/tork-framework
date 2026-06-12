@@ -118,7 +118,7 @@ impl App {
             on_error: Vec::new(),
             on_validation_error: Vec::new(),
             on_panic: Vec::new(),
-            catch_panics: false,
+            catch_panics: true,
             exception_handlers: HashMap::new(),
             ws_config: None,
             on_ws_connect: Vec::new(),
@@ -327,11 +327,18 @@ impl App {
     /// Enables the panic boundary: a panic in a handler is caught and turned into
     /// a `500` response instead of dropping the connection.
     ///
-    /// Disabled by default. When enabled, a caught panic fires the
-    /// [`on_panic`](App::on_panic) hooks. The boundary has no effect when the
-    /// process is built with `panic = "abort"`.
+    /// Enabled by default. A caught panic fires the [`on_panic`](App::on_panic)
+    /// hooks. The boundary has no effect when the process is built with
+    /// `panic = "abort"`.
     pub fn catch_panics(mut self) -> Self {
         self.catch_panics = true;
+        self
+    }
+
+    /// Disables the panic boundary: handler panics propagate and tear down the
+    /// request task instead of becoming a `500` response.
+    pub fn propagate_panics(mut self) -> Self {
+        self.catch_panics = false;
         self
     }
 
@@ -1137,7 +1144,11 @@ mod hook_tests {
     #[tokio::test]
     #[should_panic(expected = "handler boom")]
     async fn without_catch_panics_a_panic_propagates() {
-        let app = App::new().include_router(panicking_route()).build().unwrap();
+        let app = App::new()
+            .propagate_panics()
+            .include_router(panicking_route())
+            .build()
+            .unwrap();
         let _ = app.dispatch(request(Method::GET, "/")).await;
     }
 
