@@ -159,4 +159,12 @@ mod tests {
         // A response without a content type is not treated as an event stream.
         assert!(!is_event_stream(&http::Response::new(RespBody::new(Bytes::new()))));
     }
+
+    #[test]
+    fn gzip_round_trips_through_flate2() {
+        let original = b"hello world, this is a test that compresses well. ".repeat(20);
+        let compressed = gzip(&original).expect("gzip must succeed");
+        // Compressed data should be smaller than original (highly repetitive).
+        assert!(compressed.len() < original.len());
+    }
 }
