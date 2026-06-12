@@ -228,4 +228,155 @@ mod tests {
         assert!(tokens.contains("\"tick\""));
         assert!(tokens.contains("__extract_path_param"));
     }
+
+    #[test]
+    fn sse_args_parse_rejects_missing_path() {
+        let error = match parse_str::<SseArgs>("") {
+            Ok(_) => panic!("empty input must fail"),
+            Err(e) => e,
+        };
+        assert!(error.to_string().contains("expected a route path string"));
+    }
+
+    #[test]
+    fn sse_args_parse_rejects_non_string_path() {
+        let error = match parse_str::<SseArgs>("summary = \"x\"") {
+            Ok(_) => panic!("non-string path must fail"),
+            Err(e) => e,
+        };
+        assert!(error.to_string().contains("expected a route path string"));
+    }
+
+    #[test]
+    fn sse_args_parse_tolerates_trailing_comma() {
+        let args: SseArgs = parse_str("\"/events\",").unwrap();
+        assert_eq!(args.path.value(), "/events");
+        assert!(args.method.is_none());
+        assert!(args.event.is_none());
+        assert!(args.summary.is_none());
+    }
+
+    #[test]
+    fn sse_args_parse_rejects_missing_equals() {
+        let error = match parse_str::<SseArgs>("\"/events\", summary \"sum\"") {
+            Ok(_) => panic!("missing `=` must fail"),
+            Err(e) => e,
+        };
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn sse_args_parse_rejects_invalid_tags_inner() {
+        let error = match parse_str::<SseArgs>("\"/events\", tags = [123]") {
+            Ok(_) => panic!("non-str tag must fail"),
+            Err(e) => e,
+        };
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn sse_args_parse_rejects_wrong_typed_values() {
+        for input in [
+            "\"/e\", method = 42",
+            "\"/e\", event = 42",
+            "\"/e\", response_model = \"string\"",
+            "\"/e\", summary = 1",
+            "\"/e\", description = 1",
+            "\"/e\", __prefix = 1",
+        ] {
+            match parse_str::<SseArgs>(input) {
+                Ok(_) => panic!("input must fail: {input}"),
+                Err(e) => assert!(!e.to_string().is_empty(), "input: {input}"),
+            }
+        }
+    }
+
+    #[test]
+    fn expand_uses_default_method_when_method_attribute_absent() {
+        let args: SseArgs = parse_str("\"/events\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("GET", args, func).unwrap().to_string();
+        assert!(tokens.contains("Method :: GET"));
+    }
+
+    #[test]
+    fn expand_uses_default_method_post_sse() {
+        let args: SseArgs = parse_str("\"/events\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("POST", args, func).unwrap().to_string();
+        assert!(tokens.contains("Method :: POST"));
+    }
+
+    #[test]
+    fn expand_with_prefix_hint_concatenates_path() {
+        let args: SseArgs = parse_str("\"/events\", __prefix = \"/api\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("GET", args, func).unwrap().to_string();
+        assert!(tokens.contains("Route :: new"));
+        assert!(tokens.contains("Method :: GET"));
+    }
+
+    #[test]
+    fn expand_emits_hidden_route_function() {
+        let args: SseArgs = parse_str("\"/events\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("GET", args, func).unwrap().to_string();
+        assert!(tokens.contains("__tork_route_events"));
+        assert!(tokens.contains("__tork_handler_events"));
+    }
+
+    #[test]
+    fn expand_omits_summary_description_event_response_model_when_absent() {
+        let args: SseArgs = parse_str("\"/events\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("GET", args, func).unwrap().to_string();
+        assert!(!tokens.contains(". summary ("), "summary should not be present");
+        assert!(!tokens.contains(". description ("), "description should not be present");
+        assert!(!tokens.contains(". event ("), "event should not be present");
+        assert!(!tokens.contains(". response_schema"), "response_schema should not be present");
+        assert!(!tokens.contains(". tag ("), "tag should not be present");
+    }
+
+    #[test]
+    fn expand_with_empty_tags_emits_no_tag_calls() {
+        let args: SseArgs = parse_str("\"/events\", tags = []").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("GET", args, func).unwrap().to_string();
+        assert!(!tokens.contains(". tag ("));
+    }
+
+    #[test]
+    fn expand_emits_handler_renamed_function() {
+        let args: SseArgs = parse_str("\"/events\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        let tokens = expand_sse("GET", args, func).unwrap().to_string();
+        assert!(tokens.contains("fn __tork_handler_events"));
+    }
+
+    #[test]
+    fn expand_propagates_handler_parts_errors() {
+        // `self` receiver is rejected by `build_handler_parts`.
+        let args: SseArgs = parse_str("\"/events\"").unwrap();
+        let func: ItemFn = parse_quote! {
+            async fn events(self) -> tork::Result<tork::Sse<Tick>> { todo!() }
+        };
+        match expand_sse("GET", args, func) {
+            Ok(_) => panic!("self receiver must fail"),
+            Err(e) => assert!(!e.to_string().is_empty()),
+        }
+    }
 }
