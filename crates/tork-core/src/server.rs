@@ -227,4 +227,22 @@ mod tests {
         shutdown_signal_with(future::ready(()), future::pending::<()>()).await;
         shutdown_signal_with(future::pending::<()>(), future::ready(())).await;
     }
+
+    #[tokio::test]
+    async fn tork_service_new_returns_cloneable_service() {
+        let app = Arc::new(App::new().build().unwrap());
+        let service = TorkService::new(app);
+        // Verify the service is Clone (derived).
+        let _cloned = service.clone();
+    }
+
+    #[tokio::test]
+    async fn run_with_shutdown_breaks_when_shutdown_resolves_first() {
+        // Build a minimal app, bind to an ephemeral port, and run the loop
+        // with a shutdown future that fires immediately — no connection is
+        // ever accepted, exercising the `_ = &mut shutdown => break` branch.
+        let app = Arc::new(App::new().build().unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        run_with_shutdown(app, listener, future::ready(())).await;
+    }
 }
