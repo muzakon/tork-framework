@@ -4,55 +4,52 @@ This document lists the components, edge cases, and features of the Tork Framewo
 
 ---
 
-## 1. Proxy Header Spoofing — Host Header Takeover (High Security Risk)
-- **Risk:** The `ProxyHeaders` middleware ([`proxy_headers.rs:L37-L41`](crates/tork-core/src/middleware/proxy_headers.rs)) blindly trusts the `X-Forwarded-Host` header and overwrites the `Host` header without validation.
-- **Vulnerability:** Without a terminating proxy that strips or sets this header, any client can supply an arbitrary `X-Forwarded-Host` value. This enables host-based routing bypass, redirect hijacking (used in open redirect and phishing attacks), and CSRF protection bypass when origin checks rely on the `Host` header.
-- **Status:** Untested for spoofing scenarios. No validation of proxy source IP or trusted proxy list.
+Status legend:
+- `[x]` Resolved
+- `[~]` Mitigated or partially constrained
+- `[!]` Confirmed open risk
 
-## 2. HTTPS Redirect Spoofing via `X-Forwarded-Proto` (High Security Risk)
-- **Risk:** The `HttpsRedirect` middleware ([`https_redirect.rs:L70-L79`](crates/tork-core/src/middleware/https_redirect.rs)) trusts the `X-Forwarded-Proto` header to determine whether a request is HTTPS.
-- **Vulnerability:** An attacker can send `X-Forwarded-Proto: https` to make the middleware believe an HTTP request is already HTTPS, bypassing the redirect entirely. Conversely, `X-Forwarded-Proto: http` on an HTTPS request forces a redirect loop. This also affects any downstream logic relying on `is_https()`.
-- **Status:** Untested for spoofing scenarios. No protection against untrusted proxy sources.
+## 1. [x] Proxy Header Spoofing — Host Header Takeover (High Security Risk)
+- **Risk:** The `ProxyHeaders` middleware now ignores forwarded host/scheme headers unless the request peer matches an explicit trusted IP/CIDR allowlist.
+- **Status:** Resolved. Covered by regression tests for untrusted spoof rejection and trusted loopback proxy acceptance.
 
-## 3. WebSocket Origin Validation Missing (High Security Risk)
-- **Risk:** The WebSocket handshake ([`ws.rs:L651-L697`](crates/tork-core/src/ws.rs)) validates protocol headers (`Upgrade`, `Connection`, `Sec-WebSocket-Version`, `Sec-WebSocket-Key`) but never checks the `Origin` header.
-- **Vulnerability:** Any cross-origin page can establish a WebSocket connection to the server, enabling WebSocket-based CSRF attacks. A malicious website can open a socket, send commands, and receive data from the user's authenticated session, completely bypassing the same-origin policy.
-- **Status:** Untested. No `Origin` header validation or configurable allowed-origins list for WebSocket endpoints.
+## 2. [x] HTTPS Redirect Spoofing via `X-Forwarded-Proto` (High Security Risk)
+- **Risk:** `HttpsRedirect` now uses normalized scheme metadata from trusted proxy processing, not raw `X-Forwarded-Proto`.
+- **Status:** Resolved. Covered by regression tests for untrusted header rejection and trusted proxy pass-through.
+
+## 3. [x] WebSocket Origin Validation Missing (High Security Risk)
+- **Risk:** The handshake now enforces same-origin by default when `Origin` is present, while still allowing non-browser clients with no `Origin`.
+- **Status:** Resolved. Covered by regression tests for default cross-origin `403`, same-origin success, and explicit allowlist opt-in.
 
 ## 4. Missing Rate Limiting (High Risk / Feature Deficit)
 - **Risk:** The framework provides no built-in rate limiting middleware.
 - **Vulnerability:** All endpoints are exposed to brute-force attacks (login, password reset), API abuse, and denial-of-service. Without rate limiting at the framework level, every application must implement its own, and many will ship without it.
 - **Status:** Unimplemented. No `429 Too Many Requests` middleware exists despite `ErrorKind::TooManyRequests` being defined in the error module.
 
-## 5. UploadFile::save_to Path Traversal (High Security Risk)
-- **Risk:** The `save_to` method ([`multipart.rs:L269-L278`](crates/tork-core/src/multipart.rs)) accepts any `Path` and calls `std::fs::File::create(&path)` directly without validating that the path is within an expected directory. There is no check for path traversal sequences (`../`, `..\\`, symlinks).
-- **Vulnerability:** A developer calling `upload_file.save_to(user_supplied_path)` where the path is derived from user input enables arbitrary file write. An attacker can provide `../../etc/cron.d/malicious` to write files anywhere on the filesystem. Even without user-controlled paths, the API is unsafe by default.
-- **Status:** Untested. No path canonicalization or directory confinement.
+## 5. [x] UploadFile::save_to Path Traversal (High Security Risk)
+- **Risk:** `save_to` now rejects absolute and parent-traversal targets, and `save_to_dir(dir, file_name)` provides the safe persistence API for normal uploads.
+- **Status:** Resolved. Covered by regression tests for safe directory writes and invalid path rejection.
 
-## 6. CORS Wildcard + Credentials Reflects Any Origin (Medium Security Risk)
-- **Risk:** When `allow_origin("*")` is combined with `allow_credentials(true)` ([`cors.rs:L96-L109`](crates/tork-core/src/middleware/cors.rs)), the code echoes the request's `Origin` header as `Access-Control-Allow-Origin` instead of returning `*`.
-- **Vulnerability:** This means **any** origin is accepted as valid when credentials are enabled with wildcard. If a developer mistakenly configures `Cors::new().allow_origin("*").allow_credentials(true)`, any website can make credentialed requests. The API makes this misconfiguration easy to achieve.
-- **Status:** Untested. No compile-time or runtime guard against wildcard+credentials misconfiguration.
+## 6. [x] CORS Wildcard + Credentials Reflects Any Origin (Medium Security Risk)
+- **Risk:** Wildcard-plus-credentials now fails closed: no `Access-Control-Allow-Origin` is granted for that invalid configuration.
+- **Status:** Resolved. Covered by regression tests for both preflight and actual-request behavior.
 
-## 7. Panic Boundary Disabled by Default (Medium Risk)
-- **Risk:** The `App` struct defaults to `catch_panics: false` ([`app.rs:L88`](crates/tork-core/src/app.rs)). Without it, a handler panic propagates up and drops the connection.
-- **Vulnerability:** An attacker can trigger a panic in a handler (e.g., by sending unexpected values causing `unwrap()` failures). Without `catch_panics`, the connection is dropped. Repeated exploitation is a denial-of-service vector. Even with `catch_panics` enabled, the boundary is not tested end-to-end.
-- **Status:** No test verifying the full panic→500-response path. Must be explicitly enabled.
+## 7. [x] Panic Boundary Disabled by Default (Medium Risk)
+- **Risk:** `App::new()` now catches handler panics by default, with explicit opt-out via `propagate_panics()`.
+- **Status:** Resolved. Covered by unit and integration tests for default `500` conversion and explicit panic propagation.
 
 ## 8. No Response Body Size Limit (Medium Risk)
 - **Risk:** The `RespBody` type ([`body.rs:L31-L97`](crates/tork-core/src/body.rs)) has no size limit enforcement. A handler returning `RespBody::stream(...)` can stream an unbounded amount of data to the client.
 - **Vulnerability:** While the request body has `MAX_BODY_BYTES` (2 MiB), the response side has no equivalent protection. An endpoint streaming data (file download, SSE) could exhaust server memory and bandwidth, affecting all other connections.
 - **Status:** Untested. No server-side response body cap exists.
 
-## 9. CORS Missing `Vary` Headers for Preflight Negotiation (Medium Security Risk)
-- **Risk:** The `Cors` middleware ([`cors.rs:L124-L165`](crates/tork-core/src/middleware/cors.rs)) does not set `Vary` to include `Access-Control-Request-Method` or `Access-Control-Request-Headers` in preflight responses.
-- **Vulnerability:** CDNs and reverse proxies may cache a preflight response for one method/headers combination and serve it for a different one. An attacker's `DELETE` request could receive a cached preflight originally negotiated for a benign `GET`, allowing the browser to proceed with the actual request.
-- **Status:** Untested for cache behavior.
+## 9. [x] CORS Missing `Vary` Headers for Preflight Negotiation (Medium Security Risk)
+- **Risk:** Preflight responses now include `Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers`.
+- **Status:** Resolved. Covered by regression tests for full `Vary` coverage.
 
-## 10. Log Injection via Unsanitized Request Path (Medium Security Risk)
-- **Risk:** The automatic HTTP request log ([`service.rs:L104-L117`](crates/tork-core/src/service.rs)) and the `Logger::from_request` ([`logger.rs:L121-L137`](crates/tork-core/src/logging/logger.rs)) log the request path and `x-request-id` header directly without sanitization.
-- **Vulnerability:** An attacker can send a request with a path containing newlines (`%0d%0a`) or ANSI escape sequences. In the console log format, this forges fake log entries. The unsanitized `x-request-id` flows into every log line, enabling log fabrication across the entire request lifecycle.
-- **Status:** Untested for log injection. No character validation on logged values.
+## 10. [x] Log Injection via Unsanitized Request Path (Medium Security Risk)
+- **Risk:** Request path and other request-derived log fields are sanitized before console emission.
+- **Status:** Resolved. Covered by log-forgery regression tests.
 
 ## 11. OpenAPI Documentation UI Unprotected (Medium Security Risk)
 - **Risk:** The OpenAPI spec (`/openapi.json`) and Scalar documentation UI (`/docs`) routes ([`docs.rs:L22-L31`](crates/tork-openapi/src/docs.rs), [`spec.rs:L86-L108`](crates/tork-openapi/src/spec.rs)) are registered as plain GET routes with no authentication or authorization checks.
@@ -69,20 +66,18 @@ This document lists the components, edge cases, and features of the Tork Framewo
 - **Vulnerability:** If an error's `Display` implementation includes sensitive data (database connection strings with passwords, API keys), this data appears in structured logs. Database drivers commonly include connection strings in error messages.
 - **Status:** Untested. No sensitive data filtering in error logging.
 
-## 14. Request ID Logged Without Sanitization (Medium Security Risk)
-- **Risk:** The `Logger` ([`logger.rs:L121-L137`](crates/tork-core/src/logging/logger.rs)) reads the `x-request-id` header and stores it as a base field appearing in every log line. The value comes directly from the client-supplied header.
-- **Vulnerability:** An attacker sets the header to `admin\r\n2024-01-01 INFO [Auth] User admin logged in`. In JSON format the newlines are escaped safely, but in console format this forges log entries. Combined with Finding #10, this enables sophisticated log fabrication.
-- **Status:** Untested. No length cap or character validation.
+## 14. [x] Request ID Logged Without Sanitization (Medium Security Risk)
+- **Risk:** Client-supplied request IDs are sanitized before they reach console logs.
+- **Status:** Resolved. Covered by log-forgery regression tests.
 
 ## 15. Multipart `temp_dir` Configuration Not Propagated (Medium Risk)
 - **Risk:** `UploadConfig` exposes a `temp_dir` field ([`multipart.rs:L88-L91`](crates/tork-core/src/multipart.rs)), but the actual `SpooledTempFile` creation uses the system default temp directory, ignoring this setting.
 - **Bug:** Declaring `temp_dir("/mnt/fast-ssd")` has no effect. In containerized environments where the default `/tmp` is a memory-backed `tmpfs`, large uploads spill to RAM instead of disk, causing OOM kills.
 - **Status:** Untested. The `temp_dir` field is dead configuration.
 
-## 16. BodyLimit Middleware Bypass via Chunked Transfer Encoding (Medium Risk)
-- **Risk:** The `BodyLimit` middleware ([`body_limit.rs:L46-L59`](crates/tork-core/src/middleware/body_limit.rs)) only inspects the `Content-Length` header.
-- **Bug:** Requests using chunked transfer encoding (`Transfer-Encoding: chunked`) without a `Content-Length` header pass through the middleware unchecked. The body extractor's internal cap (`MAX_BODY_BYTES`) provides a fallback, but an attacker can craft chunked requests that bypass the middleware's advertised limit.
-- **Status:** Untested. No integration test verifying chunked requests are bounded.
+## 16. [x] BodyLimit Middleware Bypass via Chunked Transfer Encoding (Medium Risk)
+- **Risk:** `BodyLimit` now consumes and bounds request bodies regardless of transfer encoding before the handler runs.
+- **Status:** Resolved. Covered by regression tests for chunked under-limit and over-limit requests.
 
 ## 17. No Per-Client WebSocket Connection Limit (Medium Risk)
 - **Risk:** The WebSocket upgrade path has no limit on the number of concurrent connections from a single client IP.
@@ -109,10 +104,9 @@ This document lists the components, edge cases, and features of the Tork Framewo
 - **Bug:** WebSocket connections are long-lived and will not complete within the 15-second drain timeout. They are forcibly terminated, causing clients to receive unexpected disconnects without proper close frames.
 - **Status:** Untested. No WebSocket-aware shutdown protocol.
 
-## 22. UploadFile::save_to Symlink Attack (Medium Security Risk)
-- **Risk:** The `save_to` method ([`multipart.rs:L269-L278`](crates/tork-core/src/multipart.rs)) uses `std::fs::File::create`, which follows symlinks.
-- **Vulnerability:** If a symlink exists at the target path pointing outside the intended directory (e.g., to `/etc/passwd`), `save_to` writes through the symlink to the target location. No check for symlink existence before creating the file.
-- **Status:** Untested. Requires a pre-existing symlink at the target path.
+## 22. [x] UploadFile::save_to Symlink Attack (Medium Security Risk)
+- **Risk:** Existing symlink targets are rejected and destination writes use `create_new(true)` to avoid overwrite-through-existing-target behavior.
+- **Status:** Resolved. Covered by the symlink attack regression test.
 
 ## 23. Compression Middleware Doesn't Set `Vary` on Non-Gzip Path (Low-Medium Risk)
 - **Risk:** The `Compression` middleware ([`compression.rs:L60-L119`](crates/tork-core/src/middleware/compression.rs)) sets `Vary: Accept-Encoding` only when compression is actually applied.
@@ -298,41 +292,41 @@ This document lists the components, edge cases, and features of the Tork Framewo
 
 The following verification steps and test suites are **mandatory** to complete before deploying this framework into production:
 
-### A. Security Middleware Integration Tests
+### A. [x] Security Middleware Integration Tests
 - **Requirement:** End-to-end tests verifying that `ProxyHeaders`, `TrustedHost`, `HttpsRedirect`, and CORS work correctly when chained together, including spoofing resistance.
-- **Missing Test:** A test simulating a client bypassing `TrustedHost` via `X-Forwarded-Host` spoofing when `ProxyHeaders` is not present.
+- **Status:** Resolved. Real-port and in-process regression tests now cover spoof rejection and trusted proxy normalization.
 
-### B. WebSocket Origin Validation
+### B. [x] WebSocket Origin Validation
 - **Requirement:** WebSocket upgrades must validate the `Origin` header against a configurable allow-list, rejecting cross-origin upgrades by default.
-- **Missing Test:** A test verifying that a WebSocket upgrade from an untrusted origin is rejected with `403 Forbidden`.
+- **Status:** Resolved. Integration tests now cover default cross-origin rejection, same-origin success, and allowlist opt-in.
 
 ### C. Graceful Shutdown for Long-Lived Connections
 - **Requirement:** WebSocket and SSE connections must be notified of shutdown (via close frames or stream termination) before the drain timeout expires.
 - **Missing Test:** A test verifying that active WebSocket connections receive a close frame during graceful shutdown.
 
-### D. Panic Recovery Integration
+### D. [x] Panic Recovery Integration
 - **Requirement:** When `catch_panics` is enabled, a handler panic must result in a `500 Internal Server Error` response, not a connection reset.
-- **Missing Test:** An integration test triggering a panic inside a handler and verifying the response status and body.
+- **Status:** Resolved. Integration tests now verify panic-to-`500` behavior over the facade.
 
-### E. Chunked Request Body Enforcement
+### E. [x] Chunked Request Body Enforcement
 - **Requirement:** The `BodyLimit` middleware must enforce limits regardless of transfer encoding (chunked or content-length).
-- **Missing Test:** A test sending a chunked request exceeding the configured limit and verifying rejection.
+- **Status:** Resolved. Integration tests now verify both chunked under-limit acceptance and over-limit rejection.
 
-### F. File Upload Path Confinement
+### F. [x] File Upload Path Confinement
 - **Requirement:** `UploadFile::save_to` must validate that the target path is within a configured upload directory.
-- **Missing Test:** A test verifying that `save_to` with a path containing `../` is rejected.
+- **Status:** Resolved. Upload tests now cover invalid path rejection and the safe `save_to_dir` path.
 
-### G. Log Injection Prevention
+### G. [x] Log Injection Prevention
 - **Requirement:** Request paths, headers, and user-controlled values logged by the framework must be sanitized to prevent log forging.
-- **Missing Test:** A test sending a request with newline characters in the path and verifying the log output does not contain forged entries.
+- **Status:** Resolved. Logging regression tests now cover forged request IDs and other request-derived values.
 
-### H. CORS Cache Correctness
+### H. [x] CORS Cache Correctness
 - **Requirement:** CORS responses must set `Vary` headers correctly to prevent CDN/proxy caching of origin-specific responses.
-- **Missing Test:** A test verifying that `Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers` is present on both preflight and non-preflight responses.
+- **Status:** Resolved. Middleware tests now verify the full preflight `Vary` set and `Origin` on actual responses.
 
-### I. Multipart Temp File Cleanup on Error
+### I. [x] Multipart Temp File Cleanup on Error
 - **Requirement:** When multipart parsing fails mid-stream, all already-created `SpooledTempFile` instances must be cleaned up.
-- **Missing Test:** A test sending a truncated multipart body and verifying temp files are cleaned up after the error.
+- **Status:** Resolved. End-to-end upload tests now verify truncated multipart cleanup.
 
 ### J. Compression Memory Under Concurrency
 - **Requirement:** The compression middleware must not buffer uncompressed + compressed copies simultaneously when possible, or must document memory limits.

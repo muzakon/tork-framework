@@ -40,7 +40,7 @@ file.size();                     // u64, total bytes
 let bytes = file.read().await?;            // read it all
 while let Some(chunk) = file.read_chunk(64 * 1024).await? { /* ... */ }
 file.seek_start().await?;                   // rewind
-file.save_to("/var/uploads/photo.jpg").await?;
+file.save_to_dir("/var/uploads", "photo.jpg").await?;
 ```
 
 `Mime` is re-exported as `tork::mime::Mime`, so you can name it without adding the
