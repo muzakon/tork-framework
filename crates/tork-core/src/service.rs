@@ -258,4 +258,25 @@ mod tests {
         let response = test_app().dispatch(request(Method::POST, "/users/42")).await;
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
+
+    #[test]
+    fn panic_message_handles_str_payload() {
+        use super::panic_message;
+        let payload: Box<dyn std::any::Any + Send> = Box::new("oops");
+        assert_eq!(panic_message(&*payload), "oops");
+    }
+
+    #[test]
+    fn panic_message_handles_string_payload() {
+        use super::panic_message;
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("from string"));
+        assert_eq!(panic_message(&*payload), "from string");
+    }
+
+    #[test]
+    fn panic_message_handles_unknown_payload() {
+        use super::panic_message;
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
+        assert_eq!(panic_message(&*payload), "panic");
+    }
 }
