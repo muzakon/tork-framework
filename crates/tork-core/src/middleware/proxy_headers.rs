@@ -60,4 +60,10 @@ mod tests {
         assert_eq!(middleware.name(), "ProxyHeaders");
         assert_eq!(middleware.duplicate_policy(), DuplicatePolicy::Reject);
     }
+
+    #[test]
+    fn default_impl_uses_new() {
+        // Default must produce the same value as new().
+        let _middleware: ProxyHeaders = Default::default();
+    }
 }
