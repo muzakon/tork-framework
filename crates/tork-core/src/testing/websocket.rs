@@ -326,6 +326,7 @@ fn decode_error(error: serde_json::Error) -> Error {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn rejected_error_uses_stable_code() {
@@ -372,5 +373,32 @@ mod tests {
         let mut back = [0u8; 4];
         io.read_exact(&mut back).await.unwrap();
         assert_eq!(&back, b"pong");
+    }
+
+    #[tokio::test]
+    async fn client_io_tcp_supports_async_read_and_write() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4];
+            socket.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"ping");
+            socket.write_all(b"pong").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut io = ClientIo::Tcp(stream);
+
+        io.write_all(b"ping").await.unwrap();
+        io.flush().await.unwrap();
+
+        let mut back = [0u8; 4];
+        io.read_exact(&mut back).await.unwrap();
+        assert_eq!(&back, b"pong");
+
+        let _ = server.await;
     }
 }

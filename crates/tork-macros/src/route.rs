@@ -812,4 +812,70 @@ mod tests {
         let output: ReturnType = parse_quote!(-> tork::Result<UserOut>);
         assert!(result_ok_type(&output).is_some());
     }
+
+    #[test]
+    fn route_impl_emits_metadata_and_response_model_chains() {
+        let args: RouteArgs = parse_quote!(
+            "/items/{id}",
+            summary = "Fetch item",
+            description = "Returns an item",
+            status_code = 201,
+            tags = ["items", "public"],
+            response_model = Output,
+            on_request = audit::request,
+            on_response = audit::response,
+            on_error = audit::error,
+            on_validation_error = audit::validation
+        );
+        let func: ItemFn = parse_quote!(
+            pub async fn get_item(id: String) -> tork::Result<Output> {
+                todo!()
+            }
+        );
+
+        let tokens = expand_route("GET", args, func)
+            .unwrap()
+            .to_string();
+
+        assert!(tokens.contains("__tork_route_get_item"));
+        assert!(tokens.contains("Fetch item"));
+        assert!(tokens.contains("Returns an item"));
+        assert!(tokens.contains("items"));
+        assert!(tokens.contains("public"));
+        assert!(tokens.contains("response_model"));
+        assert!(tokens.contains("response_schema"));
+        assert!(tokens.contains("on_request"));
+        assert!(tokens.contains("on_response"));
+        assert!(tokens.contains("on_error"));
+        assert!(tokens.contains("on_validation_error"));
+        assert!(tokens.contains("StatusCode :: from_u16"));
+    }
+
+    #[test]
+    fn route_impl_emits_multipart_and_request_body_metadata() {
+        let args: RouteArgs = parse_quote!(
+            "/upload/{id}",
+            upload(max_files = 2, max_body_size = "2MB")
+        );
+        let func: ItemFn = parse_quote!(
+            async fn upload(
+                id: String,
+                #[file(name = "avatar", max_size = "64KB", sniff = true)] file: tork::UploadFile,
+                #[form(name = "title")] title: String
+            ) -> tork::Result<Output> {
+                todo!()
+            }
+        );
+
+        let tokens = expand_route("POST", args, func)
+            .unwrap()
+            .to_string();
+
+        assert!(tokens.contains("__tork_form_schema_upload"));
+        assert!(tokens.contains("request_schema_fn"));
+        assert!(tokens.contains("request_kind"));
+        assert!(tokens.contains("__parse_multipart"));
+        assert!(tokens.contains("take_upload_file"));
+        assert!(tokens.contains("take_form_value"));
+    }
 }
