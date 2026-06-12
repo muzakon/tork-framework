@@ -897,6 +897,57 @@ mod tests {
             error.message()
         );
     }
+
+    #[test]
+    fn app_default_equals_new() {
+        // Default must produce the same internal state as new().
+        assert!(App::default().build().is_ok());
+    }
+
+    #[test]
+    fn websocket_config_is_accepted_by_builder() {
+        let app = App::new()
+            .websocket_config(crate::ws::WebSocketConfig::new().idle_timeout_secs(5))
+            .build();
+        assert!(app.is_ok());
+    }
+
+    #[test]
+    fn upload_config_is_accepted_by_builder() {
+        let app = App::new()
+            .upload_config(crate::multipart::UploadConfig::new().max_file_size(1024))
+            .build();
+        assert!(app.is_ok());
+    }
+
+    #[test]
+    fn on_ws_connect_and_disconnect_hooks_are_accepted_by_builder() {
+        let app = App::new()
+            .on_ws_connect(|_info| async {})
+            .on_ws_disconnect(|_info| async {})
+            .build();
+        assert!(app.is_ok());
+    }
+
+    #[test]
+    fn logger_config_is_accepted_by_builder() {
+        let app = App::new()
+            .logger(crate::logging::LoggerConfig::new())
+            .build();
+        assert!(app.is_ok());
+    }
+
+    #[test]
+    fn app_supports_multiple_distinct_state_types() {
+        struct Greeting(&'static str);
+        struct Counter(u32);
+
+        let app = App::new()
+            .state(Greeting("hello"))
+            .state(Counter(42))
+            .build();
+        assert!(app.is_ok());
+    }
 }
 
 #[cfg(test)]
