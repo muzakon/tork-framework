@@ -8,6 +8,7 @@
 //! The contexts own a snapshot of their data so that a hook may move the context
 //! into a `'static` future. None of them expose the request or response body.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use http::{Method, StatusCode};
@@ -18,29 +19,47 @@ use crate::error::ErrorDetail;
 ///
 /// Built once per request and cloned into each event that fires for it.
 #[derive(Clone, Debug)]
-pub(crate) struct RequestInfo {
+pub(crate) struct RequestInfo(Arc<RequestInfoInner>);
+
+#[derive(Debug)]
+struct RequestInfoInner {
     method: Method,
-    path: String,
-    route: Option<String>,
-    request_id: Option<String>,
+    path: Arc<str>,
+    route: Option<Arc<str>>,
+    request_id: Option<Arc<str>>,
 }
 
 impl RequestInfo {
     /// Creates request metadata for the current request.
     pub(crate) fn new(
         method: Method,
-        path: String,
-        route: Option<String>,
-        request_id: Option<String>,
+        path: Arc<str>,
+        route: Option<Arc<str>>,
+        request_id: Option<Arc<str>>,
     ) -> Self {
-        Self {
+        Self(Arc::new(RequestInfoInner {
             method,
             path,
             route,
             request_id,
-        }
+        }))
     }
 
+    pub(crate) fn method(&self) -> &Method {
+        &self.0.method
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        self.0.path.as_ref()
+    }
+
+    pub(crate) fn route(&self) -> Option<&str> {
+        self.0.route.as_deref()
+    }
+
+    pub(crate) fn request_id(&self) -> Option<&str> {
+        self.0.request_id.as_deref()
+    }
 }
 
 /// Generates the request-metadata accessors shared by every event context.
@@ -49,23 +68,23 @@ macro_rules! shared_accessors {
         impl $t {
             /// The HTTP method of the request.
             pub fn method(&self) -> &Method {
-                &self.info.method
+                &self.info.0.method
             }
 
             /// The request path (the concrete URI path, not the route pattern).
             pub fn path(&self) -> &str {
-                &self.info.path
+                self.info.0.path.as_ref()
             }
 
             /// The matched route pattern (for example `/users/{id}`), if routing
             /// resolved one.
             pub fn route(&self) -> Option<&str> {
-                self.info.route.as_deref()
+                self.info.0.route.as_deref()
             }
 
             /// The request identifier (the `x-request-id` value), if present.
             pub fn request_id(&self) -> Option<&str> {
-                self.info.request_id.as_deref()
+                self.info.0.request_id.as_deref()
             }
         }
     };
@@ -216,9 +235,9 @@ mod tests {
     fn info() -> RequestInfo {
         RequestInfo::new(
             Method::GET,
-            "/users/7".to_owned(),
-            Some("/users/{id}".to_owned()),
-            Some("req-1".to_owned()),
+            Arc::from("/users/7"),
+            Some(Arc::from("/users/{id}")),
+            Some(Arc::from("req-1")),
         )
     }
 
@@ -240,7 +259,12 @@ mod tests {
 
     #[test]
     fn error_event_carries_status_code_and_message() {
-        let event = ErrorEvent::new(info(), StatusCode::NOT_FOUND, "NOT_FOUND", "missing".to_owned());
+        let event = ErrorEvent::new(
+            info(),
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "missing".to_owned(),
+        );
         assert_eq!(event.status(), StatusCode::NOT_FOUND);
         assert_eq!(event.code(), "NOT_FOUND");
         assert_eq!(event.message(), "missing");

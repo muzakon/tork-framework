@@ -11,36 +11,36 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
-use tokio::sync::watch;
 use garde::Validate;
-use http::Method;
 use http::header::{
     CONNECTION, HOST, ORIGIN, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION,
     UPGRADE,
 };
+use http::Method;
 use http::{HeaderValue, StatusCode};
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use hyper_util::rt::TokioIo;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
+use serde::Serialize;
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TgCloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TgWebSocketConfig;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TgCloseCode;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
 use crate::body::RespBody;
 use crate::error::{Error, Result};
-use crate::extract::{RequestContext, RequestScheme, scheme_from_extensions};
+use crate::extract::{scheme_from_extensions, RequestContext, RequestScheme};
 use crate::response::Response;
 use crate::router::BoxFuture;
 
@@ -411,7 +411,11 @@ pub struct WsDisconnectInfo {
 }
 
 impl WsDisconnectInfo {
-    pub(crate) fn new(info: WsConnInfo, duration: Duration, close_code: Option<WsCloseCode>) -> Self {
+    pub(crate) fn new(
+        info: WsConnInfo,
+        duration: Duration,
+        close_code: Option<WsCloseCode>,
+    ) -> Self {
         Self {
             info,
             duration,
@@ -622,7 +626,7 @@ impl WebSocket {
         Ok(WebSocketConn {
             stream,
             idle_timeout,
-            hooks: self.hooks,
+            hooks: Arc::downgrade(&self.hooks),
             info: self.info,
             started: Instant::now(),
             close_code: None,
@@ -637,7 +641,7 @@ impl WebSocket {
 pub struct WebSocketConn {
     stream: WebSocketStream<WsTransport>,
     idle_timeout: Option<Duration>,
-    hooks: Arc<WsHooks>,
+    hooks: Weak<WsHooks>,
     info: WsConnInfo,
     started: Instant,
     close_code: Option<WsCloseCode>,
@@ -653,16 +657,18 @@ pub struct WebSocketConn {
 
 impl Drop for WebSocketConn {
     fn drop(&mut self) {
+        let Some(hooks) = self.hooks.upgrade() else {
+            return;
+        };
         // The common close paths fire the hooks inline (awaited, runtime alive).
         // Drop is only the fallback when the handler dropped the socket without
         // closing it, e.g. an early return or a panic mid-stream.
-        if self.hooks_fired || self.hooks.disconnect.is_empty() {
+        if self.hooks_fired || hooks.disconnect.is_empty() {
             return;
         }
         // Fire the disconnect hooks on a detached task (Drop cannot be async).
         // Skipped when there is no current runtime, so non-server use is safe.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let hooks = self.hooks.clone();
             let info = self.info.clone();
             let duration = self.started.elapsed();
             let close_code = self.close_code;
@@ -781,12 +787,16 @@ impl WebSocketConn {
     /// Runs the `on_ws_disconnect` hooks once, awaited in the connection's own
     /// task so they cannot be lost to a detached [`Drop`] task during shutdown.
     async fn fire_disconnect_hooks(&mut self) {
-        if self.hooks_fired || self.hooks.disconnect.is_empty() {
+        let Some(hooks) = self.hooks.upgrade() else {
+            self.hooks_fired = true;
+            return;
+        };
+        if self.hooks_fired || hooks.disconnect.is_empty() {
             return;
         }
         self.hooks_fired = true;
         let duration = self.started.elapsed();
-        for hook in self.hooks.disconnect.iter() {
+        for hook in hooks.disconnect.iter() {
             hook(WsDisconnectInfo::new(
                 self.info.clone(),
                 duration,
@@ -923,14 +933,12 @@ pub fn __ws_handshake(ctx: &RequestContext, route: WebSocketConfig) -> Result<Re
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value == WEBSOCKET_VERSION);
     if !version_ok {
-        return Err(
-            Error::bad_request("unsupported WebSocket version").with_code(NOT_A_WEBSOCKET)
-        );
+        return Err(Error::bad_request("unsupported WebSocket version").with_code(NOT_A_WEBSOCKET));
     }
 
-    let key = headers
-        .get(SEC_WEBSOCKET_KEY)
-        .ok_or_else(|| Error::bad_request("missing Sec-WebSocket-Key").with_code(NOT_A_WEBSOCKET))?;
+    let key = headers.get(SEC_WEBSOCKET_KEY).ok_or_else(|| {
+        Error::bad_request("missing Sec-WebSocket-Key").with_code(NOT_A_WEBSOCKET)
+    })?;
     let accept = derive_accept_key(key.as_bytes());
     let accept = HeaderValue::from_str(&accept)
         .map_err(|_| Error::internal("failed to build WebSocket accept header"))?;
@@ -945,7 +953,11 @@ pub fn __ws_handshake(ctx: &RequestContext, route: WebSocketConfig) -> Result<Re
 }
 
 fn validate_origin(ctx: &RequestContext, route: &WebSocketConfig) -> Result<()> {
-    let Some(origin) = ctx.headers().get(ORIGIN).and_then(|value| value.to_str().ok()) else {
+    let Some(origin) = ctx
+        .headers()
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
         return Ok(());
     };
 
@@ -953,8 +965,9 @@ fn validate_origin(ctx: &RequestContext, route: &WebSocketConfig) -> Result<()> 
     match policy {
         Some(WsOriginPolicy::Any) => Ok(()),
         Some(WsOriginPolicy::Allowlist(allowed)) => {
-            let actual = parse_origin(origin)
-                .ok_or_else(|| Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))?;
+            let actual = parse_origin(origin).ok_or_else(|| {
+                Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN")
+            })?;
             let matches = allowed
                 .iter()
                 .filter_map(|origin| parse_origin(origin))
@@ -962,25 +975,30 @@ fn validate_origin(ctx: &RequestContext, route: &WebSocketConfig) -> Result<()> 
             if matches {
                 Ok(())
             } else {
-                Err(Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))
+                Err(Error::forbidden("websocket origin is not allowed")
+                    .with_code("WS_ORIGIN_FORBIDDEN"))
             }
         }
         None => {
-            let actual = parse_origin(origin)
-                .ok_or_else(|| Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))?;
-            let expected = expected_same_origin(ctx)
-                .ok_or_else(|| Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))?;
+            let actual = parse_origin(origin).ok_or_else(|| {
+                Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN")
+            })?;
+            let expected = expected_same_origin(ctx).ok_or_else(|| {
+                Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN")
+            })?;
             if actual == expected {
                 Ok(())
             } else {
-                Err(Error::forbidden("websocket origin is not allowed").with_code("WS_ORIGIN_FORBIDDEN"))
+                Err(Error::forbidden("websocket origin is not allowed")
+                    .with_code("WS_ORIGIN_FORBIDDEN"))
             }
         }
     }
 }
 
 fn effective_config(ctx: &RequestContext, route: &WebSocketConfig) -> WebSocketConfig {
-    let base = ctx.state()
+    let base = ctx
+        .state()
         .get::<AppWsConfig>()
         .map(|config| config.0.clone())
         .unwrap_or_default();
@@ -1023,7 +1041,11 @@ fn expected_same_origin(ctx: &RequestContext) -> Option<ParsedOrigin> {
 }
 
 fn default_port(scheme: &str) -> u16 {
-    if scheme == "https" { 443 } else { 80 }
+    if scheme == "https" {
+        443
+    } else {
+        80
+    }
 }
 
 /// Deserializes a JSON message and runs its `garde` validation.
@@ -1414,7 +1436,10 @@ mod tests {
         assert_eq!(empty.err().unwrap().kind(), crate::ErrorKind::Unprocessable);
 
         let malformed = deserialize_and_validate::<ChatIn>(b"not json");
-        assert_eq!(malformed.err().unwrap().kind(), crate::ErrorKind::Unprocessable);
+        assert_eq!(
+            malformed.err().unwrap().kind(),
+            crate::ErrorKind::Unprocessable
+        );
     }
 
     #[tokio::test]
@@ -1427,10 +1452,11 @@ mod tests {
                 move |info| {
                     let connects = connects.clone();
                     Box::pin(async move {
-                        connects
-                            .lock()
-                            .unwrap()
-                            .push((info.method().clone(), info.path().to_owned(), info.request_id().map(str::to_owned)));
+                        connects.lock().unwrap().push((
+                            info.method().clone(),
+                            info.path().to_owned(),
+                            info.request_id().map(str::to_owned),
+                        ));
                     })
                 }
             })],
@@ -1457,13 +1483,14 @@ mod tests {
         let (ctx, client_io) = request_context_with_duplex(&headers, None, Some(hooks));
         let socket = WebSocket::from_request_context(&ctx, WebSocketConfig::new()).unwrap();
         let mut conn = socket.accept().await.unwrap();
-        let mut client =
-            WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
 
         client.send(Message::Text("hello".into())).await.unwrap();
         assert_eq!(conn.receive_text().await.unwrap(), Some("hello".to_owned()));
 
-        conn.send_json(&serde_json::json!({ "ok": true })).await.unwrap();
+        conn.send_json(&serde_json::json!({ "ok": true }))
+            .await
+            .unwrap();
         let message = client.next().await.unwrap().unwrap();
         assert_eq!(message.into_text().unwrap(), r#"{"ok":true}"#);
 
@@ -1490,26 +1517,27 @@ mod tests {
 
     #[tokio::test]
     async fn duplex_connection_helpers_cover_close_idle_and_validation_paths() {
-        let (ctx, client_io) = request_context_with_duplex(
-            &websocket_headers(),
-            None,
-            None,
-        );
+        let (ctx, client_io) = request_context_with_duplex(&websocket_headers(), None, None);
         let socket = WebSocket::from_request_context(
             &ctx,
             WebSocketConfig::new().idle_timeout(Duration::from_millis(10)),
         )
         .unwrap();
         let mut conn = socket.accept().await.unwrap();
-        let mut client =
-            WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
 
         client.send(Message::Ping(vec![1, 2])).await.unwrap();
-        client.send(Message::Text("{\"message\":\"ok\"}".into())).await.unwrap();
+        client
+            .send(Message::Text("{\"message\":\"ok\"}".into()))
+            .await
+            .unwrap();
         let validated = conn.receive_valid::<ChatIn>().await.unwrap().unwrap();
         assert_eq!(validated.message, "ok");
 
-        client.send(Message::Binary(br#"{"message":""}"#.to_vec())).await.unwrap();
+        client
+            .send(Message::Binary(br#"{"message":""}"#.to_vec()))
+            .await
+            .unwrap();
         let error = match conn.receive_valid::<ChatIn>().await {
             Ok(_) => panic!("expected validation error"),
             Err(error) => error,
@@ -1528,8 +1556,7 @@ mod tests {
         assert_eq!(conn.receive_json::<ChatIn>().await.unwrap(), None);
         assert_eq!(conn.receive_valid::<ChatIn>().await.unwrap(), None);
 
-        let (ctx, _client_io) =
-            request_context_with_duplex(&websocket_headers(), None, None);
+        let (ctx, _client_io) = request_context_with_duplex(&websocket_headers(), None, None);
         let socket = WebSocket::from_request_context(
             &ctx,
             WebSocketConfig::new().idle_timeout(Duration::from_millis(5)),

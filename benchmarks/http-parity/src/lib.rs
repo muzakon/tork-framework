@@ -75,15 +75,17 @@ pub enum Scenario {
     PathParam,
     JsonValidate,
     MiddlewareStack,
+    MiddlewareStackDeep,
     TypedError,
 }
 
 impl Scenario {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::JsonOk,
         Self::PathParam,
         Self::JsonValidate,
         Self::MiddlewareStack,
+        Self::MiddlewareStackDeep,
         Self::TypedError,
     ];
 
@@ -93,6 +95,7 @@ impl Scenario {
             Self::PathParam => "path_param",
             Self::JsonValidate => "json_validate",
             Self::MiddlewareStack => "middleware_stack",
+            Self::MiddlewareStackDeep => "middleware_stack_deep",
             Self::TypedError => "typed_error",
         }
     }
@@ -110,6 +113,7 @@ impl Scenario {
             Self::PathParam => "/users/42",
             Self::JsonValidate => "/items",
             Self::MiddlewareStack => "/middleware",
+            Self::MiddlewareStackDeep => "/middleware/deep",
             Self::TypedError => "/db",
         }
     }
@@ -143,6 +147,7 @@ impl FromStr for Scenario {
             "path_param" => Ok(Self::PathParam),
             "json_validate" => Ok(Self::JsonValidate),
             "middleware_stack" => Ok(Self::MiddlewareStack),
+            "middleware_stack_deep" => Ok(Self::MiddlewareStackDeep),
             "typed_error" => Ok(Self::TypedError),
             _ => Err(format!("unknown scenario `{value}`")),
         }
@@ -275,6 +280,13 @@ async fn middleware_tork() -> TorkResult<MessageBody> {
     })
 }
 
+#[get("/middleware/deep")]
+async fn middleware_deep_tork() -> TorkResult<MessageBody> {
+    Ok(MessageBody {
+        message: "middleware_ok".to_owned(),
+    })
+}
+
 #[get("/db")]
 async fn typed_error_tork() -> TorkResult<MessageBody> {
     let result: Result<MessageBody, DbError> = Err(DbError::Timeout);
@@ -298,6 +310,46 @@ async fn seed_request_id(request: Request, next: Next) -> TorkResult<Response> {
 
 #[middleware]
 async fn mark_stack(request: Request, next: Next) -> TorkResult<Response> {
+    let mut response = next.run(request).await?;
+    response.headers_mut().insert(
+        HeaderName::from_static("x-bench-stack"),
+        HeaderValue::from_static(BENCH_STACK_VALUE),
+    );
+    Ok(response)
+}
+
+#[middleware]
+async fn mark_stack_2(request: Request, next: Next) -> TorkResult<Response> {
+    let mut response = next.run(request).await?;
+    response.headers_mut().insert(
+        HeaderName::from_static("x-bench-stack"),
+        HeaderValue::from_static(BENCH_STACK_VALUE),
+    );
+    Ok(response)
+}
+
+#[middleware]
+async fn mark_stack_3(request: Request, next: Next) -> TorkResult<Response> {
+    let mut response = next.run(request).await?;
+    response.headers_mut().insert(
+        HeaderName::from_static("x-bench-stack"),
+        HeaderValue::from_static(BENCH_STACK_VALUE),
+    );
+    Ok(response)
+}
+
+#[middleware]
+async fn mark_stack_4(request: Request, next: Next) -> TorkResult<Response> {
+    let mut response = next.run(request).await?;
+    response.headers_mut().insert(
+        HeaderName::from_static("x-bench-stack"),
+        HeaderValue::from_static(BENCH_STACK_VALUE),
+    );
+    Ok(response)
+}
+
+#[middleware]
+async fn mark_stack_5(request: Request, next: Next) -> TorkResult<Response> {
     let mut response = next.run(request).await?;
     response.headers_mut().insert(
         HeaderName::from_static("x-bench-stack"),
@@ -375,6 +427,14 @@ pub fn build_tork_app(scenario: Scenario) -> App {
             .middleware(seed_request_id)
             .middleware(mark_stack)
             .include(middleware_tork),
+        Scenario::MiddlewareStackDeep => app
+            .middleware(seed_request_id)
+            .middleware(mark_stack)
+            .middleware(mark_stack_2)
+            .middleware(mark_stack_3)
+            .middleware(mark_stack_4)
+            .middleware(mark_stack_5)
+            .include(middleware_deep_tork),
         Scenario::TypedError => app
             .exception_handler::<DbError, _, _>(|_error, _ctx| async move {
                 json_response(
@@ -395,6 +455,14 @@ pub fn build_axum_app(scenario: Scenario) -> AxumRouter {
         Scenario::JsonValidate => AxumRouter::new().route("/items", axum_post(create_item_axum)),
         Scenario::MiddlewareStack => AxumRouter::new()
             .route("/middleware", axum_get(middleware_axum))
+            .layer(axum_middleware::from_fn(axum_mark_stack))
+            .layer(axum_middleware::from_fn(axum_seed_request_id)),
+        Scenario::MiddlewareStackDeep => AxumRouter::new()
+            .route("/middleware/deep", axum_get(middleware_axum))
+            .layer(axum_middleware::from_fn(axum_mark_stack))
+            .layer(axum_middleware::from_fn(axum_mark_stack))
+            .layer(axum_middleware::from_fn(axum_mark_stack))
+            .layer(axum_middleware::from_fn(axum_mark_stack))
             .layer(axum_middleware::from_fn(axum_mark_stack))
             .layer(axum_middleware::from_fn(axum_seed_request_id)),
         Scenario::TypedError => AxumRouter::new().route("/db", axum_get(typed_error_axum)),
@@ -589,6 +657,24 @@ pub fn assert_expected_response(
             assert_json_eq(&response.body, &json!({ "name": "widget", "count": 3 }))?;
         }
         Scenario::MiddlewareStack => {
+            assert_eq!(response.status, StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok()),
+                Some(BENCH_REQUEST_ID)
+            );
+            assert_eq!(
+                response
+                    .headers
+                    .get("x-bench-stack")
+                    .and_then(|value| value.to_str().ok()),
+                Some(BENCH_STACK_VALUE)
+            );
+            assert_json_eq(&response.body, &json!({ "message": "middleware_ok" }))?;
+        }
+        Scenario::MiddlewareStackDeep => {
             assert_eq!(response.status, StatusCode::OK);
             assert_eq!(
                 response

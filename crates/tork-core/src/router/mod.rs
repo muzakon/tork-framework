@@ -32,8 +32,7 @@ pub(crate) type SharedResponseHook =
     Arc<dyn Fn(ResponseEvent) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// A scoped, observe-only `on_error` hook.
-pub(crate) type SharedErrorHook =
-    Arc<dyn Fn(ErrorEvent) -> BoxFuture<'static, ()> + Send + Sync>;
+pub(crate) type SharedErrorHook = Arc<dyn Fn(ErrorEvent) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// A scoped, observe-only `on_validation_error` hook.
 pub(crate) type SharedValidationErrorHook =
@@ -51,7 +50,8 @@ macro_rules! scoped_hook_builders {
             F: Fn(RequestEvent) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = ()> + Send + 'static,
         {
-            self.request_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self.request_hooks
+                .push(Arc::new(move |event| Box::pin(hook(event))));
             self
         }
 
@@ -61,7 +61,8 @@ macro_rules! scoped_hook_builders {
             F: Fn(ResponseEvent) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = ()> + Send + 'static,
         {
-            self.response_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self.response_hooks
+                .push(Arc::new(move |event| Box::pin(hook(event))));
             self
         }
 
@@ -71,7 +72,8 @@ macro_rules! scoped_hook_builders {
             F: Fn(ErrorEvent) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = ()> + Send + 'static,
         {
-            self.error_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self.error_hooks
+                .push(Arc::new(move |event| Box::pin(hook(event))));
             self
         }
 
@@ -81,7 +83,8 @@ macro_rules! scoped_hook_builders {
             F: Fn(ValidationErrorEvent) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = ()> + Send + 'static,
         {
-            self.validation_hooks.push(Arc::new(move |event| Box::pin(hook(event))));
+            self.validation_hooks
+                .push(Arc::new(move |event| Box::pin(hook(event))));
             self
         }
     };
@@ -361,7 +364,8 @@ impl Route {
         self.request_hooks.splice(0..0, request.iter().cloned());
         self.response_hooks.splice(0..0, response.iter().cloned());
         self.error_hooks.splice(0..0, error.iter().cloned());
-        self.validation_hooks.splice(0..0, validation.iter().cloned());
+        self.validation_hooks
+            .splice(0..0, validation.iter().cloned());
         self
     }
 }
@@ -481,9 +485,11 @@ mod tests {
     use crate::response::empty;
 
     fn dummy_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-            Box::pin(async { Ok(empty(StatusCode::OK)) })
-        })
+        Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async { Ok(empty(StatusCode::OK)) })
+            },
+        )
     }
 
     fn get(path: &str) -> Route {
@@ -505,10 +511,7 @@ mod tests {
 
     #[test]
     fn root_route_drops_trailing_slash() {
-        let routes = Router::new()
-            .prefix("/users")
-            .route(get("/"))
-            .into_routes();
+        let routes = Router::new().prefix("/users").route(get("/")).into_routes();
 
         assert_eq!(routes[0].path(), "/users");
     }
@@ -574,7 +577,7 @@ mod tests {
         let hooks = routes[0].request_hooks();
         assert_eq!(hooks.len(), 2, "both router hooks attach to the route");
 
-        let info = RequestInfo::new(Method::GET, "/x".to_owned(), Some("/x".to_owned()), None);
+        let info = RequestInfo::new(Method::GET, "/x".into(), Some("/x".into()), None);
         for hook in hooks {
             hook(RequestEvent::new(info.clone())).await;
         }

@@ -125,7 +125,9 @@ impl UploadConfig {
         ResolvedConfig {
             max_body_size: self.max_body_size.unwrap_or(DEFAULT_MAX_BODY_SIZE),
             max_file_size: self.max_file_size.unwrap_or(DEFAULT_MAX_FILE_SIZE),
-            max_text_field_size: self.max_text_field_size.unwrap_or(DEFAULT_MAX_TEXT_FIELD_SIZE),
+            max_text_field_size: self
+                .max_text_field_size
+                .unwrap_or(DEFAULT_MAX_TEXT_FIELD_SIZE),
             memory_threshold: self.memory_threshold.unwrap_or(DEFAULT_MEMORY_THRESHOLD),
             max_files: self.max_files.unwrap_or(DEFAULT_MAX_FILES),
             temp_dir: self.temp_dir.clone(),
@@ -340,29 +342,32 @@ fn build_safe_target(dir: &Path, file_name: &str) -> Result<PathBuf> {
     let name_path = Path::new(file_name);
     let mut components = name_path.components();
     let Some(Component::Normal(_)) = components.next() else {
-        return Err(Error::bad_request("upload destination filename is not allowed")
-            .with_code("UPLOAD_PATH_INVALID"));
+        return Err(
+            Error::bad_request("upload destination filename is not allowed")
+                .with_code("UPLOAD_PATH_INVALID"),
+        );
     };
     if components.next().is_some() {
-        return Err(Error::bad_request("upload destination filename is not allowed")
-            .with_code("UPLOAD_PATH_INVALID"));
+        return Err(
+            Error::bad_request("upload destination filename is not allowed")
+                .with_code("UPLOAD_PATH_INVALID"),
+        );
     }
     Ok(dir.join(file_name))
 }
 
 fn validate_save_path(path: &Path) -> Result<()> {
     if path.is_absolute() {
-        return Err(
-            Error::bad_request("upload destination path is not allowed")
-                .with_code("UPLOAD_PATH_INVALID"),
-        );
+        return Err(Error::bad_request("upload destination path is not allowed")
+            .with_code("UPLOAD_PATH_INVALID"));
     }
 
-    if path.components().any(|component| matches!(component, Component::ParentDir)) {
-        return Err(
-            Error::bad_request("upload destination path is not allowed")
-                .with_code("UPLOAD_PATH_INVALID"),
-        );
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(Error::bad_request("upload destination path is not allowed")
+            .with_code("UPLOAD_PATH_INVALID"));
     }
 
     ensure_target_is_not_symlink(path)?;
@@ -372,10 +377,8 @@ fn validate_save_path(path: &Path) -> Result<()> {
 fn ensure_target_is_not_symlink(path: &Path) -> Result<()> {
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() {
-            return Err(
-                Error::bad_request("upload destination path is not allowed")
-                    .with_code("UPLOAD_PATH_SYMLINK"),
-            );
+            return Err(Error::bad_request("upload destination path is not allowed")
+                .with_code("UPLOAD_PATH_SYMLINK"));
         }
     }
     Ok(())
@@ -491,8 +494,9 @@ pub async fn __validate_upload(file: &mut UploadFile, rule: &FileRule) -> Result
 fn check_size(size: usize, rule: &FileRule) -> Result<()> {
     if let Some(max) = rule.max_size {
         if size > max {
-            return Err(Error::payload_too_large("uploaded file is too large")
-                .with_code("FILE_TOO_LARGE"));
+            return Err(
+                Error::payload_too_large("uploaded file is too large").with_code("FILE_TOO_LARGE")
+            );
         }
     }
     Ok(())
@@ -529,8 +533,10 @@ fn check_sniffed_type(bytes: &[u8], rule: &FileRule) -> Result<()> {
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(detected))
         {
-            return Err(Error::unprocessable("file content does not match the declared type")
-                .with_code("UNSUPPORTED_MEDIA_TYPE"));
+            return Err(
+                Error::unprocessable("file content does not match the declared type")
+                    .with_code("UNSUPPORTED_MEDIA_TYPE"),
+            );
         }
     }
     Ok(())
@@ -582,8 +588,9 @@ impl MultipartForm {
 
             if filename.is_some() {
                 if files.len() >= resolved.max_files {
-                    return Err(Error::bad_request("too many file fields")
-                        .with_code("TOO_MANY_FILES"));
+                    return Err(
+                        Error::bad_request("too many file fields").with_code("TOO_MANY_FILES")
+                    );
                 }
                 let mut storage = resolved.new_spool();
                 let mut size: u64 = 0;
@@ -816,7 +823,10 @@ mod tests {
         assert!(!file.is_empty());
         assert_eq!(file.bytes(), b"hello");
         assert_eq!(file.filename(), Some("a.txt"));
-        assert_eq!(file.content_type().map(Mime::essence_str), Some("text/plain"));
+        assert_eq!(
+            file.content_type().map(Mime::essence_str),
+            Some("text/plain")
+        );
 
         let bytes = FileBytes::new(Bytes::from_static(b"hello"), None, None).into_bytes();
         assert_eq!(bytes, Bytes::from_static(b"hello"));
@@ -860,8 +870,14 @@ mod tests {
     #[tokio::test]
     async fn upload_file_reads_in_chunks() {
         let mut file = UploadFile::new(None, None, 4, spooled(b"abcd"));
-        assert_eq!(file.read_chunk(2).await.unwrap(), Some(Bytes::from_static(b"ab")));
-        assert_eq!(file.read_chunk(2).await.unwrap(), Some(Bytes::from_static(b"cd")));
+        assert_eq!(
+            file.read_chunk(2).await.unwrap(),
+            Some(Bytes::from_static(b"ab"))
+        );
+        assert_eq!(
+            file.read_chunk(2).await.unwrap(),
+            Some(Bytes::from_static(b"cd"))
+        );
         assert_eq!(file.read_chunk(2).await.unwrap(), None);
         file.seek_start().await.unwrap();
         assert_eq!(file.read().await.unwrap(), Bytes::from_static(b"abcd"));
@@ -983,10 +999,48 @@ mod tests {
         assert_eq!(bound.into_inner().token, "abc123");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn multipart_spool_flush_does_not_block_the_runtime() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let body = format!(
+            "--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"big.bin\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n{}\r\n--X--\r\n",
+            "a".repeat(SPOOL_FLUSH_THRESHOLD * 2)
+        );
+        let ctx = ctx_with("multipart/form-data; boundary=X", body.as_bytes());
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let tick_counter = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tick_counter.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+
+        let mut form = __parse_multipart(
+            &ctx,
+            UploadConfig::new()
+                .memory_threshold(1)
+                .max_file_size(body.len() + 1024),
+        )
+        .await
+        .unwrap();
+        assert!(form.take_upload_file("file").is_some());
+        ticker.abort();
+        assert!(ticks.load(Ordering::Relaxed) > 0);
+    }
+
     #[test]
     fn file_validation_enforces_size_type_and_sniff() {
         let png_bytes = Bytes::from_static(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR");
-        let png = FileBytes::new(png_bytes, Some("a.png".to_owned()), Some("image/png".parse().unwrap()));
+        let png = FileBytes::new(
+            png_bytes,
+            Some("a.png".to_owned()),
+            Some("image/png".parse().unwrap()),
+        );
         let rule = FileRule {
             max_size: Some(1024),
             content_types: &["image/png"],
@@ -995,7 +1049,11 @@ mod tests {
         assert!(__validate_file_bytes(&png, &rule).is_ok());
 
         // Declared content type not allowed.
-        let txt = FileBytes::new(Bytes::from_static(b"hi"), None, Some("text/plain".parse().unwrap()));
+        let txt = FileBytes::new(
+            Bytes::from_static(b"hi"),
+            None,
+            Some("text/plain".parse().unwrap()),
+        );
         let only_png = FileRule {
             max_size: None,
             content_types: &["image/png"],
@@ -1014,12 +1072,19 @@ mod tests {
             sniff: false,
         };
         assert_eq!(
-            __validate_file_bytes(&big, &small_limit).err().unwrap().code(),
+            __validate_file_bytes(&big, &small_limit)
+                .err()
+                .unwrap()
+                .code(),
             "FILE_TOO_LARGE"
         );
 
         // Sniff mismatch: declared png but bytes are not png.
-        let fake = FileBytes::new(Bytes::from_static(b"GIF89a...."), None, Some("image/png".parse().unwrap()));
+        let fake = FileBytes::new(
+            Bytes::from_static(b"GIF89a...."),
+            None,
+            Some("image/png".parse().unwrap()),
+        );
         assert!(__validate_file_bytes(&fake, &rule).is_err());
 
         let unrestricted = FileRule {
@@ -1040,13 +1105,23 @@ mod tests {
         let ctx = ctx_with("multipart/form-data; boundary=X", body.as_bytes());
         let mut form = __parse_multipart(&ctx, UploadConfig::new()).await.unwrap();
 
-        let file = form.take_file_bytes("doc").await.unwrap().expect("file present");
+        let file = form
+            .take_file_bytes("doc")
+            .await
+            .unwrap()
+            .expect("file present");
         assert_eq!(file.bytes(), b"DATA");
         assert_eq!(file.filename(), Some("a.bin"));
-        assert_eq!(form.take_form_value::<String>("note").unwrap(), Some("hi".to_owned()));
+        assert_eq!(
+            form.take_form_value::<String>("note").unwrap(),
+            Some("hi".to_owned())
+        );
         assert_eq!(form.take_form_value::<String>("missing").unwrap(), None);
         assert_eq!(form.take_form_values::<u32>("count").unwrap(), vec![1, 2]);
-        assert_eq!(form.take_form_values::<u32>("count").unwrap(), Vec::<u32>::new());
+        assert_eq!(
+            form.take_form_values::<u32>("count").unwrap(),
+            Vec::<u32>::new()
+        );
 
         let remaining = form.take_file_bytes_list("doc").await.unwrap();
         assert_eq!(remaining.len(), 1);
@@ -1075,7 +1150,8 @@ mod tests {
         };
         assert_eq!(error.code(), "TOO_MANY_FILES");
 
-        let oversized_text = "--X\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n--X--\r\n";
+        let oversized_text =
+            "--X\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n--X--\r\n";
         let ctx = ctx_with("multipart/form-data; boundary=X", oversized_text.as_bytes());
         let error = match __parse_multipart(&ctx, UploadConfig::new().max_body_size(3)).await {
             Ok(_) => panic!("expected payload too large"),
@@ -1122,7 +1198,9 @@ mod tests {
             .0;
         let mut state = StateMap::new();
         state.insert(AppUploadConfig(UploadConfig::new().max_file_size(3)));
-        let body = crate::body::box_body(http_body_util::Full::new(Bytes::copy_from_slice(body.as_bytes())));
+        let body = crate::body::box_body(http_body_util::Full::new(Bytes::copy_from_slice(
+            body.as_bytes(),
+        )));
         let ctx = RequestContext::new(head, PathParams::new(), Arc::new(state), body);
         let mut form = __parse_multipart(&ctx, UploadConfig::new().max_file_size(10))
             .await

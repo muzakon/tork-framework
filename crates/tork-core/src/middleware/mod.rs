@@ -81,17 +81,20 @@ pub trait Middleware: Send + Sync + 'static {
 /// Calling [`run`](Next::run) advances to the next middleware, or, once the
 /// chain is exhausted, dispatches to the matched route handler.
 pub struct Next {
+    state: Arc<NextState>,
+    index: usize,
+}
+
+struct NextState {
     app: Arc<AppInner>,
     stack: Arc<[Arc<dyn Middleware>]>,
-    index: usize,
 }
 
 impl Next {
     /// Creates a chain handle positioned at the first middleware.
     pub(crate) fn new(app: Arc<AppInner>, stack: Arc<[Arc<dyn Middleware>]>) -> Self {
         Self {
-            app,
-            stack,
+            state: Arc::new(NextState { app, stack }),
             index: 0,
         }
     }
@@ -101,17 +104,16 @@ impl Next {
     /// If more middlewares remain, the next one is invoked; otherwise the request
     /// is dispatched to its route handler.
     pub fn run(self, request: Request) -> BoxFuture<'static, Result<Response>> {
-        match self.stack.get(self.index).cloned() {
+        match self.state.stack.get(self.index).cloned() {
             Some(middleware) => {
                 let next = Next {
-                    app: self.app,
-                    stack: self.stack,
+                    state: self.state,
                     index: self.index + 1,
                 };
                 middleware.handle(request, next)
             }
             None => {
-                let app = self.app;
+                let app = self.state.app.clone();
                 Box::pin(async move { Ok(app.dispatch(request).await) })
             }
         }
@@ -202,16 +204,25 @@ mod tests {
     }
 
     fn pong_handler() -> HandlerFn {
-        std::sync::Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-            Box::pin(async {
-                Ok(bytes_response(StatusCode::OK, TEXT_PLAIN_UTF8, Bytes::from_static(b"pong")))
-            })
-        })
+        std::sync::Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async {
+                    Ok(bytes_response(
+                        StatusCode::OK,
+                        TEXT_PLAIN_UTF8,
+                        Bytes::from_static(b"pong"),
+                    ))
+                })
+            },
+        )
     }
 
     fn app_with(middlewares: Vec<Box<dyn FnOnce(App) -> App>>) -> std::sync::Arc<AppInner> {
-        let mut app = App::new()
-            .include_router(Router::new().route(Route::new(Method::GET, "/", pong_handler())));
+        let mut app = App::new().include_router(Router::new().route(Route::new(
+            Method::GET,
+            "/",
+            pong_handler(),
+        )));
         for add in middlewares {
             app = add(app);
         }
@@ -283,9 +294,11 @@ mod tests {
     #[test]
     fn resolve_duplicates_applies_each_policy() {
         // Allow keeps every registration.
-        let allowed =
-            resolve_duplicates(vec![policy("a", DuplicatePolicy::Allow), policy("a", DuplicatePolicy::Allow)])
-                .unwrap();
+        let allowed = resolve_duplicates(vec![
+            policy("a", DuplicatePolicy::Allow),
+            policy("a", DuplicatePolicy::Allow),
+        ])
+        .unwrap();
         assert_eq!(allowed.len(), 2);
 
         // Replace keeps only the most recent.
@@ -297,13 +310,11 @@ mod tests {
         assert_eq!(replaced.len(), 1);
 
         // Reject fails the configuration.
-        assert!(
-            resolve_duplicates(vec![
-                policy("c", DuplicatePolicy::Reject),
-                policy("c", DuplicatePolicy::Reject)
-            ])
-            .is_err()
-        );
+        assert!(resolve_duplicates(vec![
+            policy("c", DuplicatePolicy::Reject),
+            policy("c", DuplicatePolicy::Reject)
+        ])
+        .is_err());
 
         // Distinct names never collide.
         let distinct = resolve_duplicates(vec![

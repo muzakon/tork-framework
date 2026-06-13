@@ -15,8 +15,9 @@ use crate::hooks::{
     ValidationErrorEvent,
 };
 use crate::lifespan::{ErasedLifespan, Lifespan, LifespanCell, LifespanContext, ReadyContext};
-use crate::logging::{Logger, LoggerConfig, install as install_logging};
-use crate::middleware::{Middleware, Next, Request, resolve_duplicates};
+use crate::logging::{install as install_logging, Logger, LoggerConfig};
+use crate::middleware::{resolve_duplicates, Middleware, Next, Request};
+use crate::multipart::{AppUploadConfig, UploadConfig};
 use crate::openapi::{AsyncApiProvider, OpenApiProvider};
 use crate::response::{IntoResponse, Response};
 use crate::router::matcher::Matcher;
@@ -24,13 +25,12 @@ use crate::router::{
     BoxFuture, Route, Router, SharedErrorHook, SharedRequestHook, SharedResponseHook,
     SharedValidationErrorHook,
 };
-use crate::multipart::{AppUploadConfig, UploadConfig};
+use crate::server::{run_with_shutdown, shutdown_signal};
+use crate::state::{AppStateRef, StateMap};
 use crate::ws::{
     AppWsConfig, WebSocketConfig, WsConnectHook, WsConnectInfo, WsDisconnectHook, WsDisconnectInfo,
     WsHooks,
 };
-use crate::server::{run_with_shutdown, shutdown_signal};
-use crate::state::{AppStateRef, StateMap};
 
 /// A startup or shutdown event hook.
 type Hook = Box<dyn Fn() -> BoxFuture<'static, Result<()>> + Send + Sync>;
@@ -263,8 +263,7 @@ impl App {
         F: Fn(ReadyContext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        self.on_ready
-            .push(Box::new(move |ctx| Box::pin(hook(ctx))));
+        self.on_ready.push(Box::new(move |ctx| Box::pin(hook(ctx))));
         self
     }
 
@@ -277,7 +276,8 @@ impl App {
         F: Fn(RequestEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.on_request.push(Box::new(move |event| Box::pin(hook(event))));
+        self.on_request
+            .push(Box::new(move |event| Box::pin(hook(event))));
         self
     }
 
@@ -290,7 +290,8 @@ impl App {
         F: Fn(ResponseEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.on_response.push(Box::new(move |event| Box::pin(hook(event))));
+        self.on_response
+            .push(Box::new(move |event| Box::pin(hook(event))));
         self
     }
 
@@ -303,7 +304,8 @@ impl App {
         F: Fn(ErrorEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.on_error.push(Box::new(move |event| Box::pin(hook(event))));
+        self.on_error
+            .push(Box::new(move |event| Box::pin(hook(event))));
         self
     }
 
@@ -314,7 +316,8 @@ impl App {
         F: Fn(ValidationErrorEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.on_validation_error.push(Box::new(move |event| Box::pin(hook(event))));
+        self.on_validation_error
+            .push(Box::new(move |event| Box::pin(hook(event))));
         self
     }
 
@@ -327,7 +330,8 @@ impl App {
         F: Fn(PanicEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.on_panic.push(Box::new(move |event| Box::pin(hook(event))));
+        self.on_panic
+            .push(Box::new(move |event| Box::pin(hook(event))));
         self
     }
 
@@ -356,7 +360,8 @@ impl App {
         F: Fn(WsConnectInfo) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.on_ws_connect.push(Box::new(move |info| Box::pin(hook(info))));
+        self.on_ws_connect
+            .push(Box::new(move |info| Box::pin(hook(info))));
         self
     }
 
@@ -368,7 +373,8 @@ impl App {
         F: Fn(WsDisconnectInfo) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.on_ws_disconnect.push(Box::new(move |info| Box::pin(hook(info))));
+        self.on_ws_disconnect
+            .push(Box::new(move |info| Box::pin(hook(info))));
         self
     }
 
@@ -424,7 +430,8 @@ impl App {
 
     /// Rejects mixing a lifespan with startup/shutdown event hooks.
     fn validate_lifecycle(&self) -> Result<()> {
-        if !self.lifespan.is_empty() && (!self.on_startup.is_empty() || !self.on_shutdown.is_empty())
+        if !self.lifespan.is_empty()
+            && (!self.on_startup.is_empty() || !self.on_shutdown.is_empty())
         {
             return Err(Error::internal(
                 "Cannot use `.lifespan(...)` together with `.on_startup(...)` or `.on_shutdown(...)`.\n\
@@ -581,11 +588,8 @@ impl App {
         let log = Logger::framework("Tork");
 
         log.info("Starting Tork application").emit();
-        self.validate_lifecycle()
-            .inspect_err(log_boot_error)?;
-        self.run_startup()
-            .await
-            .inspect_err(log_boot_error)?;
+        self.validate_lifecycle().inspect_err(log_boot_error)?;
+        self.run_startup().await.inspect_err(log_boot_error)?;
 
         let mut lifespan = std::mem::take(&mut self.lifespan);
         let on_shutdown = std::mem::take(&mut self.on_shutdown);
@@ -693,13 +697,15 @@ async fn run_shutdown(lifespan: &mut [Box<dyn ErasedLifespan>], on_shutdown: &[H
     if !lifespan.is_empty() {
         for cell in lifespan.iter_mut().rev() {
             if let Err(error) = cell.shutdown().await {
-                log.error(format!("shutdown failed: {}", error.message())).emit();
+                log.error(format!("shutdown failed: {}", error.message()))
+                    .emit();
             }
         }
     } else {
         for hook in on_shutdown {
             if let Err(error) = hook().await {
-                log.error(format!("shutdown hook failed: {}", error.message())).emit();
+                log.error(format!("shutdown hook failed: {}", error.message()))
+                    .emit();
             }
         }
     }
@@ -853,7 +859,11 @@ impl AppInner {
     ) -> Response {
         if error.is_validation() {
             for hook in self.on_validation_error.iter() {
-                hook(ValidationErrorEvent::new(info.clone(), error.details().to_vec())).await;
+                hook(ValidationErrorEvent::new(
+                    info.clone(),
+                    error.details().to_vec(),
+                ))
+                .await;
             }
             if let Some(route) = route {
                 fire_validation_hooks(route.validation_hooks(), info, &error).await;
@@ -922,7 +932,11 @@ async fn fire_validation_hooks(
     error: &Error,
 ) {
     for hook in hooks {
-        hook(ValidationErrorEvent::new(info.clone(), error.details().to_vec())).await;
+        hook(ValidationErrorEvent::new(
+            info.clone(),
+            error.details().to_vec(),
+        ))
+        .await;
     }
 }
 
@@ -936,8 +950,13 @@ pub(crate) fn request_info(
     let request_id = headers
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    RequestInfo::new(method.clone(), uri.path().to_owned(), route, request_id)
+        .map(Arc::<str>::from);
+    RequestInfo::new(
+        method.clone(),
+        Arc::from(uri.path()),
+        route.map(Arc::<str>::from),
+        request_id,
+    )
 }
 
 #[cfg(test)]
@@ -992,7 +1011,9 @@ mod tests {
 
         assert_eq!(error.code(), "LIFECYCLE_CONFLICT");
         assert!(
-            error.message().contains("Use either lifespan or event hooks"),
+            error
+                .message()
+                .contains("Use either lifespan or event hooks"),
             "message: {}",
             error.message()
         );
@@ -1059,11 +1080,11 @@ mod tests {
 #[cfg(test)]
 mod hook_tests {
     use super::*;
-    use crate::ErrorDetail;
     use crate::body::box_body;
     use crate::extract::RequestContext;
     use crate::response::empty;
     use crate::router::{HandlerFn, Route};
+    use crate::ErrorDetail;
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Full;
@@ -1089,17 +1110,20 @@ mod hook_tests {
 
     /// A route whose handler returns the error produced by `make`.
     fn failing_route(make: fn() -> Error) -> Router {
-        let handler: HandlerFn =
-            Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+        let handler: HandlerFn = Arc::new(
+            move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
                 Box::pin(async move { Err(make()) })
-            });
+            },
+        );
         Router::new().route(Route::new(Method::GET, "/", handler))
     }
 
     fn ok_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-            Box::pin(async { Ok(empty(StatusCode::OK)) })
-        })
+        Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async { Ok(empty(StatusCode::OK)) })
+            },
+        )
     }
 
     fn ok_route() -> Router {
@@ -1107,10 +1131,11 @@ mod hook_tests {
     }
 
     fn panicking_route() -> Router {
-        let handler: HandlerFn =
-            Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+        let handler: HandlerFn = Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
                 Box::pin(async { panic!("handler boom") })
-            });
+            },
+        );
         Router::new().route(Route::new(Method::GET, "/", handler))
     }
 
@@ -1162,7 +1187,10 @@ mod hook_tests {
         let response = app.dispatch(request(Method::GET, "/")).await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(entries(&validations), vec!["validation:1".to_owned()]);
-        assert!(entries(&errors).is_empty(), "on_error must not fire for validation");
+        assert!(
+            entries(&errors).is_empty(),
+            "on_error must not fire for validation"
+        );
     }
 
     #[derive(Debug)]
@@ -1217,7 +1245,10 @@ mod hook_tests {
 
         let response = app.handle(request(Method::GET, "/")).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(entries(&seen), vec!["first".to_owned(), "second".to_owned()]);
+        assert_eq!(
+            entries(&seen),
+            vec!["first".to_owned(), "second".to_owned()]
+        );
     }
 
     #[tokio::test]
@@ -1293,7 +1324,10 @@ mod hook_tests {
             .unwrap();
 
         let _ = app.dispatch(request(Method::GET, "/")).await;
-        assert_eq!(entries(&seen), vec!["global".to_owned(), "scoped".to_owned()]);
+        assert_eq!(
+            entries(&seen),
+            vec!["global".to_owned(), "scoped".to_owned()]
+        );
     }
 
     #[tokio::test]
@@ -1314,6 +1348,9 @@ mod hook_tests {
         let app = App::new().include_router(router).build().unwrap();
 
         let _ = app.dispatch(request(Method::GET, "/")).await;
-        assert_eq!(entries(&seen), vec!["second".to_owned(), "first".to_owned()]);
+        assert_eq!(
+            entries(&seen),
+            vec!["second".to_owned(), "first".to_owned()]
+        );
     }
 }

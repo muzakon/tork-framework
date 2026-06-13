@@ -6,6 +6,7 @@ This crate compares Tork and Axum over the same HTTP-core scenarios:
 - `path_param`
 - `json_validate`
 - `middleware_stack`
+- `middleware_stack_deep`
 - `typed_error`
 
 Commands:
