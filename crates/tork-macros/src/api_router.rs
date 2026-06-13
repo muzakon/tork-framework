@@ -9,7 +9,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Ident, Item, ItemMod, LitStr, Meta, Token, bracketed};
+use syn::{Attribute, Ident, Item, ItemMod, LitStr, Meta, Token, bracketed, parenthesized, token};
 
 use crate::common::krate;
 
@@ -17,6 +17,9 @@ use crate::common::krate;
 struct ApiRouterArgs {
     prefix: Option<LitStr>,
     tags: Vec<LitStr>,
+    /// The router-level `throttle`, captured as the tokens following the key
+    /// (either `= "name"` or `(...)`) so it can be re-injected into each route.
+    throttle: Option<TokenStream>,
 }
 
 impl Parse for ApiRouterArgs {
@@ -24,10 +27,32 @@ impl Parse for ApiRouterArgs {
         let mut args = ApiRouterArgs {
             prefix: None,
             tags: Vec::new(),
+            throttle: None,
         };
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
+
+            // `throttle` accepts `= "name"` or a parenthesized `(...)` group;
+            // capture it verbatim to re-inject into the routes.
+            if key == "throttle" {
+                if input.peek(token::Paren) {
+                    let content;
+                    parenthesized!(content in input);
+                    let inner: TokenStream = content.parse()?;
+                    args.throttle = Some(quote! { (#inner) });
+                } else {
+                    input.parse::<Token![=]>()?;
+                    let value: LitStr = input.parse()?;
+                    args.throttle = Some(quote! { = #value });
+                }
+                if input.is_empty() {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+                continue;
+            }
+
             input.parse::<Token![=]>()?;
 
             match key.to_string().as_str() {
@@ -109,6 +134,21 @@ fn expand_module(args: ApiRouterArgs, module: ItemMod) -> syn::Result<TokenStrea
         }
     }
 
+    // Inject the router-level throttle into each route as a hidden
+    // `__router_throttle`, which a route applies only when it has no `throttle`
+    // of its own — so endpoint policies override the router default for free.
+    if let Some(throttle) = &args.throttle {
+        for item in &mut items {
+            if let Item::Fn(func) = item {
+                for attr in &mut func.attrs {
+                    if is_route_attr(attr) {
+                        inject_router_throttle(attr, throttle);
+                    }
+                }
+            }
+        }
+    }
+
     let krate = krate();
 
     let prefix_call = match &args.prefix {
@@ -159,6 +199,15 @@ fn inject_prefix_hint(attr: &mut Attribute, prefix: &str) {
         let existing = &list.tokens;
         let prefix_lit = LitStr::new(prefix, Span::call_site());
         list.tokens = quote! { #existing, __prefix = #prefix_lit };
+    }
+}
+
+/// Appends a hidden `__router_throttle <value>` argument to a route attribute,
+/// where `<value>` is the captured `= "name"` or `(...)` from the router.
+fn inject_router_throttle(attr: &mut Attribute, throttle: &TokenStream) {
+    if let Meta::List(list) = &mut attr.meta {
+        let existing = &list.tokens;
+        list.tokens = quote! { #existing, __router_throttle #throttle };
     }
 }
 

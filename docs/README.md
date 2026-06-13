@@ -26,7 +26,8 @@ the previous one and ends with working code.
 14. [Testing](14-testing.md)
 15. [Logging](15-logging.md)
 16. [Caching](17-caching.md)
-17. [Project structure](16-project-structure.md)
+17. [Rate limiting](18-rate-limiting.md)
+18. [Project structure](16-project-structure.md)
 
 ## Status
 

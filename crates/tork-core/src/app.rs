@@ -93,6 +93,7 @@ pub struct App {
     upload_config: Option<UploadConfig>,
     logger_config: Option<LoggerConfig>,
     cache: Option<crate::cache::Cache>,
+    throttler: Option<crate::throttle::Throttler>,
 }
 
 impl Default for App {
@@ -127,6 +128,7 @@ impl App {
             upload_config: None,
             logger_config: None,
             cache: None,
+            throttler: None,
         }
     }
 
@@ -152,6 +154,23 @@ impl App {
     /// in-memory store. Without this call, injecting a `Cache` fails.
     pub fn cache(mut self, cache: crate::cache::Cache) -> Self {
         self.cache = Some(cache);
+        self
+    }
+
+    /// Enables rate limiting, defining the policies routes can apply with the
+    /// `throttle` attribute and (optionally) a global default.
+    ///
+    /// ```no_run
+    /// # use tork_core::{App, Throttle};
+    /// App::new().throttle(
+    ///     Throttle::new()
+    ///         .policy("default", 100, 60)
+    ///         .policy("strict", 5, 60)
+    ///         .default("default"),
+    /// );
+    /// ```
+    pub fn throttle(mut self, throttle: crate::throttle::Throttle) -> Self {
+        self.throttler = Some(crate::throttle::Throttler::new(throttle));
         self
     }
 
@@ -433,6 +452,7 @@ impl App {
             upload_config,
             logger_config,
             cache,
+            throttler,
             ..
         } = self;
         // The automatic HTTP request log is on unless the logger config disables it.
@@ -463,6 +483,10 @@ impl App {
         // Make the cache available to handlers and services that inject it.
         if let Some(cache) = cache {
             state.insert(cache);
+        }
+        // Make the throttle engine available to generated route checks.
+        if let Some(throttler) = throttler {
+            state.insert(throttler);
         }
 
         let mut routes = Vec::new();

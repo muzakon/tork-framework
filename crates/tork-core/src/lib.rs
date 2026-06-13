@@ -33,6 +33,7 @@ mod settings;
 pub mod testing;
 mod sse;
 mod state;
+mod throttle;
 mod ws;
 
 pub use app::{App, AppInner, TestApp};
@@ -55,6 +56,13 @@ pub use body::{BoxError, ReqBody, RespBody, box_body};
 pub use cache::{Cache, CacheStore, MemoryStore};
 #[cfg(feature = "redis")]
 pub use cache::RedisStore;
+pub use throttle::{
+    ByIp, MemoryThrottleStore, Throttle, ThrottleKey, ThrottlePolicy, ThrottleStore, Throttler,
+};
+#[cfg(feature = "redis")]
+pub use throttle::RedisThrottleStore;
+#[doc(hidden)]
+pub use throttle::check_request as __throttle_check;
 #[cfg(feature = "redis")]
 pub use redis_handle::Redis;
 // Re-export the Redis client so applications use the same version for raw access
