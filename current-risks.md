@@ -24,7 +24,7 @@ Status legend:
 ## 4. Missing Rate Limiting (High Risk / Feature Deficit)
 - **Risk:** The framework provides no built-in rate limiting middleware.
 - **Vulnerability:** All endpoints are exposed to brute-force attacks (login, password reset), API abuse, and denial-of-service. Without rate limiting at the framework level, every application must implement its own, and many will ship without it.
-- **Status:** Unimplemented. No `429 Too Many Requests` middleware exists despite `ErrorKind::TooManyRequests` being defined in the error module.
+- **Status:** RESOLVED. Added a NestJS-style rate limiter: `App::throttle(Throttle::new().policy(...).default(...))` defines named policies + a global default, and a `throttle` attribute on routers/routes (`throttle = "name"`, `throttle(limit = 3, ttl = 60)`, `throttle = "skip"`, `throttle = ["short", "long"]`) applies them with endpoint > router > global precedence, returning `429` + `Retry-After`. Custom keys via the `ThrottleKey` trait (default `ByIp`); pluggable in-memory or Redis store; fixed or sliding window; works on routes, SSE, and WebSockets. Covered by unit + integration tests; documented in docs/18-rate-limiting.md.
 
 ## 5. [x] UploadFile::save_to Path Traversal (High Security Risk)
 - **Risk:** `save_to` now rejects absolute and parent-traversal targets, and `save_to_dir(dir, file_name)` provides the safe persistence API for normal uploads.
