@@ -616,14 +616,21 @@ async fn cors_actual_request_includes_vary_origin() {
 }
 
 #[tokio::test]
-async fn trusted_host_ipv6_address_current_behavior() {
+async fn trusted_host_accepts_bracketed_ipv6_with_a_port() {
     use tork::middleware::TrustedHost;
 
-    let app = app_with(TrustedHost::new(["[::1]", "localhost"]));
-    let response = app.clone()
+    // A bracketed IPv6 host with a port is parsed correctly and matches the
+    // allowlisted literal, instead of being mangled and rejected.
+    let allowed = app_with(TrustedHost::new(["[::1]", "localhost"]))
         .handle(get_with_headers(&[("host", "[::1]:8080")]))
         .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(allowed.status(), StatusCode::OK);
+
+    // An IPv6 host not on the allowlist is still rejected.
+    let rejected = app_with(TrustedHost::new(["[::1]"]))
+        .handle(get_with_headers(&[("host", "[2001:db8::1]:443")]))
+        .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -771,4 +778,43 @@ async fn security_headers_rejects_duplicate_registration() {
         .err()
         .expect("duplicate SecurityHeaders should be rejected");
     assert!(err.to_string().contains("SecurityHeaders"));
+}
+
+#[tokio::test]
+async fn compression_sets_vary_even_when_not_compressing() {
+    use tork::middleware::Compression;
+
+    // gzip is enabled but the request does not accept it, so the response is not
+    // compressed; it must still advertise `Vary: Accept-Encoding` so caches do not
+    // hand it to a gzip-expecting client.
+    let response = app_with(Compression::new().gzip()).handle(request()).await;
+
+    assert!(response.headers().get("content-encoding").is_none());
+    let varies = response
+        .headers()
+        .get_all("vary")
+        .iter()
+        .any(|value| value.to_str().unwrap().to_ascii_lowercase().contains("accept-encoding"));
+    assert!(varies, "expected Vary: Accept-Encoding");
+}
+
+#[tokio::test]
+async fn error_responses_are_not_cacheable() {
+    let app = std::sync::Arc::new(
+        App::new()
+            .include_router(Router::new().route(Route::new(Method::GET, "/", ok_handler())))
+            .build()
+            .unwrap(),
+    );
+
+    // A request to a missing route yields a 404 error response.
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/missing")
+        .body(box_body(Full::new(Bytes::new())))
+        .unwrap();
+    let response = app.handle(req).await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
 }

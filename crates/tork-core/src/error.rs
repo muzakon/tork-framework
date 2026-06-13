@@ -393,10 +393,17 @@ impl IntoResponse for Error {
             timestamp: now_rfc3339(),
         };
 
-        match serde_json::to_vec(&body) {
+        let mut response = match serde_json::to_vec(&body) {
             Ok(buffer) => with_body(status, APPLICATION_JSON, Bytes::from(buffer)),
             Err(_) => with_body(status, APPLICATION_JSON, Bytes::from_static(FALLBACK_ERROR_BODY)),
-        }
+        };
+        // Keep proxies and browsers from caching error responses (a cached `401`
+        // would block legitimate retries; a cached `500` would mask recovery).
+        response.headers_mut().insert(
+            http::header::CACHE_CONTROL,
+            http::HeaderValue::from_static("no-store"),
+        );
+        response
     }
 }
 

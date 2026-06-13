@@ -379,9 +379,11 @@ impl Body for SseBody {
                     let bytes = encode_event(&event, this.default_event.as_deref());
                     if let Some(max) = this.max_event_size {
                         if bytes.len() > max {
-                            eprintln!(
-                                "tork: SSE event of {} bytes exceeds max_event_size {max}, skipping",
-                                bytes.len()
+                            tracing::warn!(
+                                target: "tork",
+                                event_bytes = bytes.len(),
+                                max_event_size = max,
+                                "SSE event exceeds max_event_size, skipping"
                             );
                             continue;
                         }
@@ -390,7 +392,7 @@ impl Body for SseBody {
                 }
                 Poll::Ready(Some(Err(error))) => {
                     // The status is already committed; log and end the stream.
-                    eprintln!("tork: SSE stream error: {error}");
+                    tracing::error!(target: "tork", error = %error, "SSE stream error");
                     return this.finish();
                 }
                 Poll::Ready(None) => return this.finish(),

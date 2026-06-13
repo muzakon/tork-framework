@@ -69,7 +69,16 @@ impl Middleware for Compression {
             .unwrap_or(false);
 
         Box::pin(async move {
-            let response = next.run(request).await?;
+            let mut response = next.run(request).await?;
+
+            // When gzip is enabled the same URL may be served compressed or not
+            // depending on the client's `Accept-Encoding`, so every eligible
+            // response must carry `Vary: Accept-Encoding` (not just the compressed
+            // one) or a cache could hand a compressed body to a client that did not
+            // ask for it.
+            if gzip_enabled && !is_event_stream(&response) {
+                append_vary_accept_encoding(response.headers_mut());
+            }
 
             // Skip when gzip is off, unsupported, the body is already encoded, or
             // the body is a stream (an event stream must not be buffered here, and
@@ -95,9 +104,6 @@ impl Middleware for Compression {
                     if let Ok(length) = HeaderValue::from_str(&compressed.len().to_string()) {
                         parts.headers.insert(CONTENT_LENGTH, length);
                     }
-                    parts
-                        .headers
-                        .append(VARY, HeaderValue::from_static("Accept-Encoding"));
                     Ok(Response::from_parts(
                         parts,
                         RespBody::new(Bytes::from(compressed)),
@@ -115,6 +121,18 @@ impl Middleware for Compression {
 
     fn duplicate_policy(&self) -> DuplicatePolicy {
         DuplicatePolicy::Reject
+    }
+}
+
+/// Adds `Accept-Encoding` to the response's `Vary` header unless already listed.
+fn append_vary_accept_encoding(headers: &mut http::HeaderMap) {
+    let already_present = headers
+        .get_all(VARY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| value.to_ascii_lowercase().contains("accept-encoding"));
+    if !already_present {
+        headers.append(VARY, HeaderValue::from_static("Accept-Encoding"));
     }
 }
 

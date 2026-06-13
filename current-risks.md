@@ -111,12 +111,12 @@ Status legend:
 ## 23. Compression Middleware Doesn't Set `Vary` on Non-Gzip Path (Low-Medium Risk)
 - **Risk:** The `Compression` middleware ([`compression.rs:L60-L119`](crates/tork-core/src/middleware/compression.rs)) sets `Vary: Accept-Encoding` only when compression is actually applied.
 - **Bug:** When gzip is disabled or the body is too small, the `Vary` header is not set. Intermediate caches may serve a compressed response to a client that doesn't support gzip, or an uncompressed response to a client that expects compression.
-- **Status:** Untested for cache behavior.
+- **Status:** RESOLVED. `Compression` now appends `Vary: Accept-Encoding` to every eligible response when gzip is enabled (not only the compressed ones), so a cache cannot serve a compressed body to a client that did not ask for it. Covered by `compression_sets_vary_even_when_not_compressing`.
 
 ## 24. TrustedHost Port Stripping Fails for IPv6 (Low-Medium Risk)
 - **Risk:** The `TrustedHost` middleware ([`trusted_host.rs:L63-L64`](crates/tork-core/src/middleware/trusted_host.rs)) strips ports via `value.split(':').next()`.
 - **Bug:** IPv6 addresses like `[::1]:8080` are not handled correctly. The split on `:` produces `[` as the first segment, which won't match any pattern. All IPv6-based `Host` headers are silently rejected.
-- **Status:** Untested for IPv6 hosts.
+- **Status:** RESOLVED. `TrustedHost` parses the host with `strip_port`, which keeps a bracketed IPv6 literal (`[::1]:8080` -> `[::1]`) intact instead of mangling it to `[`. Covered by `strip_port_handles_names_ipv4_and_bracketed_ipv6` and `trusted_host_accepts_bracketed_ipv6_with_a_port`.
 
 ## 25. WebSocket Disconnect Hook Fires Detached Task (Low-Medium Risk)
 - **Risk:** `WebSocketConn::Drop` ([`ws.rs:L501-L519`](crates/tork-core/src/ws.rs)) spawns a detached tokio task to fire disconnect hooks because `Drop` cannot be async.
@@ -131,7 +131,7 @@ Status legend:
 ## 27. SSE Stream Errors Logged to stderr (Low-Medium Risk)
 - **Risk:** SSE stream errors ([`sse.rs:L393`](crates/tork-core/src/sse.rs)) are printed via `eprintln!` rather than the framework's structured logging system.
 - **Vulnerability:** In production, these errors bypass log aggregation, alerting, and structured output. Operators cannot detect SSE failure rates or correlate them with trace IDs.
-- **Status:** Untested. No logging hook integration for SSE errors.
+- **Status:** RESOLVED. SSE stream errors and oversized-event skips now go through `tracing` (`tracing::error!`/`tracing::warn!` on the `tork` target) instead of `eprintln!`, so they reach the structured subscriber, log aggregation, and trace correlation.
 
 ## 28. Multipart Form Field Name Collision (Low-Medium Risk)
 - **Risk:** The `MultipartForm` parser ([`multipart.rs:L526-L534`](crates/tork-core/src/multipart.rs)) uses `take_form_value` which takes the first field with a given name.
@@ -141,12 +141,12 @@ Status legend:
 ## 29. Error Response Does Not Set `Cache-Control` (Low-Medium Risk)
 - **Risk:** The `Error` type's `IntoResponse` implementation ([`error.rs:L364-L401`](crates/tork-core/src/error.rs)) does not set `Cache-Control: no-store` on error responses.
 - **Vulnerability:** Intermediate proxies or browsers may cache `4xx`/`5xx` error responses. A cached `401 Unauthorized` can prevent legitimate retry attempts, and a cached `500 Internal Server Error` can mask ongoing issues.
-- **Status:** Untested for cache behavior on error responses.
+- **Status:** RESOLVED. `Error::into_response` sets `Cache-Control: no-store`, so proxies and browsers do not cache `4xx`/`5xx` responses (a cached `401` would block retries; a cached `500` would mask recovery). Covered by `error_responses_are_not_cacheable`.
 
 ## 30. HTML Escape Missing Single Quote (Low-Medium Risk)
 - **Risk:** The `html_escape` function in the OpenAPI docs ([`docs.rs:L55-L61`](crates/tork-openapi/src/docs.rs)) escapes `&`, `<`, `>`, and `"`, but does not escape single quotes (`'`) or backticks.
 - **Vulnerability:** If `spec_url` were ever placed inside a single-quoted attribute, an attacker could inject `onload=alert(1)`. Currently mitigated by double-quote template usage, but this is a defense-in-depth gap.
-- **Status:** Latent risk. Currently mitigated by template structure.
+- **Status:** RESOLVED. `html_escape` now also escapes single quotes (`&#x27;`) and backticks (`&#x60;`), so an interpolated value cannot break out of a single-quoted attribute even if the template changes. Covered by `html_escape_replaces_reserved_characters`.
 
 ## 31. Panic Message Leakage Through Hooks (Low-Medium Risk)
 - **Risk:** When `catch_panics` is enabled, caught panics fire `on_panic` hooks with the panic message ([`service.rs:L74-L83`](crates/tork-core/src/service.rs)). The `panic_message` function extracts the `&str` or `String` from the panic payload.

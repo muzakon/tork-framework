@@ -78,6 +78,8 @@ fn html_escape(input: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+        .replace('`', "&#x60;")
 }
 
 #[cfg(test)]
@@ -90,6 +92,9 @@ mod tests {
             html_escape(r#"<Tork & "Docs">"#),
             "&lt;Tork &amp; &quot;Docs&quot;&gt;"
         );
+        // Single quotes and backticks are escaped too, so a value placed in a
+        // single-quoted attribute cannot break out of it.
+        assert_eq!(html_escape("a'b`c"), "a&#x27;b&#x60;c");
     }
 
     #[test]
