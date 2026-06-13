@@ -27,7 +27,8 @@ the previous one and ends with working code.
 15. [Logging](15-logging.md)
 16. [Caching](17-caching.md)
 17. [Rate limiting](18-rate-limiting.md)
-18. [Project structure](16-project-structure.md)
+18. [TLS and HTTP/2](19-tls-and-http2.md)
+19. [Project structure](16-project-structure.md)
 
 ## Status
 

@@ -28,6 +28,8 @@ openapi = ["dep:tork-openapi"]
 otel = ["tork-core/otel"]
 # Enables the Redis cache store (`Cache::redis`).
 redis = ["tork-core/redis"]
+# Enables TLS termination (`App::tls` / `TlsConfig`) via rustls + ring.
+tls = ["tork-core/tls"]
 
 [dev-dependencies]
 serde = { workspace = true }
@@ -42,3 +44,7 @@ futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 garde = { workspace = true }
 tempfile = { workspace = true }
+# TLS test suite: self-signed cert generation + a rustls client (pki-types come
+# re-exported through tokio-rustls).
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }

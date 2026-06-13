@@ -25,7 +25,9 @@ use crate::router::{
     BoxFuture, Route, Router, SharedErrorHook, SharedRequestHook, SharedResponseHook,
     SharedValidationErrorHook,
 };
-use crate::server::{run_with_shutdown, shutdown_signal};
+use crate::server::{run_with_shutdown, shutdown_signal, Http1Config, Http2Config};
+#[cfg(feature = "tls")]
+use crate::tls::TlsConfig;
 use crate::state::{AppStateRef, StateMap};
 use crate::ws::{
     AppWsConfig, WebSocketConfig, WsConnectHook, WsConnectInfo, WsDisconnectHook, WsDisconnectInfo,
@@ -96,6 +98,10 @@ pub struct App {
     throttler: Option<crate::throttle::Throttler>,
     max_sse_connections: Option<usize>,
     header_read_timeout: Option<Duration>,
+    http1_config: Option<Http1Config>,
+    http2_config: Option<Http2Config>,
+    #[cfg(feature = "tls")]
+    tls_config: Option<TlsConfig>,
 }
 
 impl Default for App {
@@ -133,6 +139,10 @@ impl App {
             throttler: None,
             max_sse_connections: None,
             header_read_timeout: Some(crate::constants::DEFAULT_HEADER_READ_TIMEOUT),
+            http1_config: None,
+            http2_config: None,
+            #[cfg(feature = "tls")]
+            tls_config: None,
         }
     }
 
@@ -376,6 +386,31 @@ impl App {
         self
     }
 
+    /// Tunes HTTP/1 behavior (keep-alive, header count) for every connection.
+    pub fn http1(mut self, config: Http1Config) -> Self {
+        self.http1_config = Some(config);
+        self
+    }
+
+    /// Tunes HTTP/2 behavior (stream limits, keep-alive, flow control) for every
+    /// connection. HTTP/2 is served automatically over a plaintext upgrade or over
+    /// TLS via ALPN.
+    pub fn http2(mut self, config: Http2Config) -> Self {
+        self.http2_config = Some(config);
+        self
+    }
+
+    /// Terminates TLS for the server using the given certificate configuration.
+    ///
+    /// With TLS set, [`serve`](App::serve) negotiates HTTPS (and HTTP/2 via ALPN by
+    /// default). A malformed certificate or key fails fast at boot. Requires the
+    /// `tls` feature.
+    #[cfg(feature = "tls")]
+    pub fn tls(mut self, config: TlsConfig) -> Self {
+        self.tls_config = Some(config);
+        self
+    }
+
     /// Registers an observe-only hook that runs when a WebSocket opens.
     pub fn on_ws_connect<F, Fut>(mut self, hook: F) -> Self
     where
@@ -497,8 +532,20 @@ impl App {
             throttler,
             max_sse_connections,
             header_read_timeout,
+            http1_config,
+            http2_config,
+            #[cfg(feature = "tls")]
+            tls_config,
             ..
         } = self;
+
+        // Build the TLS acceptor up front so a malformed certificate or key fails
+        // fast at boot rather than on the first connection.
+        #[cfg(feature = "tls")]
+        let tls_acceptor = match tls_config {
+            Some(config) => Some(config.into_acceptor()?),
+            None => None,
+        };
         // The automatic HTTP request log is on unless the logger config disables it.
         let request_logs = logger_config
             .as_ref()
@@ -576,6 +623,10 @@ impl App {
             exception_handlers: Arc::new(exception_handlers),
             ws_shutdown,
             header_read_timeout,
+            http1_config,
+            http2_config,
+            #[cfg(feature = "tls")]
+            tls_acceptor,
         })
     }
 
@@ -642,8 +693,12 @@ impl App {
                 .inspect_err(log_boot_error)?;
         }
 
+        #[cfg(feature = "tls")]
+        let scheme = if app.tls_acceptor().is_some() { "https" } else { "http" };
+        #[cfg(not(feature = "tls"))]
+        let scheme = "http";
         Logger::framework("Tork")
-            .info(format!("Application is running on http://{local}"))
+            .info(format!("Application is running on {scheme}://{local}"))
             .emit();
 
         run_with_shutdown(app, listener, shutdown).await;
@@ -777,12 +832,35 @@ pub struct AppInner {
     ws_shutdown: tokio::sync::watch::Sender<bool>,
     /// Deadline for a client to send the full request head; bounds slowloris.
     header_read_timeout: Option<Duration>,
+    /// HTTP/1 connection tuning applied to the server builder.
+    http1_config: Option<Http1Config>,
+    /// HTTP/2 connection tuning applied to the server builder.
+    http2_config: Option<Http2Config>,
+    /// The rustls acceptor used to terminate TLS, when configured.
+    #[cfg(feature = "tls")]
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
 }
 
 impl AppInner {
     /// Returns the configured request-head read timeout, if any.
     pub(crate) fn header_read_timeout(&self) -> Option<Duration> {
         self.header_read_timeout
+    }
+
+    /// Returns the HTTP/1 connection tuning, if any.
+    pub(crate) fn http1_config(&self) -> Option<&Http1Config> {
+        self.http1_config.as_ref()
+    }
+
+    /// Returns the HTTP/2 connection tuning, if any.
+    pub(crate) fn http2_config(&self) -> Option<&Http2Config> {
+        self.http2_config.as_ref()
+    }
+
+    /// Returns the TLS acceptor used to terminate TLS, if configured.
+    #[cfg(feature = "tls")]
+    pub(crate) fn tls_acceptor(&self) -> Option<&tokio_rustls::TlsAcceptor> {
+        self.tls_acceptor.as_ref()
     }
 
     /// Returns the shared application state.

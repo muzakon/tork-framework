@@ -30,6 +30,8 @@ mod response;
 mod router;
 pub mod security;
 mod server;
+#[cfg(feature = "tls")]
+pub mod tls;
 mod service;
 mod settings;
 mod sse;
@@ -60,7 +62,7 @@ pub use mime;
 #[cfg(feature = "redis")]
 pub use redis_handle::Redis;
 pub use resources::Resources;
-pub use server::TorkService;
+pub use server::{Http1Config, Http2Config, TorkService};
 #[doc(hidden)]
 pub use throttle::check_request as __throttle_check;
 #[cfg(feature = "redis")]
@@ -91,6 +93,8 @@ pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, RequestBodyKind, Route, RouteMeta, Router, SchemaThunk};
 pub use settings::{SecretString, SettingsLoader};
 pub use security::constant_time_eq;
+#[cfg(feature = "tls")]
+pub use tls::TlsConfig;
 pub use tokio::sync::broadcast::Receiver as WsReceiver;
 // Generated-code support for `#[derive(Inject)]` test overrides.
 #[doc(hidden)]

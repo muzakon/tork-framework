@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use hyper::body::Incoming;
 use hyper::service::Service;
@@ -18,6 +19,150 @@ use crate::app::AppInner;
 use crate::body::{box_body, RespBody};
 use crate::constants::GRACEFUL_SHUTDOWN_TIMEOUT;
 use crate::extract::RequestPeerAddr;
+
+/// Maximum time allowed for a TLS handshake to complete before the pending
+/// connection is dropped, so a stalled client cannot hold a slot.
+#[cfg(feature = "tls")]
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// HTTP/2 connection tuning applied to every served connection.
+///
+/// Each unset field keeps hyper's default. Configure with
+/// [`App::http2`](crate::App::http2).
+#[derive(Clone, Default)]
+pub struct Http2Config {
+    max_concurrent_streams: Option<u32>,
+    keep_alive_interval: Option<Duration>,
+    keep_alive_timeout: Option<Duration>,
+    initial_stream_window_size: Option<u32>,
+    initial_connection_window_size: Option<u32>,
+    max_frame_size: Option<u32>,
+    max_header_list_size: Option<u32>,
+}
+
+impl Http2Config {
+    /// Creates an empty config (every limit at hyper's default).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Caps the number of concurrent streams a peer may open on one connection.
+    pub fn max_concurrent_streams(mut self, max: u32) -> Self {
+        self.max_concurrent_streams = Some(max);
+        self
+    }
+
+    /// Sends an HTTP/2 PING on an idle connection at this interval (keep-alive).
+    pub fn keep_alive_interval(mut self, interval: Duration) -> Self {
+        self.keep_alive_interval = Some(interval);
+        self
+    }
+
+    /// Closes the connection if a keep-alive PING is not answered within this time.
+    pub fn keep_alive_timeout(mut self, timeout: Duration) -> Self {
+        self.keep_alive_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the initial per-stream flow-control window, in bytes.
+    pub fn initial_stream_window_size(mut self, bytes: u32) -> Self {
+        self.initial_stream_window_size = Some(bytes);
+        self
+    }
+
+    /// Sets the initial connection-level flow-control window, in bytes.
+    pub fn initial_connection_window_size(mut self, bytes: u32) -> Self {
+        self.initial_connection_window_size = Some(bytes);
+        self
+    }
+
+    /// Sets the largest frame payload the server will accept, in bytes.
+    pub fn max_frame_size(mut self, bytes: u32) -> Self {
+        self.max_frame_size = Some(bytes);
+        self
+    }
+
+    /// Sets the maximum size of the decoded request header block, in bytes.
+    pub fn max_header_list_size(mut self, bytes: u32) -> Self {
+        self.max_header_list_size = Some(bytes);
+        self
+    }
+}
+
+/// HTTP/1 connection tuning applied to every served connection.
+///
+/// Each unset field keeps hyper's default. Configure with
+/// [`App::http1`](crate::App::http1).
+#[derive(Clone, Default)]
+pub struct Http1Config {
+    keep_alive: Option<bool>,
+    max_headers: Option<usize>,
+}
+
+impl Http1Config {
+    /// Creates an empty config (every setting at hyper's default).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Enables or disables HTTP/1 keep-alive (persistent connections).
+    pub fn keep_alive(mut self, enabled: bool) -> Self {
+        self.keep_alive = Some(enabled);
+        self
+    }
+
+    /// Sets the maximum number of request headers accepted.
+    pub fn max_headers(mut self, max: usize) -> Self {
+        self.max_headers = Some(max);
+        self
+    }
+}
+
+/// Applies the app's HTTP/1 + HTTP/2 tuning onto the connection builder.
+fn configure_builder(builder: &mut auto::Builder<TokioExecutor>, app: &AppInner) {
+    {
+        let mut h1 = builder.http1();
+        h1.timer(TokioTimer::new());
+        if let Some(timeout) = app.header_read_timeout() {
+            h1.header_read_timeout(timeout);
+        }
+        if let Some(config) = app.http1_config() {
+            if let Some(enabled) = config.keep_alive {
+                h1.keep_alive(enabled);
+            }
+            if let Some(max) = config.max_headers {
+                h1.max_headers(max);
+            }
+        }
+    }
+    {
+        let mut h2 = builder.http2();
+        h2.timer(TokioTimer::new());
+        if let Some(config) = app.http2_config() {
+            if let Some(max) = config.max_concurrent_streams {
+                h2.max_concurrent_streams(max);
+            }
+            if let Some(interval) = config.keep_alive_interval {
+                h2.keep_alive_interval(interval);
+            }
+            if let Some(timeout) = config.keep_alive_timeout {
+                h2.keep_alive_timeout(timeout);
+            }
+            if let Some(bytes) = config.initial_stream_window_size {
+                h2.initial_stream_window_size(bytes);
+            }
+            if let Some(bytes) = config.initial_connection_window_size {
+                h2.initial_connection_window_size(bytes);
+            }
+            if let Some(bytes) = config.max_frame_size {
+                h2.max_frame_size(bytes);
+            }
+            if let Some(bytes) = config.max_header_list_size {
+                h2.max_header_list_size(bytes);
+            }
+        }
+    }
+}
 
 /// A Hyper [`Service`] that hands each request to the application.
 ///
@@ -77,28 +222,22 @@ where
     S: Future<Output = ()>,
 {
     let mut builder = auto::Builder::new(TokioExecutor::new());
-    // Bound the time a client may take to send the full request head, so a
-    // slowloris-style connection that dribbles header bytes cannot tie up a worker
-    // indefinitely. Applies to HTTP/1; HTTP/2 has its own flow-control limits.
-    if let Some(timeout) = app.header_read_timeout() {
-        // The header-read timeout needs a timer wired into the connection builder,
-        // or hyper panics when it tries to arm the deadline.
-        builder
-            .http1()
-            .timer(TokioTimer::new())
-            .header_read_timeout(timeout);
-    }
+    // Wire the per-connection timers and the configured HTTP/1 + HTTP/2 tuning
+    // (including the slowloris-bounding header-read timeout) onto the builder.
+    configure_builder(&mut builder, &app);
     let graceful = GracefulShutdown::new();
     let mut shutdown = std::pin::pin!(shutdown);
 
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let _ = handle_accepted_connection(app.clone(), &builder, &graceful, accepted).await;
-            }
-            _ = &mut shutdown => break,
-        }
+    // With TLS, terminate each connection through the rustls acceptor before
+    // handing it to hyper; otherwise serve the plain TCP stream directly.
+    #[cfg(feature = "tls")]
+    if let Some(acceptor) = app.tls_acceptor().cloned() {
+        accept_tls(&app, &listener, &builder, &graceful, &mut shutdown, acceptor).await;
+    } else {
+        accept_plain(&app, &listener, &builder, &graceful, &mut shutdown).await;
     }
+    #[cfg(not(feature = "tls"))]
+    accept_plain(&app, &listener, &builder, &graceful, &mut shutdown).await;
 
     // Tell in-flight WebSocket connections to close cleanly. They run in spawned
     // upgrade tasks that `GracefulShutdown` does not track, so without this they
@@ -111,6 +250,72 @@ where
         tokio::time::sleep(GRACEFUL_SHUTDOWN_TIMEOUT),
     )
     .await;
+}
+
+/// Accept loop for plain TCP connections.
+async fn accept_plain<S>(
+    app: &Arc<AppInner>,
+    listener: &TcpListener,
+    builder: &auto::Builder<TokioExecutor>,
+    graceful: &GracefulShutdown,
+    shutdown: &mut Pin<&mut S>,
+) where
+    S: Future<Output = ()>,
+{
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let _ = handle_accepted_connection(app.clone(), builder, graceful, accepted).await;
+            }
+            _ = shutdown.as_mut() => break,
+        }
+    }
+}
+
+/// Accept loop for TLS connections.
+///
+/// Each accepted socket is handed to a spawned task that performs the rustls
+/// handshake under [`TLS_HANDSHAKE_TIMEOUT`], so a slow handshake never blocks the
+/// accept loop. Completed TLS streams come back over a channel and are served (and
+/// tracked by `GracefulShutdown`) exactly like a plain connection.
+#[cfg(feature = "tls")]
+async fn accept_tls<S>(
+    app: &Arc<AppInner>,
+    listener: &TcpListener,
+    builder: &auto::Builder<TokioExecutor>,
+    graceful: &GracefulShutdown,
+    shutdown: &mut Pin<&mut S>,
+    acceptor: tokio_rustls::TlsAcceptor,
+) where
+    S: Future<Output = ()>,
+{
+    type Handshaked = (
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        std::net::SocketAddr,
+    );
+    let (handshake_tx, mut handshake_rx) = tokio::sync::mpsc::channel::<Handshaked>(256);
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                if let Ok((stream, peer)) = accepted {
+                    let acceptor = acceptor.clone();
+                    let handshake_tx = handshake_tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Ok(tls)) =
+                            tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await
+                        {
+                            let _ = handshake_tx.send((tls, peer)).await;
+                        }
+                    });
+                }
+            }
+            Some((tls, peer)) = handshake_rx.recv() => {
+                let _ = handle_accepted_connection(app.clone(), builder, graceful, Ok((tls, peer))).await;
+            }
+            _ = shutdown.as_mut() => break,
+        }
+    }
 }
 
 /// Resolves when the process receives an interrupt or termination signal.
