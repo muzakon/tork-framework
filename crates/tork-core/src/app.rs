@@ -95,6 +95,7 @@ pub struct App {
     cache: Option<crate::cache::Cache>,
     throttler: Option<crate::throttle::Throttler>,
     max_sse_connections: Option<usize>,
+    header_read_timeout: Option<Duration>,
 }
 
 impl Default for App {
@@ -131,6 +132,7 @@ impl App {
             cache: None,
             throttler: None,
             max_sse_connections: None,
+            header_read_timeout: Some(crate::constants::DEFAULT_HEADER_READ_TIMEOUT),
         }
     }
 
@@ -354,6 +356,26 @@ impl App {
         self
     }
 
+    /// Sets how long a client may take to send the complete request head (request
+    /// line + headers) after its connection is accepted.
+    ///
+    /// This bounds slowloris-style attacks where a client opens a connection and
+    /// dribbles header bytes to tie up a worker. Defaults to
+    /// [`DEFAULT_HEADER_READ_TIMEOUT`](crate::constants::DEFAULT_HEADER_READ_TIMEOUT)
+    /// (30s); pass a longer duration to relax it. Applies to HTTP/1 connections.
+    pub fn header_read_timeout(mut self, timeout: Duration) -> Self {
+        self.header_read_timeout = Some(timeout);
+        self
+    }
+
+    /// Removes the request-head read deadline, letting a client take unlimited time
+    /// to send its headers. Only do this behind a trusted proxy that already bounds
+    /// slow clients.
+    pub fn without_header_read_timeout(mut self) -> Self {
+        self.header_read_timeout = None;
+        self
+    }
+
     /// Registers an observe-only hook that runs when a WebSocket opens.
     pub fn on_ws_connect<F, Fut>(mut self, hook: F) -> Self
     where
@@ -474,6 +496,7 @@ impl App {
             cache,
             throttler,
             max_sse_connections,
+            header_read_timeout,
             ..
         } = self;
         // The automatic HTTP request log is on unless the logger config disables it.
@@ -552,6 +575,7 @@ impl App {
             request_logs,
             exception_handlers: Arc::new(exception_handlers),
             ws_shutdown,
+            header_read_timeout,
         })
     }
 
@@ -751,9 +775,16 @@ pub struct AppInner {
     /// Broadcasts a shutdown signal to in-flight WebSocket connections so they
     /// can close cleanly instead of being abruptly dropped.
     ws_shutdown: tokio::sync::watch::Sender<bool>,
+    /// Deadline for a client to send the full request head; bounds slowloris.
+    header_read_timeout: Option<Duration>,
 }
 
 impl AppInner {
+    /// Returns the configured request-head read timeout, if any.
+    pub(crate) fn header_read_timeout(&self) -> Option<Duration> {
+        self.header_read_timeout
+    }
+
     /// Returns the shared application state.
     pub fn state(&self) -> &AppStateRef {
         &self.state

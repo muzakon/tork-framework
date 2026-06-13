@@ -28,6 +28,7 @@ mod redis_handle;
 mod resources;
 mod response;
 mod router;
+pub mod security;
 mod server;
 mod service;
 mod settings;
@@ -89,6 +90,7 @@ pub use response::{
 pub use router::matcher::{Match, Matcher};
 pub use router::{BoxFuture, HandlerFn, RequestBodyKind, Route, RouteMeta, Router, SchemaThunk};
 pub use settings::{SecretString, SettingsLoader};
+pub use security::constant_time_eq;
 pub use tokio::sync::broadcast::Receiver as WsReceiver;
 // Generated-code support for `#[derive(Inject)]` test overrides.
 #[doc(hidden)]

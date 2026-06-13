@@ -94,6 +94,13 @@ The defaults are sensible for production: a 15 second heartbeat (call
 `X-Accel-Buffering: no` so reverse proxies do not buffer the stream. The
 compression middleware automatically skips `text/event-stream` responses.
 
+A single event is capped at 256 KiB by default (oversized events are dropped and
+logged) so one event cannot exhaust memory when fanned out to many subscribers;
+raise it with `.max_event_size(bytes)`, or pass `usize::MAX` to remove the cap.
+Event names and ids are single-line by protocol, so Tork strips any CR/LF (and NUL
+in an id) from them before writing the wire format — a user-controlled event name
+or id cannot inject extra fields or forge additional events on the client's stream.
+
 ## Limiting concurrent streams
 
 Each open SSE stream holds a pinned stream and its timers for its whole lifetime,

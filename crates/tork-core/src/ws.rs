@@ -53,6 +53,14 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 /// Default time allowed for the upgrade handshake to complete before the
 /// pending connection is abandoned, so a stalled client cannot hold a slot.
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default cap on a single incoming WebSocket message (reassembled frames).
+///
+/// Applied when the app/route does not set one, so a peer cannot make the server
+/// buffer up to tungstenite's 64 MiB default per message. Override with
+/// [`WebSocketConfig::max_message_size`].
+const DEFAULT_WS_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+/// Default cap on a single incoming WebSocket frame.
+const DEFAULT_WS_MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 /// A WebSocket close status code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,14 +305,15 @@ impl WebSocketConfig {
         self.max_connections_per_ip
     }
 
-    /// Maps the size limits onto a tungstenite config, or `None` if both unset.
+    /// Maps the size limits onto a tungstenite config.
+    ///
+    /// Always returns a config: an unset message/frame size falls back to a secure
+    /// framework default (1 MiB) rather than tungstenite's 64 MiB, so a WebSocket
+    /// route is memory-bounded by default.
     fn to_tungstenite(&self) -> Option<TgWebSocketConfig> {
-        if self.max_message_size.is_none() && self.max_frame_size.is_none() {
-            return None;
-        }
         Some(TgWebSocketConfig {
-            max_message_size: self.max_message_size,
-            max_frame_size: self.max_frame_size,
+            max_message_size: Some(self.max_message_size.unwrap_or(DEFAULT_WS_MAX_MESSAGE_SIZE)),
+            max_frame_size: Some(self.max_frame_size.unwrap_or(DEFAULT_WS_MAX_FRAME_SIZE)),
             ..TgWebSocketConfig::default()
         })
     }
@@ -1255,7 +1264,13 @@ mod tests {
         assert_eq!(tungstenite.max_message_size, Some(2 * 1024));
         assert_eq!(tungstenite.max_frame_size, Some(1024));
         assert_eq!(config.idle_timeout, Some(Duration::from_secs(3)));
-        assert!(WebSocketConfig::new().to_tungstenite().is_none());
+        // With nothing set, the secure framework defaults apply (not None / the
+        // 64 MiB tungstenite default).
+        let defaults = WebSocketConfig::new()
+            .to_tungstenite()
+            .expect("defaults should be present");
+        assert_eq!(defaults.max_message_size, Some(DEFAULT_WS_MAX_MESSAGE_SIZE));
+        assert_eq!(defaults.max_frame_size, Some(DEFAULT_WS_MAX_FRAME_SIZE));
 
         let info = WsConnInfo {
             method: Method::POST,

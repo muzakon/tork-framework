@@ -38,6 +38,14 @@ pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum time to wait for in-flight connections to drain during shutdown.
 pub const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Default deadline for a client to send the complete request head (the request
+/// line and all headers) after a connection is accepted.
+///
+/// Bounds slowloris-style attacks where a client opens a connection and dribbles
+/// header bytes to tie up a worker indefinitely. Configurable via
+/// [`App::header_read_timeout`](crate::App::header_read_timeout).
+pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[cfg(test)]
 mod tests {
     use super::*;

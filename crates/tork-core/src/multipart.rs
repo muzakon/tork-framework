@@ -32,6 +32,11 @@ const DEFAULT_MAX_TEXT_FIELD_SIZE: usize = 1024 * 1024;
 const DEFAULT_MEMORY_THRESHOLD: usize = 1024 * 1024;
 /// Default cap on the number of file parts in one request.
 const DEFAULT_MAX_FILES: usize = 32;
+/// Default cap on the total number of parts (text + file) in one request.
+///
+/// Bounds the per-request allocation/parse amplification from a flood of tiny
+/// fields, which the byte-size limits alone do not constrain.
+const DEFAULT_MAX_FIELDS: usize = 1000;
 /// How many buffered bytes accumulate before flushing to the spool file. Bounds
 /// in-memory buffering while amortizing the cost of moving writes off-runtime.
 const SPOOL_FLUSH_THRESHOLD: usize = 256 * 1024;
@@ -48,6 +53,7 @@ pub struct UploadConfig {
     max_text_field_size: Option<usize>,
     memory_threshold: Option<usize>,
     max_files: Option<usize>,
+    max_fields: Option<usize>,
     temp_dir: Option<PathBuf>,
 }
 
@@ -102,6 +108,15 @@ impl UploadConfig {
         self
     }
 
+    /// Sets the maximum total number of parts (text + file) per request.
+    ///
+    /// Guards against a flood of tiny fields that the byte-size limits do not
+    /// catch. Defaults to 1000.
+    pub fn max_fields(mut self, count: usize) -> Self {
+        self.max_fields = Some(count);
+        self
+    }
+
     /// Sets the directory for spilled temporary files.
     pub fn temp_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.temp_dir = Some(dir.into());
@@ -116,6 +131,7 @@ impl UploadConfig {
             max_text_field_size: self.max_text_field_size.or(base.max_text_field_size),
             memory_threshold: self.memory_threshold.or(base.memory_threshold),
             max_files: self.max_files.or(base.max_files),
+            max_fields: self.max_fields.or(base.max_fields),
             temp_dir: self.temp_dir.or_else(|| base.temp_dir.clone()),
         }
     }
@@ -130,6 +146,7 @@ impl UploadConfig {
                 .unwrap_or(DEFAULT_MAX_TEXT_FIELD_SIZE),
             memory_threshold: self.memory_threshold.unwrap_or(DEFAULT_MEMORY_THRESHOLD),
             max_files: self.max_files.unwrap_or(DEFAULT_MAX_FILES),
+            max_fields: self.max_fields.unwrap_or(DEFAULT_MAX_FIELDS),
             temp_dir: self.temp_dir.clone(),
         }
     }
@@ -142,6 +159,7 @@ struct ResolvedConfig {
     max_text_field_size: usize,
     memory_threshold: usize,
     max_files: usize,
+    max_fields: usize,
     temp_dir: Option<PathBuf>,
 }
 
@@ -580,8 +598,16 @@ impl MultipartForm {
         let mut texts = Vec::new();
         let mut files = Vec::new();
         let mut total: usize = 0;
+        let mut fields_seen: usize = 0;
 
         while let Some(mut field) = multipart.next_field().await.map_err(parse_error)? {
+            // Cap the total number of parts so a flood of tiny fields cannot
+            // amplify allocations past what the byte-size limits bound.
+            fields_seen += 1;
+            if fields_seen > resolved.max_fields {
+                return Err(Error::unprocessable("too many form fields")
+                    .with_code("TOO_MANY_FIELDS"));
+            }
             let name = field.name().map(str::to_owned).unwrap_or_default();
             let filename = field.file_name().map(str::to_owned);
             let content_type = field.content_type().cloned();

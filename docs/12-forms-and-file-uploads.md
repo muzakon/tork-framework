@@ -177,7 +177,8 @@ App::new()
             .max_file_size_mb(16)       // per file
             .memory_threshold(1 << 20)  // spool to disk past 1 MB
             .temp_dir("/var/tmp")       // where spilled files land
-            .max_files(16),
+            .max_files(16)              // max file parts
+            .max_fields(1000),          // max total parts (text + file)
     )
     // ...
 ```
@@ -198,7 +199,10 @@ pub async fn upload(form: Multipart<ProfileForm>) -> tork::Result<ProfileOut> {
 ```
 
 Exceeding `max_body_size` or a file's `max_file_size` returns `413 Payload Too
-Large`; exceeding `max_files` is rejected the same way.
+Large`; exceeding `max_files` is rejected the same way. `max_fields` (default 1000)
+caps the total number of parts — text and file — so a flood of tiny fields cannot
+amplify per-request work under the byte-size limits; exceeding it returns `422
+Unprocessable Entity`.
 
 ## OpenAPI
 

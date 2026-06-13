@@ -107,6 +107,12 @@ pub async fn chat(socket: WebSocket /* ... */) -> tork::Result<()> { /* ... */ }
 a connection that has been silent for too long (sizes accept `"64KB"`/`"1MB"`,
 durations accept `"500ms"`/`"60s"`/`"2m"`).
 
+`max_message_size` and `max_frame_size` both default to 1 MiB, so a peer cannot make
+the server buffer a huge message (tungstenite's own default is 64 MiB); raise them
+for routes that legitimately carry larger payloads. `idle_timeout` is off by default
+— an idle connection that pings is normal — so set it explicitly when you want to
+drop silent clients.
+
 Two limits guard against denial-of-service:
 
 - `handshake_timeout` (default 10 seconds) bounds how long the upgrade may take, so

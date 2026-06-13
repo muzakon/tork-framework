@@ -28,6 +28,10 @@ use crate::response::{IntoResponse, Response};
 
 /// Default heartbeat interval, sent as an SSE comment to keep the stream alive.
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(15);
+/// Default cap on a single encoded SSE event, applied when the handler does not
+/// set one. Bounds per-event memory (an event is cloned per subscriber when fanned
+/// out through a broadcast hub); override with [`Sse::max_event_size`].
+const DEFAULT_MAX_EVENT_SIZE: usize = 256 * 1024;
 /// The heartbeat payload (an SSE comment line).
 const HEARTBEAT_FRAME: &[u8] = b": ping\n\n";
 /// A pre-wrapped `Bytes` view of the heartbeat frame, allocated once instead of
@@ -145,12 +149,15 @@ fn encode_event(event: &RawEvent, default_event: Option<&str>) -> Bytes {
     }
     if let Some(name) = event.event.as_deref().or(default_event) {
         out.push_str("event: ");
-        out.push_str(name);
+        // `event` is a single-line field: drop CR/LF so a value taken from user
+        // input cannot inject extra SSE fields or terminate the event early.
+        push_single_line(&mut out, name, false);
         out.push('\n');
     }
     if let Some(id) = &event.id {
         out.push_str("id: ");
-        out.push_str(id);
+        // Same for `id`; the SSE spec also forbids NUL in the last-event-id.
+        push_single_line(&mut out, id, true);
         out.push('\n');
     }
     if let Some(retry) = event.retry {
@@ -168,6 +175,18 @@ fn encode_event(event: &RawEvent, default_event: Option<&str>) -> Bytes {
     out.push('\n');
 
     Bytes::from(out)
+}
+
+/// Appends a single-line SSE field value, dropping line terminators (`\r`, `\n`)
+/// and, when `strip_nul` is set, NUL — the characters that would let a
+/// user-controlled `event`/`id` inject additional fields or break the framing.
+fn push_single_line(out: &mut String, value: &str, strip_nul: bool) {
+    for ch in value.chars() {
+        if ch == '\r' || ch == '\n' || (strip_nul && ch == '\0') {
+            continue;
+        }
+        out.push(ch);
+    }
 }
 
 /// Configuration for an SSE response.
@@ -188,7 +207,7 @@ impl Default for SseConfig {
             heartbeat: Some(DEFAULT_HEARTBEAT),
             no_cache: true,
             disable_proxy_buffering: true,
-            max_event_size: None,
+            max_event_size: Some(DEFAULT_MAX_EVENT_SIZE),
             client_timeout: None,
             done_event: None,
         }
@@ -533,6 +552,25 @@ mod tests {
     fn comment_and_multiline_raw_data_split_into_lines() {
         let text = encode(SseEvent::<()>::raw("a\nb").comment("note"), None);
         assert_eq!(text, ": note\ndata: a\ndata: b\n\n");
+    }
+
+    #[test]
+    fn event_name_and_id_cannot_inject_extra_fields() {
+        // A user-controlled event name / id carrying CR/LF (or NUL in the id) must
+        // not be able to inject new SSE fields or terminate the event early.
+        let text = encode(
+            SseEvent::new(json!(1))
+                .event("ping\nevent: admin\ndata: spoofed")
+                .id("9\r\nid: 0\0"),
+            None,
+        );
+        // The line breaks are stripped, so the value stays on its own single line.
+        assert_eq!(text, "event: pingevent: admindata: spoofed\nid: 9id: 0\ndata: 1\n\n");
+        // Crucially: no injected blank line / second event, and the only real
+        // field lines are the ones the encoder wrote itself.
+        assert_eq!(text.matches("\n\n").count(), 1, "exactly one event terminator");
+        assert_eq!(text.lines().filter(|l| l.starts_with("event: ")).count(), 1);
+        assert_eq!(text.lines().filter(|l| l.starts_with("id: ")).count(), 1);
     }
 
     #[test]

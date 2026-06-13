@@ -82,18 +82,24 @@ may not want publicly discoverable. `protect` gates both routes behind a predica
 a request the predicate rejects gets a `404`, hiding that the routes exist:
 
 ```rust
+use tork::security::constant_time_eq;
+
 OpenApi::new()
     .json("/openapi.json")
     .docs("/docs")
     .protect(|ctx| {
         ctx.headers().get("authorization").and_then(|v| v.to_str().ok())
-            == Some("Bearer secret-docs-token")
+            .map(|header| constant_time_eq(header, "Bearer secret-docs-token"))
+            .unwrap_or(false)
     });
 ```
 
 Gate it on a bearer token, an internal-only network, or an environment flag — or
 simply do not call `.openapi(...)` in production. (Global middleware such as
-`TrustedHost` also applies to these routes.)
+`TrustedHost` also applies to these routes.) Compare secrets (tokens, signatures,
+API keys) with `tork::security::constant_time_eq` rather than `==`: a plain
+comparison returns as soon as it hits the first wrong byte, and that timing leaks,
+over many tries, how much of the secret an attacker has guessed.
 
 OpenAPI support is behind a default-on `openapi` feature. If you do not need it,
 disable default features to drop the dependency.

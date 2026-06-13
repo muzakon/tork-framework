@@ -8,7 +8,7 @@ use std::sync::Arc;
 use hyper::body::Incoming;
 use hyper::service::Service;
 use hyper::{Request, Response};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -76,7 +76,18 @@ pub(crate) async fn run_with_shutdown<S>(app: Arc<AppInner>, listener: TcpListen
 where
     S: Future<Output = ()>,
 {
-    let builder = auto::Builder::new(TokioExecutor::new());
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    // Bound the time a client may take to send the full request head, so a
+    // slowloris-style connection that dribbles header bytes cannot tie up a worker
+    // indefinitely. Applies to HTTP/1; HTTP/2 has its own flow-control limits.
+    if let Some(timeout) = app.header_read_timeout() {
+        // The header-read timeout needs a timer wired into the connection builder,
+        // or hyper panics when it tries to arm the deadline.
+        builder
+            .http1()
+            .timer(TokioTimer::new())
+            .header_read_timeout(timeout);
+    }
     let graceful = GracefulShutdown::new();
     let mut shutdown = std::pin::pin!(shutdown);
 

@@ -90,13 +90,19 @@ impl OpenApi {
     /// example, gate it on a bearer token, an internal network, or an environment
     /// flag. The predicate runs on every request to the documentation routes.
     ///
+    /// Compare the credential with [`constant_time_eq`](tork_core::security::constant_time_eq)
+    /// rather than `==`, so the check does not leak how many bytes matched via its
+    /// timing:
+    ///
     /// ```
     /// # use tork_openapi::OpenApi;
+    /// use tork_core::security::constant_time_eq;
     /// let api = OpenApi::new().docs("/docs").protect(|ctx| {
     ///     ctx.headers()
     ///         .get("authorization")
     ///         .and_then(|v| v.to_str().ok())
-    ///         == Some("Bearer secret-docs-token")
+    ///         .map(|header| constant_time_eq(header, "Bearer secret-docs-token"))
+    ///         .unwrap_or(false)
     /// });
     /// # let _ = api;
     /// ```
