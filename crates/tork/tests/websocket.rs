@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::oneshot;
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::error::Error as WsClientError;
-use tork::{App, BearerToken, Router, WebSocket, WebSocketConfig, WsMessage, api_model, websocket};
+use tokio_tungstenite::tungstenite::Message;
+use tork::{api_model, websocket, App, BearerToken, Router, WebSocket, WebSocketConfig, WsMessage};
 
 #[websocket("/ws")]
 async fn echo(socket: WebSocket) -> tork::Result<()> {
@@ -58,9 +58,18 @@ async fn typed(socket: WebSocket) -> tork::Result<()> {
 #[test]
 fn websocket_records_asyncapi_metadata() {
     let route = __tork_route_typed();
-    assert!(route.meta().websocket, "should be marked as a websocket route");
-    assert!(route.meta().ws_incoming.is_some(), "incoming schema recorded");
-    assert!(route.meta().ws_outgoing.is_some(), "outgoing schema recorded");
+    assert!(
+        route.meta().websocket,
+        "should be marked as a websocket route"
+    );
+    assert!(
+        route.meta().ws_incoming.is_some(),
+        "incoming schema recorded"
+    );
+    assert!(
+        route.meta().ws_outgoing.is_some(),
+        "outgoing schema recorded"
+    );
 }
 
 /// Starts the server and returns the bound address plus a shutdown handle.

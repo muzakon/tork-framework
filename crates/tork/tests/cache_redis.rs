@@ -26,7 +26,10 @@ async fn redis_cache_round_trip_ttl_delete_and_clear() {
 
     // Round trip.
     cache.set("k", &"v").await.unwrap();
-    assert_eq!(cache.get::<String>("k").await.unwrap().as_deref(), Some("v"));
+    assert_eq!(
+        cache.get::<String>("k").await.unwrap().as_deref(),
+        Some("v")
+    );
 
     // TTL expiry.
     cache

@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use tork::middleware::{Compression, Cors, RequestId};
 use tork::{
-    App, AsyncApi, ErrorContext, HeaderName, HeaderValue, IntoResponse, Logger, Next, OpenApi,
-    PanicEvent, Request, Response, Result, WebSocketConfig, WsConnectInfo, WsDisconnectInfo,
-    middleware,
+    middleware, App, AsyncApi, ErrorContext, HeaderName, HeaderValue, IntoResponse, Logger, Next,
+    OpenApi, PanicEvent, Request, Response, Result, WebSocketConfig, WsConnectInfo,
+    WsDisconnectInfo,
 };
 
 use my_api::core::app_state::{AppState, Config};

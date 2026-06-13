@@ -5,8 +5,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use tork::{
-    App, FileBytes, FormModel, FromRequest, Multipart, Method, PathParams, ReqBody, RequestContext,
-    Router, StateMap, StatusCode, api_model, box_body, post,
+    api_model, box_body, post, App, FileBytes, FormModel, FromRequest, Method, Multipart,
+    PathParams, ReqBody, RequestContext, Router, StateMap, StatusCode,
 };
 
 #[derive(FormModel)]
@@ -48,7 +48,8 @@ async fn model_binds_file_and_text_fields() {
 
 #[tokio::test]
 async fn model_validation_rejects_a_short_token() {
-    let body = "--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhi\r\n\
+    let body =
+        "--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhi\r\n\
                 --X\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nshort\r\n--X--\r\n";
     let ctx = ctx("multipart/form-data; boundary=X", body.as_bytes());
 
@@ -66,10 +67,7 @@ struct FileInfoOut {
 }
 
 #[post("/files")]
-async fn create_file(
-    #[file] file: FileBytes,
-    #[form] token: String,
-) -> tork::Result<FileInfoOut> {
+async fn create_file(#[file] file: FileBytes, #[form] token: String) -> tork::Result<FileInfoOut> {
     Ok(FileInfoOut {
         size: file.len(),
         token,
@@ -83,7 +81,8 @@ async fn parameter_based_upload_binds_file_and_form() {
         .build()
         .unwrap();
 
-    let body = "--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhello\r\n\
+    let body =
+        "--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhello\r\n\
                 --X\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nabc123\r\n--X--\r\n";
     let request: http::Request<ReqBody> = http::Request::builder()
         .method(Method::POST)

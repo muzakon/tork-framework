@@ -5,9 +5,9 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
+use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt;
 use http_body_util::Full;
-use http_body_util::combinators::UnsyncBoxBody;
 
 /// Boxed, thread-safe error type carried by an erased request body.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;

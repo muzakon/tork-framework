@@ -11,11 +11,11 @@ use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
-use tokio::net::TcpListener;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
 
 use crate::app::AppInner;
-use crate::body::{RespBody, box_body};
+use crate::body::{box_body, RespBody};
 use crate::constants::GRACEFUL_SHUTDOWN_TIMEOUT;
 use crate::extract::RequestPeerAddr;
 
@@ -50,7 +50,8 @@ impl TorkService {
 impl Service<Request<Incoming>> for TorkService {
     type Response = Response<RespBody>;
     type Error = Infallible;
-    type Future = Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, request: Request<Incoming>) -> Self::Future {
         let app = self.app.clone();
@@ -94,7 +95,11 @@ where
     app.begin_ws_shutdown();
 
     // Stop accepting, then drain in-flight connections within the timeout.
-    drain_with_timeout(graceful.shutdown(), tokio::time::sleep(GRACEFUL_SHUTDOWN_TIMEOUT)).await;
+    drain_with_timeout(
+        graceful.shutdown(),
+        tokio::time::sleep(GRACEFUL_SHUTDOWN_TIMEOUT),
+    )
+    .await;
 }
 
 /// Resolves when the process receives an interrupt or termination signal.
@@ -105,7 +110,7 @@ pub(crate) async fn shutdown_signal() {
 
     #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         if let Ok(mut stream) = signal(SignalKind::terminate()) {
             stream.recv().await;
         }
@@ -176,22 +181,26 @@ mod tests {
     use crate::extract::RequestContext;
     use crate::response::Response as TorkResponse;
     use crate::router::{BoxFuture, HandlerFn, Route, Router};
-    use crate::{Method, StatusCode, json_response};
+    use crate::{json_response, Method, StatusCode};
 
-    use std::sync::Arc;
     use std::future;
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn serves_a_request_over_tcp() {
-        let handler: HandlerFn =
-            Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, crate::Result<TorkResponse>> {
+        let handler: HandlerFn = Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, crate::Result<TorkResponse>> {
                 Box::pin(async {
-                    Ok(json_response(StatusCode::OK, &serde_json::json!({ "pong": true })))
+                    Ok(json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({ "pong": true }),
+                    ))
                 })
-            });
+            },
+        );
         let router = Router::new().route(Route::new(Method::GET, "/ping", handler));
         let app = Arc::new(App::new().include_router(router).build().unwrap());
 
@@ -212,8 +221,14 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
 
-        assert!(response.contains("200 OK"), "unexpected response: {response}");
-        assert!(response.contains("\"pong\":true"), "unexpected body: {response}");
+        assert!(
+            response.contains("200 OK"),
+            "unexpected response: {response}"
+        );
+        assert!(
+            response.contains("\"pong\":true"),
+            "unexpected body: {response}"
+        );
 
         let _ = shutdown_tx.send(());
         let _ = server.await;
@@ -225,22 +240,26 @@ mod tests {
         let app = Arc::new(App::new().build().unwrap());
         let graceful = GracefulShutdown::new();
 
-        assert!(!handle_accepted_connection::<tokio::io::DuplexStream>(
-            app.clone(),
-            &builder,
-            &graceful,
-            Err(std::io::Error::other("accept failed"))
-        )
-        .await);
+        assert!(
+            !handle_accepted_connection::<tokio::io::DuplexStream>(
+                app.clone(),
+                &builder,
+                &graceful,
+                Err(std::io::Error::other("accept failed"))
+            )
+            .await
+        );
 
         let (stream, _peer) = tokio::io::duplex(16);
-        assert!(handle_accepted_connection(
-            app,
-            &builder,
-            &graceful,
-            Ok((stream, "127.0.0.1:0".parse().unwrap()))
-        )
-        .await);
+        assert!(
+            handle_accepted_connection(
+                app,
+                &builder,
+                &graceful,
+                Ok((stream, "127.0.0.1:0".parse().unwrap()))
+            )
+            .await
+        );
 
         drain_with_timeout(future::ready(()), future::pending::<()>()).await;
         drain_with_timeout(future::pending::<()>(), future::ready(())).await;

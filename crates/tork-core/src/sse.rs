@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::stream::{BoxStream, StreamExt};
-use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
+use http::header::{HeaderName, HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
 use http_body::{Body, Frame, SizeHint};
 use serde::Serialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::{Instant, Interval, Sleep, interval_at, sleep};
+use tokio::time::{interval_at, sleep, Instant, Interval, Sleep};
 
 use crate::body::{BoxError, RespBody};
 use crate::constants::TEXT_EVENT_STREAM;
@@ -222,9 +222,7 @@ impl<T: Serialize + Send + 'static> Sse<T> {
     where
         S: futures_core::Stream<Item = Result<SseEvent<T>>> + Send + 'static,
     {
-        let events = stream
-            .map(|item| item.and_then(SseEvent::into_raw))
-            .boxed();
+        let events = stream.map(|item| item.and_then(SseEvent::into_raw)).boxed();
         Self::from_events(events)
     }
 
@@ -346,9 +344,7 @@ impl<T> Sse<T> {
         let heartbeat = config
             .heartbeat
             .map(|every| interval_at(Instant::now() + every, every));
-        let timeout = config
-            .client_timeout
-            .map(|after| Box::pin(sleep(after)));
+        let timeout = config.client_timeout.map(|after| Box::pin(sleep(after)));
         let done = config.done_event.map(|marker| {
             encode_event(
                 &RawEvent {
@@ -487,8 +483,7 @@ mod tests {
     use http::StatusCode;
     use http_body_util::BodyExt;
     use serde_json::json;
-use std::sync::LazyLock;
-use std::time::Duration;
+    use std::time::Duration;
 
     fn encode<T: Serialize>(event: SseEvent<T>, default: Option<&str>) -> String {
         let raw = event.into_raw().expect("serialize");
@@ -510,10 +505,16 @@ use std::time::Duration;
     #[test]
     fn encodes_event_id_retry_and_data() {
         let text = encode(
-            SseEvent::new(json!({ "id": 1 })).event("item").id(7).retry_ms(5000),
+            SseEvent::new(json!({ "id": 1 }))
+                .event("item")
+                .id(7)
+                .retry_ms(5000),
             None,
         );
-        assert_eq!(text, "event: item\nid: 7\nretry: 5000\ndata: {\"id\":1}\n\n");
+        assert_eq!(
+            text,
+            "event: item\nid: 7\nretry: 5000\ndata: {\"id\":1}\n\n"
+        );
     }
 
     #[test]
@@ -586,10 +587,16 @@ use std::time::Duration;
             .into_response();
 
         let body = body_to_string(response).await;
-        assert!(body.contains("event: tick\ndata: {\"n\":1}\n\n"), "body: {body}");
+        assert!(
+            body.contains("event: tick\ndata: {\"n\":1}\n\n"),
+            "body: {body}"
+        );
         assert!(body.contains(": final"), "body: {body}");
         assert!(body.contains("data: [DONE]"), "body: {body}");
-        assert!(body.trim_end().ends_with("data: [END]"), "done last: {body}");
+        assert!(
+            body.trim_end().ends_with("data: [END]"),
+            "done last: {body}"
+        );
     }
 
     async fn body_to_string(response: Response) -> String {
@@ -603,7 +610,10 @@ use std::time::Duration;
             Ok::<_, Error>(json!({ "n": 1 })),
             Ok(json!({ "n": 2 })),
         ]);
-        let response = Sse::new(stream).event("tick").done_event("[DONE]").into_response();
+        let response = Sse::new(stream)
+            .event("tick")
+            .done_event("[DONE]")
+            .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
@@ -614,16 +624,27 @@ use std::time::Duration;
         assert_eq!(response.headers().get(X_ACCEL_BUFFERING).unwrap(), "no");
 
         let body = body_to_string(response).await;
-        assert!(body.contains("event: tick\ndata: {\"n\":1}\n\n"), "body: {body}");
-        assert!(body.contains("event: tick\ndata: {\"n\":2}\n\n"), "body: {body}");
-        assert!(body.trim_end().ends_with("data: [DONE]"), "done last: {body}");
+        assert!(
+            body.contains("event: tick\ndata: {\"n\":1}\n\n"),
+            "body: {body}"
+        );
+        assert!(
+            body.contains("event: tick\ndata: {\"n\":2}\n\n"),
+            "body: {body}"
+        );
+        assert!(
+            body.trim_end().ends_with("data: [DONE]"),
+            "done last: {body}"
+        );
     }
 
     #[tokio::test]
     async fn oversized_events_are_skipped() {
         let stream = futures_util::stream::iter(vec![
             Ok::<_, Error>(json!("tiny")),
-            Ok(json!("a really long value that exceeds the configured maximum size")),
+            Ok(json!(
+                "a really long value that exceeds the configured maximum size"
+            )),
         ]);
         let response = Sse::new(stream).max_event_size(40).into_response();
         let body = body_to_string(response).await;
@@ -647,7 +668,10 @@ use std::time::Duration;
             .expect("a heartbeat should arrive")
             .unwrap()
             .unwrap();
-        assert_eq!(frame.into_data().unwrap(), Bytes::from_static(HEARTBEAT_FRAME));
+        assert_eq!(
+            frame.into_data().unwrap(),
+            Bytes::from_static(HEARTBEAT_FRAME)
+        );
     }
 
     #[test]

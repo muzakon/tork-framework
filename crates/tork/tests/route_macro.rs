@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use serde::Serialize;
-use tork::{App, Method, ReqBody, Router, StatusCode, box_body, get};
+use tork::{box_body, get, App, Method, ReqBody, Router, StatusCode};
 
 #[derive(Serialize, schemars::JsonSchema)]
 struct Pong {
@@ -57,6 +57,8 @@ async fn invalid_path_parameter_is_rejected() {
         .build()
         .unwrap();
 
-    let response = app.dispatch(request(Method::GET, "/ping/not-a-number")).await;
+    let response = app
+        .dispatch(request(Method::GET, "/ping/not-a-number"))
+        .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }

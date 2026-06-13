@@ -9,8 +9,8 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit, LitInt, LitStr, Pat, Path,
-    PathArguments, ReturnType, Token, Type, bracketed, parenthesized, token,
+    bracketed, parenthesized, token, Expr, ExprLit, FnArg, GenericArgument, Ident, ItemFn, Lit,
+    LitInt, LitStr, Pat, Path, PathArguments, ReturnType, Token, Type,
 };
 
 use crate::common::{
@@ -178,9 +178,10 @@ impl RouteThrottle {
     fn tokens<'a>(&'a self, krate: &TokenStream) -> (TokenStream, Option<&'a Path>) {
         match self {
             RouteThrottle::Skip => (quote! { &#krate::ThrottlePolicy::Skip }, None),
-            RouteThrottle::Named { name, key } => {
-                (quote! { &#krate::ThrottlePolicy::Named(#name) }, key.as_ref())
-            }
+            RouteThrottle::Named { name, key } => (
+                quote! { &#krate::ThrottlePolicy::Named(#name) },
+                key.as_ref(),
+            ),
             RouteThrottle::Inline { limit, ttl, key } => (
                 quote! { &#krate::ThrottlePolicy::Inline { limit: #limit, window_secs: #ttl } },
                 key.as_ref(),
@@ -377,7 +378,10 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     // function for a parameter-based multipart handler).
     let multipart = has_form_params(&func);
     let (bindings, call_args, prelude, request_meta, extra_items) = if multipart {
-        let route_upload = args.upload.as_ref().map(|u| upload_config_tokens(&krate, u));
+        let route_upload = args
+            .upload
+            .as_ref()
+            .map(|u| upload_config_tokens(&krate, u));
         let MultipartParts {
             bindings,
             call_args,
@@ -417,7 +421,13 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
             },
             None => TokenStream::new(),
         };
-        (bindings, call_args, TokenStream::new(), request_meta, TokenStream::new())
+        (
+            bindings,
+            call_args,
+            TokenStream::new(),
+            request_meta,
+            TokenStream::new(),
+        )
     };
 
     // Re-emit the function (renamed, without the form parameter attributes) so it
@@ -430,10 +440,7 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     // The response schema comes from the declared response model, or otherwise
     // from the handler's `Result<T>` inner type.
     let return_inner = result_ok_type(&func.sig.output);
-    let response_schema_ty = args
-        .response_model
-        .clone()
-        .or_else(|| return_inner.clone());
+    let response_schema_ty = args.response_model.clone().or_else(|| return_inner.clone());
 
     // Builder chain for the route's metadata.
     let mut builder = quote! {
@@ -672,7 +679,10 @@ fn build_multipart_parts(
         let pat_type = match input {
             FnArg::Typed(pat_type) => pat_type,
             FnArg::Receiver(receiver) => {
-                return Err(syn::Error::new_spanned(receiver, "route handlers cannot take `self`"));
+                return Err(syn::Error::new_spanned(
+                    receiver,
+                    "route handlers cannot take `self`",
+                ));
             }
         };
         let ident = match pat_type.pat.as_ref() {
@@ -688,7 +698,8 @@ fn build_multipart_parts(
         let name = ident.to_string();
 
         // A multipart handler cannot also declare another body encoding.
-        if body_inner_type(ty).is_some() || first_generic_arg(ty, &["Form", "Multipart"]).is_some() {
+        if body_inner_type(ty).is_some() || first_generic_arg(ty, &["Form", "Multipart"]).is_some()
+        {
             return Err(syn::Error::new_spanned(
                 ty,
                 "a request can only have one body encoding: a handler with #[file]/#[form] \
@@ -696,8 +707,14 @@ fn build_multipart_parts(
             ));
         }
 
-        let file_attr = pat_type.attrs.iter().find(|attr| attr.path().is_ident("file"));
-        let form_attr = pat_type.attrs.iter().find(|attr| attr.path().is_ident("form"));
+        let file_attr = pat_type
+            .attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("file"));
+        let form_attr = pat_type
+            .attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("form"));
         let (multiplicity, inner) = unwrap_multiplicity(ty);
 
         if file_attr.is_some() || file_kind(inner).is_some() {
@@ -890,7 +907,8 @@ mod tests {
         let numeric = status_code_tokens(&krate(), Some(&parse_quote!(201))).to_string();
         assert!(numeric.contains("from_u16"));
         assert_eq!(
-            status_code_tokens(&krate(), Some(&parse_quote!(tork::StatusCode::CREATED))).to_string(),
+            status_code_tokens(&krate(), Some(&parse_quote!(tork::StatusCode::CREATED)))
+                .to_string(),
             "tork :: StatusCode :: CREATED"
         );
     }
@@ -904,7 +922,9 @@ mod tests {
         let parts = build_handler_parts(&krate, &func, "/users/{id}").unwrap();
         assert_eq!(parts.call_args.len(), 2);
         assert!(matches!(parts.request_body, Some(BodyForm::Json(_))));
-        assert!(parts.bindings[0].to_string().contains("__extract_path_param"));
+        assert!(parts.bindings[0]
+            .to_string()
+            .contains("__extract_path_param"));
 
         let func: ItemFn = parse_quote! {
             async fn bad(self) -> tork::Result<Output> { todo!() }
@@ -978,7 +998,10 @@ mod tests {
         let parts = build_multipart_parts(&krate, &func, "/users/{id}", &route_upload).unwrap();
         assert_eq!(parts.call_args.len(), 3);
         assert!(parts.prelude.to_string().contains("__parse_multipart"));
-        assert_eq!(parts.schema_required, vec!["file".to_owned(), "token".to_owned()]);
+        assert_eq!(
+            parts.schema_required,
+            vec!["file".to_owned(), "token".to_owned()]
+        );
 
         let stripped = strip_form_attrs(&func);
         let rendered = stripped.to_token_stream().to_string();
@@ -1000,7 +1023,9 @@ mod tests {
         let parts = build_handler_parts(&krate, &func, "/users/{id}").unwrap();
         assert_eq!(parts.call_args.len(), 2);
         assert!(parts.request_body.is_none());
-        assert!(parts.bindings[0].to_string().contains("__extract_path_param"));
+        assert!(parts.bindings[0]
+            .to_string()
+            .contains("__extract_path_param"));
         assert!(parts.bindings[1].to_string().contains("FromRequest"));
 
         let default_prelude = multipart_prelude(&krate, &None).to_string();
@@ -1014,7 +1039,9 @@ mod tests {
         assert!(override_prelude.contains("max_files"));
 
         assert!(body_inner_type(&parse_quote!(tork::Form<Input>)).is_none());
-        assert!(first_generic_arg(&parse_quote!(std::result::Result<Item, E>), &["Result"]).is_some());
+        assert!(
+            first_generic_arg(&parse_quote!(std::result::Result<Item, E>), &["Result"]).is_some()
+        );
         assert!(first_generic_arg(&parse_quote!(std::vec::Vec<Item>), &["Result"]).is_none());
     }
 
@@ -1038,9 +1065,7 @@ mod tests {
             }
         );
 
-        let tokens = expand_route("GET", args, func)
-            .unwrap()
-            .to_string();
+        let tokens = expand_route("GET", args, func).unwrap().to_string();
 
         assert!(tokens.contains("__tork_route_get_item"));
         assert!(tokens.contains("Fetch item"));
@@ -1058,23 +1083,19 @@ mod tests {
 
     #[test]
     fn route_impl_emits_multipart_and_request_body_metadata() {
-        let args: RouteArgs = parse_quote!(
-            "/upload/{id}",
-            upload(max_files = 2, max_body_size = "2MB")
-        );
+        let args: RouteArgs =
+            parse_quote!("/upload/{id}", upload(max_files = 2, max_body_size = "2MB"));
         let func: ItemFn = parse_quote!(
             async fn upload(
                 id: String,
                 #[file(name = "avatar", max_size = "64KB", sniff = true)] file: tork::UploadFile,
-                #[form(name = "title")] title: String
+                #[form(name = "title")] title: String,
             ) -> tork::Result<Output> {
                 todo!()
             }
         );
 
-        let tokens = expand_route("POST", args, func)
-            .unwrap()
-            .to_string();
+        let tokens = expand_route("POST", args, func).unwrap().to_string();
 
         assert!(tokens.contains("__tork_form_schema_upload"));
         assert!(tokens.contains("request_schema_fn"));

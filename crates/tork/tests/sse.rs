@@ -6,7 +6,7 @@ use futures_util::stream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tork::{App, Router, Sse, get, sse};
+use tork::{get, sse, App, Router, Sse};
 
 #[sse("/stream", event = "tick")]
 async fn stream_numbers() -> tork::Result<Sse<serde_json::Value>> {
@@ -66,13 +66,22 @@ async fn sse_endpoint_streams_event_stream() {
         response.contains("content-type: text/event-stream"),
         "content type: {response}"
     );
-    assert!(response.contains("cache-control: no-cache"), "cache: {response}");
+    assert!(
+        response.contains("cache-control: no-cache"),
+        "cache: {response}"
+    );
     assert!(
         response.contains("event: tick\r\n") || response.contains("event: tick\n"),
         "event name: {response}"
     );
-    assert!(response.contains("data: {\"n\":1}"), "first event: {response}");
-    assert!(response.contains("data: {\"n\":2}"), "second event: {response}");
+    assert!(
+        response.contains("data: {\"n\":1}"),
+        "first event: {response}"
+    );
+    assert!(
+        response.contains("data: {\"n\":2}"),
+        "second event: {response}"
+    );
 
     let _ = shutdown_tx.send(());
     let _ = server.await;

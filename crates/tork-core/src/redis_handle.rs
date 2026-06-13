@@ -77,7 +77,9 @@ impl Redis {
 }
 
 impl FromRequest for Redis {
-    fn from_request(ctx: &RequestContext) -> impl std::future::Future<Output = Result<Self>> + Send {
+    fn from_request(
+        ctx: &RequestContext,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send {
         let resolved = ctx
             .state()
             .get::<Redis>()

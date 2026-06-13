@@ -5,10 +5,10 @@ use http::header::{HOST, LOCATION};
 use http::{HeaderValue, StatusCode};
 
 use crate::constants::TEXT_PLAIN_UTF8;
-use crate::extract::scheme_from_extensions;
 use crate::error::Result;
+use crate::extract::scheme_from_extensions;
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
-use crate::response::{Response, bytes_response};
+use crate::response::{bytes_response, Response};
 use crate::router::BoxFuture;
 
 /// Redirects plain-HTTP requests to HTTPS with a `308 Permanent Redirect`.
@@ -48,7 +48,11 @@ impl Middleware for HttpsRedirect {
             .unwrap_or("/");
         let location = format!("https://{host}{path}");
 
-        let mut response = bytes_response(StatusCode::PERMANENT_REDIRECT, TEXT_PLAIN_UTF8, Bytes::new());
+        let mut response = bytes_response(
+            StatusCode::PERMANENT_REDIRECT,
+            TEXT_PLAIN_UTF8,
+            Bytes::new(),
+        );
         if let Ok(value) = HeaderValue::from_str(&location) {
             response.headers_mut().insert(LOCATION, value);
         }
@@ -75,9 +79,9 @@ fn is_https(request: &Request) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_body_util::Full;
     use crate::body::box_body;
     use crate::extract::RequestScheme;
+    use http_body_util::Full;
 
     fn request(uri: &str, scheme: Option<RequestScheme>) -> Request {
         let mut request = http::Request::builder()

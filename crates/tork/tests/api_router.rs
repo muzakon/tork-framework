@@ -1,7 +1,7 @@
 //! Integration tests for the `#[api_router]` module macro.
 
 use serde::Serialize;
-use tork::{Method, api_router, get};
+use tork::{api_router, get, Method};
 
 #[derive(Serialize, schemars::JsonSchema)]
 struct Widget {

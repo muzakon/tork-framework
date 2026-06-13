@@ -90,13 +90,11 @@ fn custom_validator_runs_with_its_own_message() {
         "report: {error}"
     );
 
-    assert!(
-        WithCustom {
-            name: "bar".to_owned()
-        }
-        .validate()
-        .is_ok()
-    );
+    assert!(WithCustom {
+        name: "bar".to_owned()
+    }
+    .validate()
+    .is_ok());
 }
 
 #[test]
@@ -145,7 +143,10 @@ fn nested_schema_defines_inner_model() {
     let value = serde_json::to_value(schemars::schema_for!(Item)).unwrap();
     // The nested model is emitted as its own definition and referenced.
     let text = value.to_string();
-    assert!(text.contains("Image"), "schema should define Image: {value}");
+    assert!(
+        text.contains("Image"),
+        "schema should define Image: {value}"
+    );
     assert!(text.contains("url"), "nested field should appear: {value}");
 }
 

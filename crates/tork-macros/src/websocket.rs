@@ -9,10 +9,10 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{FnArg, Ident, ItemFn, LitStr, Pat, Token, Type, bracketed};
+use syn::{bracketed, FnArg, Ident, ItemFn, LitStr, Pat, Token, Type};
 
 use crate::common::{krate, parse_duration_ms, parse_size, path_param_names};
-use crate::route::{RouteThrottle, parse_throttle, throttle_check_tokens};
+use crate::route::{parse_throttle, throttle_check_tokens, RouteThrottle};
 
 /// Parsed attributes of `#[websocket(...)]`.
 struct WsArgs {
@@ -126,7 +126,10 @@ impl Parse for WsArgs {
 }
 
 /// Expands `#[websocket(...)]`.
-pub fn expand(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn expand(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
     let args = match syn::parse::<WsArgs>(attr) {
         Ok(args) => args,
         Err(error) => return error.to_compile_error().into(),
@@ -515,7 +518,9 @@ mod tests {
             Ok(_) => panic!("two WebSocket params must fail"),
             Err(e) => e,
         };
-        assert!(error.to_string().contains("exactly one `WebSocket` parameter"));
+        assert!(error
+            .to_string()
+            .contains("exactly one `WebSocket` parameter"));
     }
 
     #[test]
@@ -526,7 +531,10 @@ mod tests {
         };
         let tokens = expand_ws(args, func).unwrap().to_string();
         assert!(!tokens.contains("summary"), "summary should not appear");
-        assert!(!tokens.contains("description"), "description should not appear");
+        assert!(
+            !tokens.contains("description"),
+            "description should not appear"
+        );
         assert!(!tokens.contains("tag"), "tag should not appear");
         assert!(!tokens.contains("max_message_size"));
         assert!(!tokens.contains("max_frame_size"));

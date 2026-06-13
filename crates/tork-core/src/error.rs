@@ -7,7 +7,7 @@ use http::StatusCode;
 use serde::Serialize;
 
 use crate::constants::{APPLICATION_JSON, INTERNAL_ERROR_MESSAGE};
-use crate::response::{IntoResponse, Response, with_body};
+use crate::response::{with_body, IntoResponse, Response};
 
 /// A specialized [`Result`](core::result::Result) whose error type defaults to
 /// [`Error`].
@@ -395,7 +395,11 @@ impl IntoResponse for Error {
 
         let mut response = match serde_json::to_vec(&body) {
             Ok(buffer) => with_body(status, APPLICATION_JSON, Bytes::from(buffer)),
-            Err(_) => with_body(status, APPLICATION_JSON, Bytes::from_static(FALLBACK_ERROR_BODY)),
+            Err(_) => with_body(
+                status,
+                APPLICATION_JSON,
+                Bytes::from_static(FALLBACK_ERROR_BODY),
+            ),
         };
         // Keep proxies and browsers from caching error responses (a cached `401`
         // would block legitimate retries; a cached `500` would mask recovery).
@@ -485,12 +489,18 @@ mod tests {
     fn status_mapping_matches_kind() {
         assert_eq!(ErrorKind::Forbidden.status(), StatusCode::FORBIDDEN);
         assert_eq!(ErrorKind::NotFound.status(), StatusCode::NOT_FOUND);
-        assert_eq!(ErrorKind::Internal.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            ErrorKind::Internal.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
         assert_eq!(
             ErrorKind::PayloadTooLarge.status(),
             StatusCode::PAYLOAD_TOO_LARGE
         );
-        assert_eq!(ErrorKind::GatewayTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(
+            ErrorKind::GatewayTimeout.status(),
+            StatusCode::GATEWAY_TIMEOUT
+        );
     }
 
     #[tokio::test]
@@ -508,7 +518,10 @@ mod tests {
             body["traceId"].as_str().unwrap().starts_with("req-"),
             "traceId expected: {body}"
         );
-        assert!(body["timestamp"].as_str().unwrap().ends_with('Z'), "timestamp: {body}");
+        assert!(
+            body["timestamp"].as_str().unwrap().ends_with('Z'),
+            "timestamp: {body}"
+        );
     }
 
     #[tokio::test]
@@ -573,7 +586,10 @@ mod tests {
     #[test]
     fn take_source_round_trips_the_typed_cause() {
         let mut error = Error::internal("boom").with_source(SampleCause("cause"));
-        assert_eq!(error.take_source::<SampleCause>(), Some(SampleCause("cause")));
+        assert_eq!(
+            error.take_source::<SampleCause>(),
+            Some(SampleCause("cause"))
+        );
         // The source is consumed: a second take yields nothing.
         assert_eq!(error.take_source::<SampleCause>(), None);
         assert_eq!(error.source_type, None);
@@ -585,7 +601,10 @@ mod tests {
         assert!(error.take_source::<OtherCause>().is_none());
         // The original source is left intact for the correct type.
         assert_eq!(error.source_type, Some(TypeId::of::<SampleCause>()));
-        assert_eq!(error.take_source::<SampleCause>(), Some(SampleCause("cause")));
+        assert_eq!(
+            error.take_source::<SampleCause>(),
+            Some(SampleCause("cause"))
+        );
     }
 
     #[test]

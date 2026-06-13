@@ -8,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::oneshot;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
-use tork::{App, Hub, Router, State, WebSocket, websocket};
+use tork::{websocket, App, Hub, Router, State, WebSocket};
 
 static WS_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -29,11 +29,7 @@ struct ChatMessage {
 }
 
 #[websocket("/chat/{room}")]
-async fn chat(
-    socket: WebSocket,
-    room: String,
-    hub: State<Hub<ChatMessage>>,
-) -> tork::Result<()> {
+async fn chat(socket: WebSocket, room: String, hub: State<Hub<ChatMessage>>) -> tork::Result<()> {
     let mut socket = socket.accept().await?;
     let room = hub.0.room(room);
     let mut rx = room.subscribe();
@@ -69,7 +65,9 @@ async fn start() -> (std::net::SocketAddr, oneshot::Sender<()>) {
     let app = App::new()
         .state(Hub::<ChatMessage>::new())
         .on_ws_connect(|info| async move { ws_log(format!("connect:{}", info.path())) })
-        .on_ws_disconnect(|info| async move { ws_log(format!("disconnect:{:?}", info.close_code())) })
+        .on_ws_disconnect(
+            |info| async move { ws_log(format!("disconnect:{:?}", info.close_code())) },
+        )
         .include_router(
             Router::new()
                 .route(__tork_route_chat())
@@ -112,8 +110,12 @@ async fn chat_broadcasts_to_room_and_fires_lifecycle_hooks() {
     WS_LOG.lock().unwrap().clear();
     let (addr, shutdown) = start().await;
 
-    let (mut alice, _) = connect_async(format!("ws://{addr}/chat/general")).await.unwrap();
-    let (mut bob, _) = connect_async(format!("ws://{addr}/chat/general")).await.unwrap();
+    let (mut alice, _) = connect_async(format!("ws://{addr}/chat/general"))
+        .await
+        .unwrap();
+    let (mut bob, _) = connect_async(format!("ws://{addr}/chat/general"))
+        .await
+        .unwrap();
     // Give both handlers time to accept and subscribe before broadcasting.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -149,7 +151,9 @@ async fn chat_broadcasts_to_room_and_fires_lifecycle_hooks() {
 #[tokio::test]
 async fn invalid_message_closes_the_connection() {
     let (addr, shutdown) = start().await;
-    let (mut socket, _) = connect_async(format!("ws://{addr}/chat/room")).await.unwrap();
+    let (mut socket, _) = connect_async(format!("ws://{addr}/chat/room"))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     socket
@@ -157,7 +161,10 @@ async fn invalid_message_closes_the_connection() {
         .await
         .unwrap();
 
-    assert!(ended(&mut socket).await, "an invalid message should close the connection");
+    assert!(
+        ended(&mut socket).await,
+        "an invalid message should close the connection"
+    );
     let _ = shutdown.send(());
 }
 
@@ -167,6 +174,9 @@ async fn idle_timeout_closes_an_idle_connection() {
     let (mut socket, _) = connect_async(format!("ws://{addr}/idle")).await.unwrap();
 
     // Send nothing: the server closes the socket after its idle timeout.
-    assert!(ended(&mut socket).await, "an idle connection should time out");
+    assert!(
+        ended(&mut socket).await,
+        "an idle connection should time out"
+    );
     let _ = shutdown.send(());
 }

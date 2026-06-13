@@ -1,14 +1,14 @@
 //! Response types and the [`IntoResponse`] conversion trait.
 
 use bytes::Bytes;
+use http::header::{HeaderValue, CONTENT_TYPE};
 use http::StatusCode;
-use http::header::{CONTENT_TYPE, HeaderValue};
 
 use crate::body::RespBody;
 
 pub mod json;
 
-pub use json::{Json, json_response};
+pub use json::{json_response, Json};
 
 /// The concrete HTTP response type used throughout the framework.
 pub type Response = http::Response<RespBody>;
@@ -200,8 +200,8 @@ mod tests {
     fn result_into_response_and_finish_helpers_propagate_errors() {
         let error = Error::bad_request("bad");
 
-        let response = core::result::Result::<StatusCode, _>::Err(Error::bad_request("bad"))
-            .into_response();
+        let response =
+            core::result::Result::<StatusCode, _>::Err(Error::bad_request("bad")).into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let finish = __finish::<Payload, _>(Err(error), StatusCode::OK)

@@ -7,7 +7,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{DeriveInput, Expr, ExprLit, Lit, parse_macro_input};
+use syn::{parse_macro_input, DeriveInput, Expr, ExprLit, Lit};
 
 use crate::common::krate;
 
@@ -44,7 +44,10 @@ fn expand_derive(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 /// The argument may be an HTTP status code (for example `503`) or an `ErrorKind`
 /// variant name (for example `ServiceUnavailable`). Defaults to `Internal`.
 fn error_kind(input: &DeriveInput) -> syn::Result<proc_macro2::Ident> {
-    let attr = input.attrs.iter().find(|attr| attr.path().is_ident("status"));
+    let attr = input
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("status"));
 
     let Some(attr) = attr else {
         return Ok(ident("Internal"));
@@ -159,7 +162,10 @@ mod tests {
             #[status(503)]
             struct MyError;
         };
-        assert_eq!(error_kind(&input).unwrap().to_string(), "ServiceUnavailable");
+        assert_eq!(
+            error_kind(&input).unwrap().to_string(),
+            "ServiceUnavailable"
+        );
 
         let input: DeriveInput = parse_quote! {
             #[status(Forbidden)]
@@ -174,7 +180,10 @@ mod tests {
             #[status(418)]
             struct MyError;
         };
-        assert!(error_kind(&input).unwrap_err().to_string().contains("supported codes"));
+        assert!(error_kind(&input)
+            .unwrap_err()
+            .to_string()
+            .contains("supported codes"));
 
         let input: DeriveInput = parse_quote! {
             #[status(foo::Bar)]

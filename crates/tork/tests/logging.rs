@@ -6,8 +6,8 @@ use bytes::Bytes;
 use http_body_util::Full;
 use tork::testing::{LogRecorder, TestClient};
 use tork::{
-    App, FromRequest, Inject, Logger, LoggerConfig, PathParams, RequestContext, Router, StateMap, assert_logs,
-    box_body, get,
+    assert_logs, box_body, get, App, FromRequest, Inject, Logger, LoggerConfig, PathParams,
+    RequestContext, Router, StateMap,
 };
 
 #[derive(Clone, Inject)]
@@ -70,7 +70,10 @@ struct Greeter {
 
 impl Greeter {
     fn greet(&self) {
-        self.logger.info("Greeting the world").field("who", "world").emit();
+        self.logger
+            .info("Greeting the world")
+            .field("who", "world")
+            .emit();
     }
 }
 
@@ -114,11 +117,19 @@ async fn log_injection_via_path_newlines_is_sanitized() {
     .await
     .unwrap();
 
-    let response = client.get("/greet%0d%0a[INFO]%20Forged%20log%20entry").send().await.unwrap();
+    let response = client
+        .get("/greet%0d%0a[INFO]%20Forged%20log%20entry")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status(), 404);
 
     let records = recorder.records();
-    let log_output = records.iter().map(|r| r.message.as_str()).collect::<Vec<_>>().join("\n");
+    let log_output = records
+        .iter()
+        .map(|r| r.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!log_output.contains("Forged log entry"));
     assert!(!log_output.contains("\r\n"));
     assert!(!log_output.contains("\n[INFO]"));
@@ -146,7 +157,11 @@ async fn log_injection_via_x_request_id_is_sanitized() {
     assert_eq!(response.status(), 200);
 
     let records = recorder.records();
-    let log_output = records.iter().map(|r| r.message.as_str()).collect::<Vec<_>>().join("\n");
+    let log_output = records
+        .iter()
+        .map(|r| r.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!log_output.contains("Forged log entry"));
     assert!(!log_output.contains("\r\n"));
     assert!(!log_output.contains("\n[INFO]"));
@@ -174,7 +189,11 @@ async fn log_injection_via_origin_header_is_sanitized() {
     assert_eq!(response.status(), 200);
 
     let records = recorder.records();
-    let log_output = records.iter().map(|r| r.message.as_str()).collect::<Vec<_>>().join("\n");
+    let log_output = records
+        .iter()
+        .map(|r| r.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!log_output.contains("Forged log entry"));
     assert!(!log_output.contains("\r\n"));
     assert!(!log_output.contains("\n[INFO]"));

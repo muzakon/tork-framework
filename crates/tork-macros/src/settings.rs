@@ -13,8 +13,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    Attribute, Expr, ExprLit, Fields, Ident, ItemStruct, Lit, LitInt, LitStr, Token, bracketed,
-    parse_macro_input,
+    bracketed, parse_macro_input, Attribute, Expr, ExprLit, Fields, Ident, ItemStruct, Lit, LitInt,
+    LitStr, Token,
 };
 
 use crate::api_model::{bound_parts, coerce_bound, exclusive_check, to_snake};
@@ -337,7 +337,13 @@ fn load_chain(container: &ContainerArgs) -> TokenStream2 {
 /// function's return type makes the conversion unambiguous. Other expressions
 /// (numbers, booleans, paths) pass through unchanged.
 fn default_value(expr: &Expr) -> TokenStream2 {
-    let is_str_lit = matches!(expr, Expr::Lit(ExprLit { lit: Lit::Str(_), .. }));
+    let is_str_lit = matches!(
+        expr,
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(_),
+            ..
+        })
+    );
     if is_str_lit {
         quote!(::core::convert::Into::into(#expr))
     } else {
@@ -409,7 +415,9 @@ mod tests {
         assert!(chain.contains("file"));
         assert!(chain.contains("secrets_dir"));
 
-        assert!(default_value(&parse_quote!("secret")).to_string().contains("Into :: into"));
+        assert!(default_value(&parse_quote!("secret"))
+            .to_string()
+            .contains("Into :: into"));
         assert_eq!(default_value(&parse_quote!(42)).to_string(), "42");
     }
 
@@ -423,7 +431,9 @@ mod tests {
                 port: u16,
             }
         };
-        let tokens = expand_struct(ContainerArgs::default(), item).unwrap().to_string();
+        let tokens = expand_struct(ContainerArgs::default(), item)
+            .unwrap()
+            .to_string();
         assert!(tokens.contains("impl :: core :: default :: Default for Settings"));
         assert!(tokens.contains("pub fn load () -> :: tork :: Result < Self >"));
         assert!(tokens.contains("SettingsLoader :: < Self > :: new ()"));
@@ -442,14 +452,18 @@ mod tests {
                 nested: Option<Nested>,
             }
         };
-        let tokens = expand_struct(ContainerArgs::default(), item).unwrap().to_string();
+        let tokens = expand_struct(ContainerArgs::default(), item)
+            .unwrap()
+            .to_string();
         assert!(tokens.contains("length"));
         assert!(tokens.contains("range"));
         assert!(tokens.contains("email"));
         assert!(tokens.contains("custom"));
         assert!(tokens.contains("garde"));
 
-        let tuple_struct: ItemStruct = parse_quote!(struct Bad(u32););
+        let tuple_struct: ItemStruct = parse_quote!(
+            struct Bad(u32);
+        );
         assert!(expand_struct(ContainerArgs::default(), tuple_struct)
             .unwrap_err()
             .to_string()

@@ -149,7 +149,11 @@ mod tests {
 
         // Creating a different room evicts the dead one first.
         let _b = hub.room("b");
-        assert_eq!(hub.room_count(), 1, "the dead room should have been evicted");
+        assert_eq!(
+            hub.room_count(),
+            1,
+            "the dead room should have been evicted"
+        );
     }
 
     #[tokio::test]

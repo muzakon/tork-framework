@@ -102,7 +102,9 @@ impl TestSseStream {
     pub async fn next_event_timeout(&mut self, timeout: Duration) -> Result<Option<TestSseEvent>> {
         tokio::time::timeout(timeout, self.next_event())
             .await
-            .map_err(|_| Error::internal("timed out waiting for an event").with_code("SSE_TIMEOUT"))?
+            .map_err(|_| {
+                Error::internal("timed out waiting for an event").with_code("SSE_TIMEOUT")
+            })?
     }
 
     /// Removes and returns the next complete event block (terminated by a blank
@@ -173,9 +175,7 @@ mod tests {
         value: i64,
     }
 
-    fn body_from_chunks(
-        chunks: Vec<std::result::Result<Frame<Bytes>, BoxError>>,
-    ) -> StreamingBody {
+    fn body_from_chunks(chunks: Vec<std::result::Result<Frame<Bytes>, BoxError>>) -> StreamingBody {
         Box::pin(StreamBody::new(stream::iter(chunks)))
     }
 

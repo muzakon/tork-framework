@@ -162,7 +162,9 @@ mod tests {
         let mut cell = LifespanCell::<Probe>::new();
         let mut registry = StateMap::new();
 
-        cell.startup(LifespanContext::new(), &mut registry).await.unwrap();
+        cell.startup(LifespanContext::new(), &mut registry)
+            .await
+            .unwrap();
         assert_eq!(registry.get::<i64>().map(|value| *value), Some(7));
 
         cell.shutdown().await.unwrap();

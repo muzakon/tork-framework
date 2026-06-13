@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use tork::{App, Inject, Method, ReqBody, Resources, Router, StateMap, StatusCode, box_body, get};
+use tork::{box_body, get, App, Inject, Method, ReqBody, Resources, Router, StateMap, StatusCode};
 
 #[derive(Clone)]
 struct Db(i64);

@@ -12,10 +12,14 @@ use my_api::routers::users;
 ///
 /// The users router only needs the store; configuration is not on its path.
 async fn client() -> TestClient {
-    TestClient::builder(App::new().state(UserStore::seed()).include_router(users::router()))
-        .build()
-        .await
-        .unwrap()
+    TestClient::builder(
+        App::new()
+            .state(UserStore::seed())
+            .include_router(users::router()),
+    )
+    .build()
+    .await
+    .unwrap()
 }
 
 #[tokio::test]

@@ -92,7 +92,9 @@ impl CacheStore for RedisStore {
                 let millis = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX).max(1);
                 cmd.arg("PX").arg(millis);
             }
-            cmd.query_async::<()>(&mut conn).await.map_err(redis_error)?;
+            cmd.query_async::<()>(&mut conn)
+                .await
+                .map_err(redis_error)?;
             Ok(())
         })
     }

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http_body_util::Full;
 use tork::{
-    App, AppInner, BoxFuture, HandlerFn, IntoResponse, Method, ReqBody, RequestContext, Response,
-    Result, Route, Router, StatusCode, box_body,
+    box_body, App, AppInner, BoxFuture, HandlerFn, IntoResponse, Method, ReqBody, RequestContext,
+    Response, Result, Route, Router, StatusCode,
 };
 
 /// A user error that converts into `tork::Error` and defaults to `503`.
@@ -27,15 +27,16 @@ impl std::error::Error for DbError {}
 
 /// A route whose handler surfaces a `DbError` through `?`.
 fn failing_route() -> Router {
-    let handler: HandlerFn =
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+    let handler: HandlerFn = Arc::new(
+        |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             Box::pin(async {
                 // The `?` converts `DbError` into `tork::Error` via the derived `From`.
                 let outcome: std::result::Result<(), DbError> = Err(DbError::Timeout);
                 outcome?;
                 Ok(StatusCode::OK.into_response())
             })
-        });
+        },
+    );
     Router::new().route(Route::new(Method::GET, "/db", handler))
 }
 

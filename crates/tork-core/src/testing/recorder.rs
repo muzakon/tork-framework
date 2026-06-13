@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
-use tracing::Event;
 use tracing::field::{Field, Visit};
+use tracing::Event;
 use tracing_subscriber::layer::{Context, Layer};
 
 /// A single captured log record.
@@ -38,22 +38,32 @@ impl LogRecorder {
 
     /// Returns a snapshot of the captured records.
     pub fn records(&self) -> Vec<LogRecord> {
-        self.records.lock().expect("recorder mutex poisoned").clone()
+        self.records
+            .lock()
+            .expect("recorder mutex poisoned")
+            .clone()
     }
 
     /// Removes all captured records.
     pub fn clear(&self) {
-        self.records.lock().expect("recorder mutex poisoned").clear();
+        self.records
+            .lock()
+            .expect("recorder mutex poisoned")
+            .clear();
     }
 
     /// Returns `true` if any record has the given context.
     pub fn contains_context(&self, context: &str) -> bool {
-        self.records().iter().any(|record| record.context == context)
+        self.records()
+            .iter()
+            .any(|record| record.context == context)
     }
 
     /// Returns `true` if any record's message contains `text`.
     pub fn contains_message(&self, text: &str) -> bool {
-        self.records().iter().any(|record| record.message.contains(text))
+        self.records()
+            .iter()
+            .any(|record| record.message.contains(text))
     }
 }
 
@@ -69,7 +79,10 @@ impl<S: tracing::Subscriber> Layer<S> for LogRecorder {
             message: visitor.message.unwrap_or_default(),
             fields: visitor.fields,
         };
-        self.records.lock().expect("recorder mutex poisoned").push(record);
+        self.records
+            .lock()
+            .expect("recorder mutex poisoned")
+            .push(record);
     }
 }
 
@@ -117,7 +130,11 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(recorder.clone());
 
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(tork.context = "Orders", tork.fields = "{\"id\":1}", "created order");
+            tracing::info!(
+                tork.context = "Orders",
+                tork.fields = "{\"id\":1}",
+                "created order"
+            );
         });
 
         assert!(recorder.contains_context("Orders"));

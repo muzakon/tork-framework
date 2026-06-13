@@ -24,9 +24,9 @@ where
     T::Err: Display,
 {
     fn from_path_param(name: &str, value: &str) -> Result<Self> {
-        value.parse::<T>().map_err(|_| {
-            Error::unprocessable(format!("invalid value for path parameter `{name}`"))
-        })
+        value
+            .parse::<T>()
+            .map_err(|_| Error::unprocessable(format!("invalid value for path parameter `{name}`")))
     }
 }
 
@@ -63,7 +63,8 @@ mod tests {
 
     #[test]
     fn missing_param_is_internal_router_error() {
-        let error = __extract_path_param::<i64>(&context(PathParams::new()), "user_id").unwrap_err();
+        let error =
+            __extract_path_param::<i64>(&context(PathParams::new()), "user_id").unwrap_err();
 
         assert_eq!(error.kind(), crate::error::ErrorKind::Internal);
         assert_eq!(
@@ -79,6 +80,9 @@ mod tests {
 
         let error = __extract_path_param::<i64>(&context(params), "user_id").unwrap_err();
         assert_eq!(error.kind(), crate::error::ErrorKind::Unprocessable);
-        assert_eq!(error.message(), "invalid value for path parameter `user_id`");
+        assert_eq!(
+            error.message(),
+            "invalid value for path parameter `user_id`"
+        );
     }
 }

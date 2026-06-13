@@ -78,7 +78,10 @@ async fn protect_gates_the_docs_and_spec_routes() {
     .unwrap();
 
     // Without the token both routes are hidden behind a 404.
-    assert_eq!(client.get("/openapi.json").send().await.unwrap().status(), 404);
+    assert_eq!(
+        client.get("/openapi.json").send().await.unwrap().status(),
+        404
+    );
     assert_eq!(client.get("/docs").send().await.unwrap().status(), 404);
 
     // With the token they are served normally.

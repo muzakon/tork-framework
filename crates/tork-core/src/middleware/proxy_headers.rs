@@ -6,8 +6,8 @@ use http::header::HOST;
 use ipnet::IpNet;
 use tracing::warn;
 
-use crate::extract::{RequestScheme, peer_addr_from_extensions};
 use crate::error::Result;
+use crate::extract::{peer_addr_from_extensions, RequestScheme};
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
 use crate::response::Response;
 use crate::router::BoxFuture;
@@ -62,7 +62,10 @@ impl ProxyHeaders {
             return false;
         };
         self.trusted_ips.iter().any(|addr| *addr == peer.ip())
-            || self.trusted_cidrs.iter().any(|network| network.contains(&peer.ip()))
+            || self
+                .trusted_cidrs
+                .iter()
+                .any(|network| network.contains(&peer.ip()))
     }
 
     fn forwarded_value<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
@@ -147,7 +150,9 @@ mod tests {
             .trust_cidr("10.0.0.0/24".parse().unwrap())
             .trust_loopback();
 
-        assert!(middleware.trusted_ips.contains(&IpAddr::from([10, 0, 0, 1])));
+        assert!(middleware
+            .trusted_ips
+            .contains(&IpAddr::from([10, 0, 0, 1])));
         assert!(middleware
             .trusted_cidrs
             .contains(&"10.0.0.0/24".parse().unwrap()));

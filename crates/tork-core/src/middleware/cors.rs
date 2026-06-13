@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::error::Result;
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
-use crate::response::{Response, empty};
+use crate::response::{empty, Response};
 use crate::router::BoxFuture;
 
 /// The wildcard origin token.
@@ -136,7 +136,9 @@ impl Middleware for Cors {
     fn handle(&self, request: Request, next: Next) -> BoxFuture<'static, Result<Response>> {
         let allow_origin = self.allow_origin_value(&request);
         let is_preflight = request.method() == Method::OPTIONS
-            && request.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
+            && request
+                .headers()
+                .contains_key(ACCESS_CONTROL_REQUEST_METHOD);
 
         if is_preflight {
             let mut response = empty(StatusCode::NO_CONTENT);
@@ -152,7 +154,10 @@ impl Middleware for Cors {
                 headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, allowed.clone());
             }
             if self.credentials {
-                headers.insert(ACCESS_CONTROL_ALLOW_CREDENTIALS, HeaderValue::from_static("true"));
+                headers.insert(
+                    ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                    HeaderValue::from_static("true"),
+                );
             }
             if let Some(max_age) = &self.max_age {
                 headers.insert(ACCESS_CONTROL_MAX_AGE, max_age.clone());
@@ -212,9 +217,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::box_body;
     use bytes::Bytes;
     use http_body_util::Full;
-    use crate::body::box_body;
 
     fn request(origin: Option<&str>) -> Request {
         let mut builder = http::Request::builder().method(Method::GET).uri("/");
@@ -250,7 +255,9 @@ mod tests {
     fn exact_allow_list_rejects_unknown_origin() {
         let cors = Cors::new().allow_origin("https://good.example.com");
 
-        assert!(cors.allow_origin_value(&request(Some("https://evil.example.com"))).is_none());
+        assert!(cors
+            .allow_origin_value(&request(Some("https://evil.example.com")))
+            .is_none());
         assert!(cors.allow_origin_value(&request(None)).is_none());
     }
 

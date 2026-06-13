@@ -5,7 +5,7 @@ use http::header::CONTENT_LENGTH;
 use http_body_util::BodyExt;
 use http_body_util::Full;
 
-use crate::body::{ReqBody, box_body};
+use crate::body::{box_body, ReqBody};
 use crate::error::{Error, Result};
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
 use crate::response::Response;
@@ -82,11 +82,9 @@ async fn read_body_with_limit(mut body: ReqBody, limit: usize) -> Result<Bytes> 
     let mut buffer = Vec::new();
 
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|error| {
-            match error.downcast::<Error>() {
-                Ok(error) => *error,
-                Err(_) => Error::bad_request("request body could not be read"),
-            }
+        let frame = frame.map_err(|error| match error.downcast::<Error>() {
+            Ok(error) => *error,
+            Err(_) => Error::bad_request("request body could not be read"),
         })?;
 
         if let Some(data) = frame.data_ref() {
@@ -104,9 +102,9 @@ async fn read_body_with_limit(mut body: ReqBody, limit: usize) -> Result<Bytes> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::box_body;
     use futures_util::stream;
     use http_body::Frame;
-    use crate::body::box_body;
 
     #[test]
     fn constructors_scale_bytes_kb_and_mb() {

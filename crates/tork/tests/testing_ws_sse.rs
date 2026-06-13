@@ -1,11 +1,11 @@
 //! Integration tests for the in-process test client's WebSocket and SSE support.
 
-use futures_util::{StreamExt, stream};
+use futures_util::{stream, StreamExt};
 use serde_json::json;
 use tork::testing::TestClient;
 use tork::{
-    App, BearerToken, FromRequest, RequestContext, Router, Sse, WebSocket, WsCloseCode, WsMessage,
-    api_model, get, sse, websocket,
+    api_model, get, sse, websocket, App, BearerToken, FromRequest, RequestContext, Router, Sse,
+    WebSocket, WsCloseCode, WsMessage,
 };
 
 #[websocket("/ws")]
@@ -118,10 +118,18 @@ async fn websocket_send_json_and_receive_binary_json() {
         .unwrap();
     let client = TestClient::new(app).await.unwrap();
 
-    let mut ws = client.websocket("/ws").subprotocol("json").connect().await.unwrap();
+    let mut ws = client
+        .websocket("/ws")
+        .subprotocol("json")
+        .connect()
+        .await
+        .unwrap();
     ws.send_json(&json!({ "value": 7 })).await.unwrap();
     let text = ws.receive_text().await.unwrap();
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), json!({ "value": 7 }));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+        json!({ "value": 7 })
+    );
 
     ws.send_binary(br#"{"value":9}"#.to_vec()).await.unwrap();
     let data = ws.receive_json::<serde_json::Value>().await.unwrap();
@@ -244,10 +252,7 @@ struct Tick {
 
 #[sse("/events", event = "tick", response_model = Tick)]
 async fn events() -> tork::Result<Sse<Tick>> {
-    let items = stream::iter(vec![
-        Ok::<_, tork::Error>(Tick { n: 1 }),
-        Ok(Tick { n: 2 }),
-    ]);
+    let items = stream::iter(vec![Ok::<_, tork::Error>(Tick { n: 1 }), Ok(Tick { n: 2 })]);
     Ok(Sse::new(items).no_heartbeat())
 }
 
@@ -296,5 +301,8 @@ async fn sse_stream_reads_events() {
     let second = stream.next_event().await.unwrap().expect("second event");
     assert_eq!(second.json::<Tick>().unwrap().n, 2);
 
-    assert!(stream.next_event().await.unwrap().is_none(), "stream should end");
+    assert!(
+        stream.next_event().await.unwrap().is_none(),
+        "stream should end"
+    );
 }

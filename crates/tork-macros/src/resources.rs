@@ -7,7 +7,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Field, Fields, Type, parse_macro_input};
+use syn::{parse_macro_input, Data, DeriveInput, Field, Fields, Type};
 
 use crate::common::krate;
 
@@ -53,7 +53,11 @@ fn expand_derive(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let mut extractors = Vec::new();
 
     for field in fields {
-        if !field.attrs.iter().any(|attr| attr.path().is_ident("resource")) {
+        if !field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("resource"))
+        {
             continue;
         }
 
@@ -109,7 +113,11 @@ mod tests {
 
     #[test]
     fn expand_derive_rejects_non_struct_and_unnamed_fields() {
-        let input: DeriveInput = parse_quote!(enum NotAStruct { A });
+        let input: DeriveInput = parse_quote!(
+            enum NotAStruct {
+                A,
+            }
+        );
         assert!(expand_derive(input)
             .unwrap_err()
             .to_string()
@@ -146,7 +154,9 @@ mod tests {
 
     #[test]
     fn expand_derive_allows_unit_structs() {
-        let input: DeriveInput = parse_quote!(struct Empty;);
+        let input: DeriveInput = parse_quote!(
+            struct Empty;
+        );
         let tokens = expand_derive(input).unwrap().to_string();
         assert!(tokens.contains("Resources for Empty"));
     }

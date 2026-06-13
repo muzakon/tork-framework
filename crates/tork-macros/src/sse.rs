@@ -9,11 +9,11 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Ident, ItemFn, LitStr, Token, Type, bracketed};
+use syn::{bracketed, Ident, ItemFn, LitStr, Token, Type};
 
 use crate::common::krate;
 use crate::route::{
-    HandlerParts, RouteThrottle, build_handler_parts, parse_throttle, throttle_check_tokens,
+    build_handler_parts, parse_throttle, throttle_check_tokens, HandlerParts, RouteThrottle,
 };
 
 /// Parsed attributes of an `#[sse]` / `#[post_sse]` macro.
@@ -365,10 +365,19 @@ mod tests {
             async fn events() -> tork::Result<tork::Sse<Tick>> { todo!() }
         };
         let tokens = expand_sse("GET", args, func).unwrap().to_string();
-        assert!(!tokens.contains(". summary ("), "summary should not be present");
-        assert!(!tokens.contains(". description ("), "description should not be present");
+        assert!(
+            !tokens.contains(". summary ("),
+            "summary should not be present"
+        );
+        assert!(
+            !tokens.contains(". description ("),
+            "description should not be present"
+        );
         assert!(!tokens.contains(". event ("), "event should not be present");
-        assert!(!tokens.contains(". response_schema"), "response_schema should not be present");
+        assert!(
+            !tokens.contains(". response_schema"),
+            "response_schema should not be present"
+        );
         assert!(!tokens.contains(". tag ("), "tag should not be present");
     }
 

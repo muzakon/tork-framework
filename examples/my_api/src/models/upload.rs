@@ -1,6 +1,6 @@
 //! Form and file upload models.
 
-use tork::{FileBytes, FormModel, UploadFile, api_model};
+use tork::{api_model, FileBytes, FormModel, UploadFile};
 
 /// A profile upload submitted as `multipart/form-data`.
 ///

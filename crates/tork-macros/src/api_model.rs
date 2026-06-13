@@ -12,8 +12,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    Attribute, Expr, Fields, GenericArgument, Ident, ItemStruct, LitInt, LitStr, PathArguments,
-    Token, Type, parse_macro_input,
+    parse_macro_input, Attribute, Expr, Fields, GenericArgument, Ident, ItemStruct, LitInt, LitStr,
+    PathArguments, Token, Type,
 };
 
 /// Container-level options parsed from `#[api_model(...)]`.
@@ -441,14 +441,20 @@ mod tests {
 
     #[test]
     fn helper_functions_cover_bounds_and_identifiers() {
-        assert_eq!(bound_parts(Some(quote!(1)), Some(quote!(9))).to_string(), "min = 1 , max = 9");
+        assert_eq!(
+            bound_parts(Some(quote!(1)), Some(quote!(9))).to_string(),
+            "min = 1 , max = 9"
+        );
         assert_eq!(bound_parts(Some(quote!(1)), None).to_string(), "min = 1");
         assert_eq!(bound_parts(None, Some(quote!(9))).to_string(), "max = 9");
         assert_eq!(bound_parts(None, None).to_string(), "");
 
         let field_ty: Type = parse_quote!(f64);
         assert_eq!(coerce_bound(&parse_quote!(0), &field_ty).to_string(), "0.0");
-        assert_eq!(coerce_bound(&parse_quote!(2.5), &field_ty).to_string(), "2.5");
+        assert_eq!(
+            coerce_bound(&parse_quote!(2.5), &field_ty).to_string(),
+            "2.5"
+        );
 
         let option_ty: Type = parse_quote!(Option<u32>);
         let plain_ty: Type = parse_quote!(String);

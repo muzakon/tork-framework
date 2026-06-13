@@ -9,11 +9,11 @@ use bytes::Bytes;
 
 use tork_core::constants::TEXT_HTML_UTF8;
 use tork_core::{
-    BoxFuture, HandlerFn, Method, RequestContext, Response, Result, Route, StatusCode,
-    bytes_response,
+    bytes_response, BoxFuture, HandlerFn, Method, RequestContext, Response, Result, Route,
+    StatusCode,
 };
 
-use crate::spec::{DocGuard, check_guard};
+use crate::spec::{check_guard, DocGuard};
 
 /// CDN URL for the Scalar API reference standalone bundle.
 ///
@@ -38,15 +38,16 @@ pub(crate) fn docs_route(
 ) -> Route {
     let body = Bytes::from(render_html(title, spec_url));
 
-    let handler: HandlerFn =
-        Arc::new(move |ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+    let handler: HandlerFn = Arc::new(
+        move |ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             let body = body.clone();
             let guard = guard.clone();
             Box::pin(async move {
                 check_guard(&guard, &ctx)?;
                 Ok(bytes_response(StatusCode::OK, TEXT_HTML_UTF8, body))
             })
-        });
+        },
+    );
 
     Route::new(Method::GET, path.to_owned(), handler).summary("API documentation")
 }

@@ -3,15 +3,15 @@
 //! rejection. The request bodies are built by hand and sent through a socket, so
 //! the whole server pipeline (parsing, binding, validation) is exercised.
 
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::fs;
 
+use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tork::{App, Form, FormModel, Multipart, Router, UploadFile, FileBytes, api_model, post};
-use tempfile::TempDir;
+use tork::{api_model, post, App, FileBytes, Form, FormModel, Multipart, Router, UploadFile};
 
 #[api_model]
 struct UploadOut {
@@ -89,7 +89,10 @@ async fn post_request(
 
 /// Returns the response body (everything after the header terminator).
 fn response_body(response: &str) -> &str {
-    response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or("")
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
 }
 
 #[tokio::test]
@@ -125,15 +128,33 @@ async fn uploads_bind_over_tcp() {
                      --B\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nsecret-token\r\n--B--\r\n";
 
     // Model-based multipart upload.
-    let response = post_request(addr, "/model", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 200"), "model status: {response}");
+    let response = post_request(
+        addr,
+        "/model",
+        "multipart/form-data; boundary=B",
+        multipart.as_bytes(),
+    )
+    .await;
+    assert!(
+        response.contains("HTTP/1.1 200"),
+        "model status: {response}"
+    );
     let body: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
     assert_eq!(body["size"], 6);
     assert_eq!(body["token"], "secret-token");
 
     // Parameter-based multipart upload.
-    let response = post_request(addr, "/params", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 200"), "params status: {response}");
+    let response = post_request(
+        addr,
+        "/params",
+        "multipart/form-data; boundary=B",
+        multipart.as_bytes(),
+    )
+    .await;
+    assert!(
+        response.contains("HTTP/1.1 200"),
+        "params status: {response}"
+    );
     let body: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
     assert_eq!(body["size"], 6);
     assert_eq!(body["token"], "secret-token");
@@ -146,15 +167,27 @@ async fn uploads_bind_over_tcp() {
         b"username=alice&password=hunter2",
     )
     .await;
-    assert!(response.contains("HTTP/1.1 200"), "login status: {response}");
+    assert!(
+        response.contains("HTTP/1.1 200"),
+        "login status: {response}"
+    );
     let body: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
     assert_eq!(body["username"], "alice");
 
     // A short token fails validation with 422 Unprocessable Entity.
     let short = "--B\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"a.png\"\r\n\r\nhello!\r\n\
                  --B\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nshort\r\n--B--\r\n";
-    let response = post_request(addr, "/model", "multipart/form-data; boundary=B", short.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 422"), "validation status: {response}");
+    let response = post_request(
+        addr,
+        "/model",
+        "multipart/form-data; boundary=B",
+        short.as_bytes(),
+    )
+    .await;
+    assert!(
+        response.contains("HTTP/1.1 422"),
+        "validation status: {response}"
+    );
 
     let _ = shutdown_tx.send(());
     let _ = server.await;
@@ -166,13 +199,19 @@ struct UploadState {
 }
 
 #[post("/upload")]
-async fn upload_save(mut file: UploadFile, state: Arc<UploadState>) -> tork::Result<serde_json::Value> {
+async fn upload_save(
+    mut file: UploadFile,
+    state: Arc<UploadState>,
+) -> tork::Result<serde_json::Value> {
     file.save_to_dir(&state.upload_dir, "safe.txt").await?;
     Ok(serde_json::json!({ "status": "ok" }))
 }
 
 #[post("/upload-invalid-path")]
-async fn upload_invalid_path(mut file: UploadFile, state: Arc<UploadState>) -> tork::Result<serde_json::Value> {
+async fn upload_invalid_path(
+    mut file: UploadFile,
+    state: Arc<UploadState>,
+) -> tork::Result<serde_json::Value> {
     file.save_to(&state.outside_path).await?;
     Ok(serde_json::json!({ "status": "ok" }))
 }
@@ -216,11 +255,29 @@ async fn upload_file_save_to_dir_is_safe_and_save_to_rejects_invalid_paths() {
 
     let multipart = "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhello!\r\n--B--\r\n";
 
-    let response = post_request(addr, "/upload", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 200"), "safe upload status: {response}");
+    let response = post_request(
+        addr,
+        "/upload",
+        "multipart/form-data; boundary=B",
+        multipart.as_bytes(),
+    )
+    .await;
+    assert!(
+        response.contains("HTTP/1.1 200"),
+        "safe upload status: {response}"
+    );
 
-    let response = post_request(addr, "/upload-invalid-path", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 400"), "invalid upload path should fail: {response}");
+    let response = post_request(
+        addr,
+        "/upload-invalid-path",
+        "multipart/form-data; boundary=B",
+        multipart.as_bytes(),
+    )
+    .await;
+    assert!(
+        response.contains("HTTP/1.1 400"),
+        "invalid upload path should fail: {response}"
+    );
 
     assert!(upload_dir.join("safe.txt").exists());
 
@@ -233,7 +290,10 @@ struct SymlinkState {
 }
 
 #[post("/upload-symlink")]
-async fn upload_symlink(mut file: UploadFile, state: Arc<SymlinkState>) -> tork::Result<serde_json::Value> {
+async fn upload_symlink(
+    mut file: UploadFile,
+    state: Arc<SymlinkState>,
+) -> tork::Result<serde_json::Value> {
     file.save_to(&state.symlink_path).await?;
     Ok(serde_json::json!({ "status": "ok" }))
 }
@@ -278,8 +338,17 @@ async fn upload_file_save_to_rejects_symlink_attack() {
 
     let multipart = "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nmalicious\r\n--B--\r\n";
 
-    let response = post_request(addr, "/upload-symlink", "multipart/form-data; boundary=B", multipart.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 400"), "symlink upload should fail: {response}");
+    let response = post_request(
+        addr,
+        "/upload-symlink",
+        "multipart/form-data; boundary=B",
+        multipart.as_bytes(),
+    )
+    .await;
+    assert!(
+        response.contains("HTTP/1.1 400"),
+        "symlink upload should fail: {response}"
+    );
 
     let content = fs::read_to_string(&target_file).unwrap();
     assert_eq!(content, "original");
@@ -321,17 +390,31 @@ async fn multipart_temp_files_cleaned_up_on_parse_error() {
 
     let addr = addr_rx.await.unwrap();
 
-    let truncated_multipart = "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhello";
+    let truncated_multipart =
+        "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhello";
 
-    let response = post_request(addr, "/upload-error", "multipart/form-data; boundary=B", truncated_multipart.as_bytes()).await;
-    assert!(response.contains("HTTP/1.1 400") || response.contains("HTTP/1.1 500"), "truncated upload should fail: {response}");
+    let response = post_request(
+        addr,
+        "/upload-error",
+        "multipart/form-data; boundary=B",
+        truncated_multipart.as_bytes(),
+    )
+    .await;
+    assert!(
+        response.contains("HTTP/1.1 400") || response.contains("HTTP/1.1 500"),
+        "truncated upload should fail: {response}"
+    );
 
     let temp_files: Vec<_> = fs::read_dir(std::env::temp_dir())
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().starts_with("multer"))
         .collect();
-    assert!(temp_files.is_empty(), "temp files should be cleaned up: {:?}", temp_files);
+    assert!(
+        temp_files.is_empty(),
+        "temp files should be cleaned up: {:?}",
+        temp_files
+    );
 
     let _ = shutdown_tx.send(());
     let _ = server.await;

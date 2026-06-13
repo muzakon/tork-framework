@@ -6,7 +6,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ImplItem, ItemImpl, Visibility, parse_macro_input};
+use syn::{parse_macro_input, ImplItem, ItemImpl, Visibility};
 
 use crate::common::krate;
 

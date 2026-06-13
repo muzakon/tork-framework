@@ -10,11 +10,11 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Data, DeriveInput, Expr, Fields, Ident, LitInt, parse_macro_input};
+use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Ident, LitInt};
 
 use crate::common::{
-    Multiplicity, file_binding, file_kind, file_validation, form_property, form_schema_body, krate,
-    parse_file_args, text_binding, unwrap_multiplicity,
+    file_binding, file_kind, file_validation, form_property, form_schema_body, krate,
+    parse_file_args, text_binding, unwrap_multiplicity, Multiplicity,
 };
 
 /// Expands `#[derive(FormModel)]`.
@@ -90,9 +90,21 @@ fn expand_derive(input: DeriveInput) -> syn::Result<TokenStream2> {
                     .unwrap_or_else(|| field_ident.to_string()),
                 None => field_ident.to_string(),
             };
-            bindings.push(text_binding(&krate, field_ident, inner, multiplicity, &name));
+            bindings.push(text_binding(
+                &krate,
+                field_ident,
+                inner,
+                multiplicity,
+                &name,
+            ));
             if let Some(constraints) = field_constraints(field)? {
-                checks.push(text_checks(&krate, field_ident, multiplicity, &name, &constraints));
+                checks.push(text_checks(
+                    &krate,
+                    field_ident,
+                    multiplicity,
+                    &name,
+                    &constraints,
+                ));
             }
             let (insert, required) = form_property(&krate, &name, false, inner, multiplicity);
             schema_inserts.push(insert);
@@ -208,7 +220,11 @@ fn numeric_checks(
 
 /// Parses `#[field(...)]` constraints, if present.
 fn field_constraints(field: &syn::Field) -> syn::Result<Option<Constraints>> {
-    let Some(attr) = field.attrs.iter().find(|attr| attr.path().is_ident("field")) else {
+    let Some(attr) = field
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("field"))
+    else {
         return Ok(None);
     };
     let mut constraints = Constraints::default();
@@ -252,8 +268,14 @@ mod tests {
         };
         assert_eq!(numeric_checks(&constraints).len(), 4);
 
-        let one = text_checks(&krate(), &parse_quote!(value), Multiplicity::One, "name", &constraints)
-            .to_string();
+        let one = text_checks(
+            &krate(),
+            &parse_quote!(value),
+            Multiplicity::One,
+            "name",
+            &constraints,
+        )
+        .to_string();
         assert!(one.contains("TOO_SHORT"));
         assert!(one.contains("TOO_LONG"));
 
@@ -267,8 +289,14 @@ mod tests {
         .to_string();
         assert!(optional.contains("Option :: Some"));
 
-        let many = text_checks(&krate(), &parse_quote!(value), Multiplicity::Many, "name", &constraints)
-            .to_string();
+        let many = text_checks(
+            &krate(),
+            &parse_quote!(value),
+            Multiplicity::Many,
+            "name",
+            &constraints,
+        )
+        .to_string();
         assert!(many.is_empty());
     }
 
@@ -290,13 +318,19 @@ mod tests {
 
     #[test]
     fn expand_derive_rejects_invalid_inputs_and_emits_bindings() {
-        let tuple: DeriveInput = parse_quote!(struct Bad(String););
+        let tuple: DeriveInput = parse_quote!(
+            struct Bad(String);
+        );
         assert!(expand_derive(tuple)
             .unwrap_err()
             .to_string()
             .contains("requires a struct with named fields"));
 
-        let enum_input: DeriveInput = parse_quote!(enum Bad { A });
+        let enum_input: DeriveInput = parse_quote!(
+            enum Bad {
+                A,
+            }
+        );
         assert!(expand_derive(enum_input)
             .unwrap_err()
             .to_string()

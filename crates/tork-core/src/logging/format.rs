@@ -6,8 +6,8 @@
 //! render one line per event.
 
 use std::fmt;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use serde_json::{Map, Value};
@@ -161,7 +161,10 @@ impl JsonFormat {
         let mut object = Map::new();
         object.insert("timestamp".to_owned(), Value::String(rfc3339_now()));
         object.insert("level".to_owned(), Value::String(meta.level().to_string()));
-        object.insert("service".to_owned(), Value::String(self.service_name.clone()));
+        object.insert(
+            "service".to_owned(),
+            Value::String(self.service_name.clone()),
+        );
         let context = visitor.context.unwrap_or_else(|| meta.target().to_owned());
         object.insert("context".to_owned(), Value::String(context));
         object.insert(
@@ -298,7 +301,10 @@ mod tests {
         assert!(output.contains("\"level\":\"INFO\""), "{output}");
         assert!(output.contains("\"service\":\"tork-api\""), "{output}");
         assert!(output.contains("\"context\":\"OrderService\""), "{output}");
-        assert!(output.contains("\"message\":\"Creating order\""), "{output}");
+        assert!(
+            output.contains("\"message\":\"Creating order\""),
+            "{output}"
+        );
         // The logger field is flattened to a top-level key.
         assert!(output.contains("\"user_id\":42"), "{output}");
     }

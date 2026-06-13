@@ -3,16 +3,16 @@
 use std::io::Write;
 
 use bytes::Bytes;
-use flate2::Compression as CompressionLevel;
 use flate2::write::GzEncoder;
-use http::HeaderValue;
+use flate2::Compression as CompressionLevel;
 use http::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, VARY};
+use http::HeaderValue;
 
 use crate::body::RespBody;
 use crate::constants::TEXT_EVENT_STREAM;
 use crate::error::Result;
 use crate::middleware::{DuplicatePolicy, Middleware, Next, Request};
-use crate::response::{Response, into_body_bytes};
+use crate::response::{into_body_bytes, Response};
 use crate::router::BoxFuture;
 
 /// Content-coding token for gzip.
@@ -211,10 +211,16 @@ mod tests {
 
     #[test]
     fn event_stream_is_detected_and_bypasses_compression() {
-        assert!(is_event_stream(&response_with_content_type(TEXT_EVENT_STREAM)));
-        assert!(!is_event_stream(&response_with_content_type("application/json")));
+        assert!(is_event_stream(&response_with_content_type(
+            TEXT_EVENT_STREAM
+        )));
+        assert!(!is_event_stream(&response_with_content_type(
+            "application/json"
+        )));
         // A response without a content type is not treated as an event stream.
-        assert!(!is_event_stream(&http::Response::new(RespBody::new(Bytes::new()))));
+        assert!(!is_event_stream(&http::Response::new(RespBody::new(
+            Bytes::new()
+        ))));
     }
 
     #[test]

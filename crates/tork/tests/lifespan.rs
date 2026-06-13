@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tork::{App, LifespanContext, Resources, Router, get};
+use tork::{get, App, LifespanContext, Resources, Router};
 
 static STOPPED: AtomicBool = AtomicBool::new(false);
 

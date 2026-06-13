@@ -9,7 +9,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Ident, Item, ItemMod, LitStr, Meta, Token, bracketed, parenthesized, token};
+use syn::{bracketed, parenthesized, token, Attribute, Ident, Item, ItemMod, LitStr, Meta, Token};
 
 use crate::common::krate;
 
@@ -89,7 +89,10 @@ impl Parse for ApiRouterArgs {
 }
 
 /// Expands `#[api_router]` over an inline module.
-pub fn expand(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn expand(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
     let args = match syn::parse::<ApiRouterArgs>(attr) {
         Ok(args) => args,
         Err(error) => return error.to_compile_error().into(),
@@ -283,7 +286,9 @@ mod tests {
     #[test]
     fn expand_module_rejects_non_inline_modules() {
         let args: ApiRouterArgs = syn::parse_quote!(prefix = "/v1");
-        let module: ItemMod = parse_quote!(mod users;);
+        let module: ItemMod = parse_quote!(
+            mod users;
+        );
         assert!(expand_module(args, module)
             .unwrap_err()
             .to_string()

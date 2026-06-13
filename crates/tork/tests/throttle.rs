@@ -86,12 +86,7 @@ async fn hit(client: &TestClient, path: &str, who: &str) -> u16 {
 
 #[tokio::test]
 async fn inline_limit_blocks_after_the_threshold() {
-    let client = client(
-        App::new()
-            .throttle(Throttle::new())
-            .include(inline_limited),
-    )
-    .await;
+    let client = client(App::new().throttle(Throttle::new()).include(inline_limited)).await;
 
     assert_eq!(hit(&client, "/inline", "a").await, 200);
     assert_eq!(hit(&client, "/inline", "a").await, 200);

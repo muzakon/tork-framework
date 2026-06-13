@@ -6,8 +6,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use tork::{
-    App, Method, ReqBody, Resources, Router, SecretString, StatusCode, api_model, box_body, get,
-    settings,
+    api_model, box_body, get, settings, App, Method, ReqBody, Resources, Router, SecretString,
+    StatusCode,
 };
 
 #[settings(prefix = "TORKAPP")]

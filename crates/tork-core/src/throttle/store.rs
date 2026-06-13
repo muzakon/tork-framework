@@ -51,7 +51,10 @@ impl ThrottleStore for MemoryThrottleStore {
     fn incr(&self, key: String, ttl: Duration) -> BoxFuture<'_, Result<u64>> {
         Box::pin(async move {
             let now = Instant::now();
-            let mut map = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut map = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
 
             if map.len() > SWEEP_THRESHOLD {
                 map.retain(|_, entry| entry.expires_at > now);
@@ -74,7 +77,10 @@ impl ThrottleStore for MemoryThrottleStore {
     fn count(&self, key: String) -> BoxFuture<'_, Result<u64>> {
         Box::pin(async move {
             let now = Instant::now();
-            let map = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let map = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let count = map
                 .get(&key)
                 .filter(|entry| entry.expires_at > now)

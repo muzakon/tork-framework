@@ -55,7 +55,10 @@ mod tests {
 
     #[test]
     fn constructors_preserve_requested_duration() {
-        assert_eq!(Timeout::new(Duration::from_secs(3)).duration, Duration::from_secs(3));
+        assert_eq!(
+            Timeout::new(Duration::from_secs(3)).duration,
+            Duration::from_secs(3)
+        );
         assert_eq!(Timeout::seconds(2).duration, Duration::from_secs(2));
         assert_eq!(Timeout::millis(25).duration, Duration::from_millis(25));
     }

@@ -81,7 +81,10 @@ mod tests {
         assert_eq!(response.headers()["x-test"], "ok");
         assert_eq!(response.bytes(), Bytes::from_static(br#"{"ok":true}"#));
         assert_eq!(response.text().unwrap(), r#"{"ok":true}"#);
-        assert_eq!(response.json::<Payload>().await.unwrap(), Payload { ok: true });
+        assert_eq!(
+            response.json::<Payload>().await.unwrap(),
+            Payload { ok: true }
+        );
     }
 
     #[test]
@@ -97,6 +100,8 @@ mod tests {
         let response = response(br#"{"ok":"wrong"}"#);
 
         let error = response.json::<Payload>().await.unwrap_err();
-        assert!(error.message().starts_with("response body is not valid JSON:"));
+        assert!(error
+            .message()
+            .starts_with("response body is not valid JSON:"));
     }
 }

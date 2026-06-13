@@ -8,7 +8,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{FnArg, ImplItem, ImplItemFn, ItemImpl, Pat, parse_macro_input};
+use syn::{parse_macro_input, FnArg, ImplItem, ImplItemFn, ItemImpl, Pat};
 
 use crate::common::krate;
 

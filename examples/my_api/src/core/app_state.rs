@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tork::{
-    Error, Hub, LifespanContext, LogFormat, Logger, LoggerConfig, Resources, Result, SecretString,
-    settings,
+    settings, Error, Hub, LifespanContext, LogFormat, Logger, LoggerConfig, Resources, Result,
+    SecretString,
 };
 
 use crate::models::chat::ChatMessage;

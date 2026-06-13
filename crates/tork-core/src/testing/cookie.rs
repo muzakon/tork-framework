@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use http::HeaderMap;
 use http::header::{COOKIE, SET_COOKIE};
+use http::HeaderMap;
 
 /// Stored cookies, keyed by name.
 #[derive(Default, Clone)]
@@ -76,7 +76,10 @@ mod tests {
         let mut jar = CookieJar::default();
         jar.store(&headers);
 
-        assert_eq!(jar.header_value().as_deref(), Some("session=two; theme=dark"));
+        assert_eq!(
+            jar.header_value().as_deref(),
+            Some("session=two; theme=dark")
+        );
     }
 
     #[test]

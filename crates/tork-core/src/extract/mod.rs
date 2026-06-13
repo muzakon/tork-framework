@@ -24,7 +24,7 @@ pub mod path;
 pub mod valid;
 
 pub use header::{BearerToken, LastEventId, SseResume};
-pub use path::{FromPathParam, __extract_path_param};
+pub use path::{__extract_path_param, FromPathParam};
 pub use valid::Valid;
 
 /// Raw path parameters captured by the router, in match order.
@@ -191,13 +191,16 @@ impl RequestContext {
     /// Returns an error (code `MISSING_RESOURCE`) if no resource of type `T` was
     /// registered (for example, by a lifespan).
     pub fn resource<T: Clone + Send + Sync + 'static>(&self) -> Result<T> {
-        self.state().get::<T>().map(|value| (*value).clone()).ok_or_else(|| {
-            Error::internal(format!(
-                "resource `{}` was not registered",
-                std::any::type_name::<T>()
-            ))
-            .with_code("MISSING_RESOURCE")
-        })
+        self.state()
+            .get::<T>()
+            .map(|value| (*value).clone())
+            .ok_or_else(|| {
+                Error::internal(format!(
+                    "resource `{}` was not registered",
+                    std::any::type_name::<T>()
+                ))
+                .with_code("MISSING_RESOURCE")
+            })
     }
 
     /// Returns the captured path parameters.
@@ -252,9 +255,8 @@ pub trait FromRequest: Sized + Send {
     ///
     /// An `Err` short-circuits request handling and is rendered as an HTTP error
     /// response.
-    fn from_request(
-        ctx: &RequestContext,
-    ) -> impl std::future::Future<Output = Result<Self>> + Send;
+    fn from_request(ctx: &RequestContext)
+        -> impl std::future::Future<Output = Result<Self>> + Send;
 }
 
 /// Injects any resource registered as `Arc<T>`.
@@ -311,7 +313,10 @@ mod tests {
     #[test]
     fn take_upgrade_errors_without_an_upgrade() {
         let ctx = test_context(PathParams::new(), "");
-        let error = ctx.take_upgrade().err().expect("should error without an upgrade");
+        let error = ctx
+            .take_upgrade()
+            .err()
+            .expect("should error without an upgrade");
         assert_eq!(error.code(), "NOT_AN_UPGRADE");
     }
 

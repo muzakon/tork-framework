@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use tork::{
-    FileBytes, Form, LastEventId, Logger, Multipart, RequestEvent, Sse, SseEvent, WebSocket,
-    WsMessage, api_router, get, post, sse, websocket,
+    api_router, get, post, sse, websocket, FileBytes, Form, LastEventId, Logger, Multipart,
+    RequestEvent, Sse, SseEvent, WebSocket, WsMessage,
 };
 
 use crate::core::app_state::{ChatHub, Config};
@@ -97,7 +97,11 @@ pub mod demo_router {
 
     /// Accepts a validated multipart form as a model (`Multipart<ProfileForm>`),
     /// with a larger upload limit set on the route.
-    #[post("/upload", upload(max_file_size = "25MB"), summary = "Upload a profile (model style)")]
+    #[post(
+        "/upload",
+        upload(max_file_size = "25MB"),
+        summary = "Upload a profile (model style)"
+    )]
     pub async fn upload_profile(form: Multipart<ProfileForm>) -> tork::Result<UploadOut> {
         let form = form.into_inner();
         Ok(UploadOut {

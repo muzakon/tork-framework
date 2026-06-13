@@ -6,7 +6,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Attribute, Data, DeriveInput, Fields, LitStr, Type, parse_macro_input};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, LitStr, Type};
 
 use crate::common::krate;
 
@@ -132,7 +132,10 @@ mod tests {
     #[test]
     fn context_attr_reads_known_value_and_rejects_unknown_keys() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[inject(context = "api")])];
-        assert_eq!(context_attr(&attrs, "inject").unwrap(), Some("api".to_owned()));
+        assert_eq!(
+            context_attr(&attrs, "inject").unwrap(),
+            Some("api".to_owned())
+        );
         assert_eq!(context_attr(&[], "inject").unwrap(), None);
 
         let attrs: Vec<Attribute> = vec![parse_quote!(#[inject(foo = "bar")])];
@@ -142,7 +145,11 @@ mod tests {
 
     #[test]
     fn expand_derive_rejects_invalid_struct_shapes() {
-        let input: DeriveInput = parse_quote!(enum NotInjectable { A });
+        let input: DeriveInput = parse_quote!(
+            enum NotInjectable {
+                A,
+            }
+        );
         assert!(expand_derive(input)
             .unwrap_err()
             .to_string()

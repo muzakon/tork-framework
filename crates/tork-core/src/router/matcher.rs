@@ -168,7 +168,11 @@ fn collapse_double_slashes(path: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("/");
-    Some(if collapsed.is_empty() { "/".to_owned() } else { collapsed })
+    Some(if collapsed.is_empty() {
+        "/".to_owned()
+    } else {
+        collapsed
+    })
 }
 
 #[cfg(test)]
@@ -240,7 +244,9 @@ mod tests {
             Ok(_) => panic!("expected duplicate route registration to fail"),
             Err(err) => err,
         };
-        assert!(err.to_string().contains("failed to register route GET /users/{user_id}"));
+        assert!(err
+            .to_string()
+            .contains("failed to register route GET /users/{user_id}"));
     }
 
     #[test]
@@ -258,8 +264,14 @@ mod tests {
             Route::new(Method::POST, "/users", dummy_handler()),
         ];
         let matcher = Matcher::build(routes).unwrap();
-        assert!(matches!(matcher.find(&Method::GET, "/"), Match::Found { .. }));
-        assert!(matches!(matcher.find(&Method::POST, "/"), Match::MethodNotAllowed));
+        assert!(matches!(
+            matcher.find(&Method::GET, "/"),
+            Match::Found { .. }
+        ));
+        assert!(matches!(
+            matcher.find(&Method::POST, "/"),
+            Match::MethodNotAllowed
+        ));
         assert!(matches!(
             matcher.find(&Method::GET, "/users/"),
             Match::MethodNotAllowed

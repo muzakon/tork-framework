@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::constants::APPLICATION_JSON;
 use crate::error::Error;
-use crate::response::{IntoResponse, Response, with_body};
+use crate::response::{with_body, IntoResponse, Response};
 
 /// A JSON response wrapper.
 ///
@@ -76,7 +76,9 @@ mod tests {
 
         assert_eq!(parts.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(parts.headers["content-type"], APPLICATION_JSON);
-        assert!(String::from_utf8(body.to_vec()).unwrap().contains("INTERNAL_SERVER_ERROR"));
+        assert!(String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("INTERNAL_SERVER_ERROR"));
     }
 
     #[tokio::test]

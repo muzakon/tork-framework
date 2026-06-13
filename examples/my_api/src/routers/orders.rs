@@ -1,6 +1,6 @@
 //! Order routes, nested under a user.
 
-use tork::{Valid, api_router, get, post};
+use tork::{api_router, get, post, Valid};
 
 use crate::core::auth::CurrentUser;
 use crate::models::order::{CreateOrderInput, OrderOut};

@@ -9,7 +9,7 @@ use http_body_util::Full;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tork::{App, AppInner, Method, ReqBody, RequestEvent, Router, StatusCode, box_body, get};
+use tork::{box_body, get, App, AppInner, Method, ReqBody, RequestEvent, Router, StatusCode};
 
 static AUDIT_HITS: AtomicUsize = AtomicUsize::new(0);
 
@@ -73,7 +73,11 @@ fn record(label: impl Into<String>) {
 }
 
 fn log_count(label: &str) -> usize {
-    LOG.lock().unwrap().iter().filter(|entry| *entry == label).count()
+    LOG.lock()
+        .unwrap()
+        .iter()
+        .filter(|entry| *entry == label)
+        .count()
 }
 
 fn log_has(label: &str) -> bool {
@@ -163,7 +167,10 @@ async fn global_router_and_route_hooks_compose_over_tcp() {
 
     // The app-global hook fires for every request.
     for path in ["/admin/a", "/admin/b", "/tagged", "/plain2"] {
-        assert!(log_has(&format!("global:{path}")), "global missing for {path}");
+        assert!(
+            log_has(&format!("global:{path}")),
+            "global missing for {path}"
+        );
     }
     // The router-scoped hook fires only for the two admin routes.
     assert_eq!(log_count("router"), 2);

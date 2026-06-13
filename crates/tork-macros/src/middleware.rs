@@ -8,7 +8,7 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{FnArg, ItemFn, Visibility, parse_macro_input};
+use syn::{parse_macro_input, FnArg, ItemFn, Visibility};
 
 use crate::common::krate;
 
@@ -35,7 +35,12 @@ fn expand_fn(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         .iter()
         .filter(|input| matches!(input, FnArg::Typed(_)))
         .count();
-    if func.sig.inputs.iter().any(|i| matches!(i, FnArg::Receiver(_))) {
+    if func
+        .sig
+        .inputs
+        .iter()
+        .any(|i| matches!(i, FnArg::Receiver(_)))
+    {
         return Err(syn::Error::new_spanned(
             &func.sig,
             "`#[middleware]` functions cannot take `self`",

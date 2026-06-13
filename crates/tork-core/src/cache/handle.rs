@@ -146,12 +146,7 @@ impl Cache {
     }
 
     /// Serializes `value` and writes it to the store.
-    async fn write<T: Serialize>(
-        &self,
-        key: &str,
-        value: &T,
-        ttl: Option<Duration>,
-    ) -> Result<()> {
+    async fn write<T: Serialize>(&self, key: &str, value: &T, ttl: Option<Duration>) -> Result<()> {
         let bytes = serde_json::to_vec(value).map_err(|error| {
             Error::internal(format!("cache value could not be serialized: {error}"))
         })?;
@@ -174,9 +169,7 @@ impl FromRequest for Cache {
             .get::<Cache>()
             .map(|cache| (*cache).clone())
             .ok_or_else(|| {
-                Error::internal(
-                    "cache is not configured; call `App::cache(...)` to enable it",
-                )
+                Error::internal("cache is not configured; call `App::cache(...)` to enable it")
             });
         async move { resolved }
     }
@@ -224,7 +217,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(cache.get::<String>("k").await.unwrap().as_deref(), Some("v"));
+        assert_eq!(
+            cache.get::<String>("k").await.unwrap().as_deref(),
+            Some("v")
+        );
         tokio::time::sleep(Duration::from_millis(120)).await;
         assert_eq!(cache.get::<String>("k").await.unwrap(), None);
     }
@@ -235,7 +231,10 @@ mod tests {
         cache.set_ttl("k", &"v", Duration::ZERO).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(cache.get::<String>("k").await.unwrap().as_deref(), Some("v"));
+        assert_eq!(
+            cache.get::<String>("k").await.unwrap().as_deref(),
+            Some("v")
+        );
     }
 
     #[tokio::test]

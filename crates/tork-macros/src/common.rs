@@ -3,7 +3,10 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Expr, GenericArgument, Ident, LitBool, LitInt, LitStr, Meta, PathArguments, Token, Type};
+use syn::{
+    Attribute, Expr, GenericArgument, Ident, LitBool, LitInt, LitStr, Meta, PathArguments, Token,
+    Type,
+};
 
 /// Returns the path to the facade crate that all generated code references.
 ///
@@ -106,10 +109,9 @@ pub(crate) fn parse_size(value: &LitStr) -> syn::Result<usize> {
     ];
     for (suffix, multiplier) in units {
         if let Some(number) = lower.strip_suffix(suffix) {
-            let parsed: usize = number
-                .trim()
-                .parse()
-                .map_err(|_| syn::Error::new(value.span(), format!("invalid byte size `{text}`")))?;
+            let parsed: usize = number.trim().parse().map_err(|_| {
+                syn::Error::new(value.span(), format!("invalid byte size `{text}`"))
+            })?;
             return Ok(parsed * multiplier);
         }
     }
@@ -280,7 +282,7 @@ pub(crate) fn text_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use syn::{Attribute, parse_quote};
+    use syn::{parse_quote, Attribute};
 
     #[test]
     fn path_param_names_strip_wildcards() {
@@ -325,8 +327,7 @@ mod tests {
 
     #[test]
     fn parse_file_args_reads_validation_flags() {
-        let attr: Attribute =
-            parse_quote!(#[file(name = "avatar", max_size = "64KB", content_types = ["image/png"], sniff = true)]);
+        let attr: Attribute = parse_quote!(#[file(name = "avatar", max_size = "64KB", content_types = ["image/png"], sniff = true)]);
 
         let args = parse_file_args(&attr).unwrap();
 
@@ -374,14 +375,9 @@ mod tests {
         .to_string();
         assert!(text.contains("take_form_values"));
 
-        let validation = file_validation(
-            &krate(),
-            &ident,
-            FileKind::Bytes,
-            Multiplicity::Many,
-            &args,
-        )
-        .to_string();
+        let validation =
+            file_validation(&krate(), &ident, FileKind::Bytes, Multiplicity::Many, &args)
+                .to_string();
         assert!(validation.contains("__validate_file_bytes"));
     }
 
@@ -409,7 +405,10 @@ mod tests {
             path_param_names("/{*a}/{*b}"),
             vec!["a".to_owned(), "b".to_owned()]
         );
-        assert_eq!(path_param_names("a{x}b{y}c"), vec!["x".to_owned(), "y".to_owned()]);
+        assert_eq!(
+            path_param_names("a{x}b{y}c"),
+            vec!["x".to_owned(), "y".to_owned()]
+        );
     }
 
     #[test]
@@ -441,10 +440,7 @@ mod tests {
             Type::Path(p) => p,
             _ => panic!("expected Type::Path"),
         };
-        assert_eq!(
-            path.path.segments.last().unwrap().ident,
-            "u32"
-        );
+        assert_eq!(path.path.segments.last().unwrap().ident, "u32");
     }
 
     #[test]
@@ -498,9 +494,18 @@ mod tests {
         let rendered = file_rule_tokens(&krate(), &args).to_string();
         assert!(rendered.contains("Some"), "expected Some in: {rendered}");
         assert!(rendered.contains("1024"), "expected 1024 in: {rendered}");
-        assert!(rendered.contains("image/png"), "expected png in: {rendered}");
-        assert!(rendered.contains("image/jpeg"), "expected jpeg in: {rendered}");
-        assert!(rendered.contains("sniff : true"), "expected sniff : true in: {rendered}");
+        assert!(
+            rendered.contains("image/png"),
+            "expected png in: {rendered}"
+        );
+        assert!(
+            rendered.contains("image/jpeg"),
+            "expected jpeg in: {rendered}"
+        );
+        assert!(
+            rendered.contains("sniff : true"),
+            "expected sniff : true in: {rendered}"
+        );
     }
 
     #[test]
@@ -512,7 +517,11 @@ mod tests {
             (FileKind::Bytes, Multiplicity::Many, "take_file_bytes_list"),
             (FileKind::Upload, Multiplicity::One, "take_upload_file"),
             (FileKind::Upload, Multiplicity::Optional, "take_upload_file"),
-            (FileKind::Upload, Multiplicity::Many, "take_upload_file_list"),
+            (
+                FileKind::Upload,
+                Multiplicity::Many,
+                "take_upload_file_list",
+            ),
         ];
         for (kind, multi, expected) in cases.iter() {
             let rendered = file_binding(&krate(), &ident, *kind, *multi, "field").to_string();
@@ -530,14 +539,25 @@ mod tests {
     #[test]
     fn text_binding_covers_one_and_optional_arms() {
         let ident: Ident = parse_quote!(field);
-        let one = text_binding(&krate(), &ident, &parse_quote!(String), Multiplicity::One, "n")
-            .to_string();
+        let one = text_binding(
+            &krate(),
+            &ident,
+            &parse_quote!(String),
+            Multiplicity::One,
+            "n",
+        )
+        .to_string();
         assert!(one.contains("take_form_value"));
         assert!(one.contains("ok_or_else"));
 
-        let optional =
-            text_binding(&krate(), &ident, &parse_quote!(String), Multiplicity::Optional, "n")
-                .to_string();
+        let optional = text_binding(
+            &krate(),
+            &ident,
+            &parse_quote!(String),
+            Multiplicity::Optional,
+            "n",
+        )
+        .to_string();
         assert!(optional.contains("take_form_value"));
         assert!(!optional.contains("ok_or_else"));
     }
@@ -545,7 +565,13 @@ mod tests {
     #[test]
     fn form_property_emits_file_array_and_scalar_schemas() {
         // File + Many => array of binary
-        let (insert, required) = form_property(&krate(), "files", true, &parse_quote!(FileBytes), Multiplicity::Many);
+        let (insert, required) = form_property(
+            &krate(),
+            "files",
+            true,
+            &parse_quote!(FileBytes),
+            Multiplicity::Many,
+        );
         let s = insert.to_string();
         assert!(s.contains("\"type\""), "expected type in: {s}");
         assert!(s.contains("\"array\""), "expected array in: {s}");
@@ -554,7 +580,13 @@ mod tests {
         assert!(!required);
 
         // File + One/Optional => string binary
-        let (insert, required) = form_property(&krate(), "file", true, &parse_quote!(FileBytes), Multiplicity::One);
+        let (insert, required) = form_property(
+            &krate(),
+            "file",
+            true,
+            &parse_quote!(FileBytes),
+            Multiplicity::One,
+        );
         let s = insert.to_string();
         assert!(s.contains("\"type\""), "expected type in: {s}");
         assert!(s.contains("\"string\""), "expected string in: {s}");
@@ -563,13 +595,25 @@ mod tests {
         assert!(required);
 
         // Non-file + Many => array of sub
-        let (insert, _) = form_property(&krate(), "tags", false, &parse_quote!(String), Multiplicity::Many);
+        let (insert, _) = form_property(
+            &krate(),
+            "tags",
+            false,
+            &parse_quote!(String),
+            Multiplicity::Many,
+        );
         let s = insert.to_string();
         assert!(s.contains("\"type\""), "expected type in: {s}");
         assert!(s.contains("\"array\""), "expected array in: {s}");
 
         // Non-file + One => just sub
-        let (_insert, required) = form_property(&krate(), "name", false, &parse_quote!(String), Multiplicity::One);
+        let (_insert, required) = form_property(
+            &krate(),
+            "name",
+            false,
+            &parse_quote!(String),
+            Multiplicity::One,
+        );
         assert!(required);
     }
 
@@ -590,9 +634,8 @@ mod tests {
     fn file_validation_returns_empty_when_no_rule() {
         let args = FileArgs::default();
         let ident: Ident = parse_quote!(field);
-        let rendered =
-            file_validation(&krate(), &ident, FileKind::Bytes, Multiplicity::One, &args)
-                .to_string();
+        let rendered = file_validation(&krate(), &ident, FileKind::Bytes, Multiplicity::One, &args)
+            .to_string();
         assert!(rendered.is_empty());
     }
 
@@ -603,9 +646,17 @@ mod tests {
         let ident: Ident = parse_quote!(field);
         let cases = [
             (FileKind::Bytes, Multiplicity::One, "__validate_file_bytes"),
-            (FileKind::Bytes, Multiplicity::Optional, "__validate_file_bytes"),
+            (
+                FileKind::Bytes,
+                Multiplicity::Optional,
+                "__validate_file_bytes",
+            ),
             (FileKind::Upload, Multiplicity::One, "__validate_upload"),
-            (FileKind::Upload, Multiplicity::Optional, "__validate_upload"),
+            (
+                FileKind::Upload,
+                Multiplicity::Optional,
+                "__validate_upload",
+            ),
             (FileKind::Upload, Multiplicity::Many, "__validate_upload"),
         ];
         for (kind, multi, expected) in cases.iter() {
