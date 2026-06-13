@@ -155,6 +155,18 @@ impl App {
         self
     }
 
+    /// Registers a Redis connection, making [`Redis`](crate::Redis) injectable into
+    /// handlers and services for raw commands, Lua scripts, idempotency, and so on.
+    ///
+    /// Build it with `Redis::connect(url).await?`. Share one connection with the
+    /// cache by passing the same handle to [`Cache::from_redis`](crate::Cache::from_redis).
+    /// Available with the `redis` feature.
+    #[cfg(feature = "redis")]
+    pub fn redis(mut self, redis: crate::Redis) -> Self {
+        self.state.insert(redis);
+        self
+    }
+
     /// Mounts a router's routes on the application.
     pub fn include_router(mut self, router: Router) -> Self {
         self.routers.push(router);

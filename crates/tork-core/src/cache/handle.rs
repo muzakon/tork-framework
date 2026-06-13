@@ -51,12 +51,26 @@ impl Cache {
     }
 
     /// Builds a cache over a Redis store at `url` (for example
-    /// `redis://127.0.0.1:6379`), for sharing the cache across instances.
+    /// `redis://127.0.0.1:6379`), opening its own connection, for sharing the cache
+    /// across instances.
     ///
     /// Available with the `redis` feature.
     #[cfg(feature = "redis")]
     pub async fn redis(url: &str) -> Result<Self> {
         Ok(Self::new(super::RedisStore::connect(url).await?))
+    }
+
+    /// Builds a cache over an injected [`Redis`](crate::Redis) connection, so the
+    /// cache shares one connection pool with raw Redis access, a rate limiter, and
+    /// anything else built on the same handle.
+    ///
+    /// Available with the `redis` feature.
+    #[cfg(feature = "redis")]
+    pub fn from_redis(redis: &crate::Redis) -> Self {
+        Self::new(super::RedisStore::from_redis(
+            redis,
+            super::RedisStore::default_prefix(),
+        ))
     }
 
     /// Sets the TTL applied by [`set`](Cache::set) when no explicit TTL is given.

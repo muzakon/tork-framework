@@ -31,22 +31,37 @@ pub struct RedisStore {
 impl RedisStore {
     /// Connects to Redis at `url` (for example `redis://127.0.0.1:6379`) using the
     /// default key prefix.
+    ///
+    /// This opens its own connection. To share one connection with an injected
+    /// [`Redis`](crate::Redis) (and a rate limiter, idempotency, ...), use
+    /// [`from_redis`](RedisStore::from_redis) instead.
     pub async fn connect(url: &str) -> Result<Self> {
         Self::connect_with_prefix(url, DEFAULT_PREFIX).await
     }
 
     /// Connects to Redis at `url`, namespacing every key with `prefix`.
     pub async fn connect_with_prefix(url: &str, prefix: impl Into<String>) -> Result<Self> {
-        let client = redis::Client::open(url)
-            .map_err(|error| Error::internal(format!("invalid redis url: {error}")))?;
-        let manager = client
-            .get_connection_manager()
-            .await
-            .map_err(|error| Error::internal(format!("redis connection failed: {error}")))?;
-        Ok(Self {
+        let redis = crate::Redis::connect(url).await?;
+        Ok(Self::from_manager(redis.connection(), prefix))
+    }
+
+    /// Builds a store over an existing [`Redis`](crate::Redis) connection, so the
+    /// cache shares one connection pool with the rest of the application.
+    pub fn from_redis(redis: &crate::Redis, prefix: impl Into<String>) -> Self {
+        Self::from_manager(redis.connection(), prefix)
+    }
+
+    /// Builds a store over a raw connection manager.
+    pub(crate) fn from_manager(manager: ConnectionManager, prefix: impl Into<String>) -> Self {
+        Self {
             manager,
             prefix: prefix.into(),
-        })
+        }
+    }
+
+    /// The default key prefix used by [`connect`](RedisStore::connect).
+    pub(crate) fn default_prefix() -> &'static str {
+        DEFAULT_PREFIX
     }
 
     fn full_key(&self, key: &str) -> String {

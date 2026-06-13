@@ -22,6 +22,8 @@ pub mod middleware;
 mod multipart;
 mod openapi;
 mod realtime;
+#[cfg(feature = "redis")]
+mod redis_handle;
 mod resources;
 mod response;
 mod router;
@@ -53,6 +55,12 @@ pub use body::{BoxError, ReqBody, RespBody, box_body};
 pub use cache::{Cache, CacheStore, MemoryStore};
 #[cfg(feature = "redis")]
 pub use cache::RedisStore;
+#[cfg(feature = "redis")]
+pub use redis_handle::Redis;
+// Re-export the Redis client so applications use the same version for raw access
+// (commands, Lua scripts, pipelines) without adding their own dependency.
+#[cfg(feature = "redis")]
+pub use ::redis;
 pub use error::{Error, ErrorDetail, ErrorKind, Result};
 pub use extract::{
     BearerToken, FromPathParam, FromRequest, LastEventId, PathParams, RequestContext, SseResume,

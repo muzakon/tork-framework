@@ -80,16 +80,16 @@ let cache = Cache::new(MyCustomStore::new());
 
 Because handlers only see the `Cache` handle, switching stores does not change them.
 
-## Redis store
+## Redis
 
-To share a cache across instances (a value cached by one process is visible to the
-others), use the Redis store. Enable the `redis` feature:
+Enable the `redis` feature to use Redis:
 
 ```toml
 tork = { version = "...", features = ["redis"] }
 ```
 
-Then point the cache at a Redis server:
+The quickest path is a cache backed by Redis (shared across instances, so a value
+cached by one process is visible to the others):
 
 ```rust
 use tork::{App, Cache};
@@ -104,3 +104,45 @@ App::new().cache(cache);
 Keys are namespaced with a `tork:` prefix, so `clear()` removes only this cache's
 keys (it scans and deletes by prefix, never flushing the whole database). The URL
 typically comes from configuration — see [Settings](13-settings.md).
+
+### Redis as a resource
+
+Redis is more than a cache — idempotency keys, atomic counters, distributed locks,
+Lua scripts, pub/sub. Tork does not wrap any of that. It manages the connection and
+makes a `Redis` handle injectable; for everything else you use the re-exported
+`redis` client directly. Register a connection, then inject `Redis` anywhere:
+
+```rust
+use tork::{get, redis, Redis};
+
+#[get("/charge/{id}")]
+async fn charge(id: String, redis: Redis) -> tork::Result<&'static str> {
+    // Idempotency: only the first request for this id takes the key.
+    let taken: Option<String> = redis
+        .query(redis::cmd("SET").arg(format!("idem:{id}")).arg("1").arg("NX").arg("EX").arg(60))
+        .await?;
+    if taken.is_none() {
+        return Ok("already processed");
+    }
+    // ... do the work ...
+    Ok("charged")
+}
+```
+
+Build and register the connection with `App::redis`:
+
+```rust
+# use tork::{App, Cache, Redis};
+# async fn boot() -> tork::Result<()> {
+let redis = Redis::connect("redis://127.0.0.1:6379").await?;
+App::new()
+    .redis(redis.clone())            // raw Redis, injectable as `Redis`
+    .cache(Cache::from_redis(&redis)); // a cache sharing the same connection
+# Ok(())
+# }
+```
+
+`redis.connection()` hands you the underlying client connection for the full API
+(`redis::Script` for Lua, `redis::pipe` for pipelines, and so on). Because the
+`redis` crate is re-exported as `tork::redis`, you do not add it as a separate
+dependency.
