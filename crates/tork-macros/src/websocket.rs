@@ -12,6 +12,7 @@ use syn::punctuated::Punctuated;
 use syn::{FnArg, Ident, ItemFn, LitStr, Pat, Token, Type, bracketed};
 
 use crate::common::{krate, parse_duration_ms, parse_size, path_param_names};
+use crate::route::{RouteThrottle, parse_throttle, throttle_check_tokens};
 
 /// Parsed attributes of `#[websocket(...)]`.
 struct WsArgs {
@@ -26,6 +27,8 @@ struct WsArgs {
     allow_any_origin: bool,
     incoming: Option<Type>,
     outgoing: Option<Type>,
+    throttle: Option<RouteThrottle>,
+    router_throttle: Option<RouteThrottle>,
     /// Enclosing router prefix, injected by `#[api_router]`.
     prefix_hint: Option<LitStr>,
 }
@@ -51,6 +54,8 @@ impl Parse for WsArgs {
             allow_any_origin: false,
             incoming: None,
             outgoing: None,
+            throttle: None,
+            router_throttle: None,
             prefix_hint: None,
         };
 
@@ -61,6 +66,16 @@ impl Parse for WsArgs {
             }
 
             let key: Ident = input.parse()?;
+
+            if key == "throttle" {
+                args.throttle = Some(parse_throttle(input)?);
+                continue;
+            }
+            if key == "__router_throttle" {
+                args.router_throttle = Some(parse_throttle(input)?);
+                continue;
+            }
+
             input.parse::<Token![=]>()?;
 
             match key.to_string().as_str() {
@@ -235,6 +250,14 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
         builder = quote! { #builder.ws_outgoing::<#outgoing>() };
     }
 
+    let throttle_check = throttle_check_tokens(
+        &krate,
+        args.throttle.as_ref(),
+        args.router_throttle.as_ref(),
+        "GET",
+        &full_path,
+    );
+
     let mut emit_func = func.clone();
     emit_func.sig.ident = handler_ident.clone();
 
@@ -246,6 +269,7 @@ fn expand_ws(args: WsArgs, func: ItemFn) -> syn::Result<TokenStream> {
                 |ctx: #krate::RequestContext|
                     -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
                     ::std::boxed::Box::pin(async move {
+                        #throttle_check
                         let __ws_config = #config_expr;
                         // Validate the handshake and resolve dependencies before
                         // the upgrade; any failure rejects with an HTTP error.

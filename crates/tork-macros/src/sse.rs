@@ -12,7 +12,9 @@ use syn::punctuated::Punctuated;
 use syn::{Ident, ItemFn, LitStr, Token, Type, bracketed};
 
 use crate::common::krate;
-use crate::route::{HandlerParts, build_handler_parts};
+use crate::route::{
+    HandlerParts, RouteThrottle, build_handler_parts, parse_throttle, throttle_check_tokens,
+};
 
 /// Parsed attributes of an `#[sse]` / `#[post_sse]` macro.
 struct SseArgs {
@@ -23,6 +25,8 @@ struct SseArgs {
     summary: Option<LitStr>,
     description: Option<LitStr>,
     tags: Vec<LitStr>,
+    throttle: Option<RouteThrottle>,
+    router_throttle: Option<RouteThrottle>,
     /// Enclosing router prefix, injected by `#[api_router]`.
     prefix_hint: Option<LitStr>,
 }
@@ -44,6 +48,8 @@ impl Parse for SseArgs {
             summary: None,
             description: None,
             tags: Vec::new(),
+            throttle: None,
+            router_throttle: None,
             prefix_hint: None,
         };
 
@@ -54,6 +60,16 @@ impl Parse for SseArgs {
             }
 
             let key: Ident = input.parse()?;
+
+            if key == "throttle" {
+                args.throttle = Some(parse_throttle(input)?);
+                continue;
+            }
+            if key == "__router_throttle" {
+                args.router_throttle = Some(parse_throttle(input)?);
+                continue;
+            }
+
             input.parse::<Token![=]>()?;
 
             match key.to_string().as_str() {
@@ -153,6 +169,14 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
     };
     let call = quote! { #handler_ident(#(#call_args),*).await };
 
+    let throttle_check = throttle_check_tokens(
+        &krate,
+        args.throttle.as_ref(),
+        args.router_throttle.as_ref(),
+        &method,
+        &full_path,
+    );
+
     let mut emit_func = func.clone();
     emit_func.sig.ident = handler_ident.clone();
 
@@ -164,6 +188,7 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
                 |ctx: #krate::RequestContext|
                     -> #krate::BoxFuture<'static, #krate::Result<#krate::Response>> {
                     ::std::boxed::Box::pin(async move {
+                        #throttle_check
                         #(#bindings)*
                         match #call {
                             ::core::result::Result::Ok(sse) => ::core::result::Result::Ok(

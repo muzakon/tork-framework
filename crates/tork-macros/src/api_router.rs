@@ -43,8 +43,15 @@ impl Parse for ApiRouterArgs {
                     args.throttle = Some(quote! { (#inner) });
                 } else {
                     input.parse::<Token![=]>()?;
-                    let value: LitStr = input.parse()?;
-                    args.throttle = Some(quote! { = #value });
+                    if input.peek(token::Bracket) {
+                        let content;
+                        bracketed!(content in input);
+                        let inner: TokenStream = content.parse()?;
+                        args.throttle = Some(quote! { = [#inner] });
+                    } else {
+                        let value: LitStr = input.parse()?;
+                        args.throttle = Some(quote! { = #value });
+                    }
                 }
                 if input.is_empty() {
                     break;

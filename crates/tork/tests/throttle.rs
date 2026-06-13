@@ -38,6 +38,16 @@ async fn plain() -> tork::Result<Pong> {
     Ok(pong())
 }
 
+#[get("/multi", throttle = ["loose", "tight"])]
+async fn multi() -> tork::Result<Pong> {
+    Ok(pong())
+}
+
+#[get("/slide", throttle(limit = 2, ttl = 60))]
+async fn slide() -> tork::Result<Pong> {
+    Ok(pong())
+}
+
 #[api_router(prefix = "/r", throttle(limit = 2, ttl = 60, key = ByClient))]
 mod limited_router {
     use super::*;
@@ -142,6 +152,43 @@ async fn global_default_applies_to_unannotated_routes() {
     assert_eq!(client.get("/plain").send().await.unwrap().status(), 200);
     assert_eq!(client.get("/plain").send().await.unwrap().status(), 200);
     assert_eq!(client.get("/plain").send().await.unwrap().status(), 429);
+
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn multiple_policies_apply_the_tightest() {
+    // The route is subject to both "loose" (10) and "tight" (2); the tighter wins.
+    let client = client(
+        App::new()
+            .throttle(
+                Throttle::new()
+                    .policy("loose", 10, 60)
+                    .policy("tight", 2, 60),
+            )
+            .include(multi),
+    )
+    .await;
+
+    assert_eq!(client.get("/multi").send().await.unwrap().status(), 200);
+    assert_eq!(client.get("/multi").send().await.unwrap().status(), 200);
+    assert_eq!(client.get("/multi").send().await.unwrap().status(), 429);
+
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sliding_window_enforces_the_limit() {
+    let client = client(
+        App::new()
+            .throttle(Throttle::new().sliding())
+            .include(slide),
+    )
+    .await;
+
+    assert_eq!(client.get("/slide").send().await.unwrap().status(), 200);
+    assert_eq!(client.get("/slide").send().await.unwrap().status(), 200);
+    assert_eq!(client.get("/slide").send().await.unwrap().status(), 429);
 
     client.shutdown().await.unwrap();
 }

@@ -28,6 +28,9 @@ pub enum ThrottlePolicy {
     Named(&'static str),
     /// An inline limit of `limit` requests per `window_secs` seconds.
     Inline { limit: u32, window_secs: u64 },
+    /// Apply several named policies at once (for example a per-second and a
+    /// per-minute limit); the request is allowed only if every one allows it.
+    Multiple(&'static [&'static str]),
 }
 
 /// A resolved limit: a number of requests per window.
@@ -40,11 +43,13 @@ struct Limit {
 /// Configures rate limiting; see [`App::throttle`](crate::App::throttle).
 ///
 /// Define named policies, optionally mark one as the global default (applied to
-/// every route that does not set its own), and choose the store.
+/// every route that does not set its own), choose the store, and pick the
+/// algorithm (fixed window by default, or [`sliding`](Throttle::sliding)).
 pub struct Throttle {
     policies: HashMap<String, Limit>,
     default: Option<String>,
     store: Arc<dyn ThrottleStore>,
+    sliding: bool,
 }
 
 impl Throttle {
@@ -54,6 +59,7 @@ impl Throttle {
             policies: HashMap::new(),
             default: None,
             store: Arc::new(MemoryThrottleStore::new()),
+            sliding: false,
         }
     }
 
@@ -82,6 +88,16 @@ impl Throttle {
         self
     }
 
+    /// Switches from a fixed window to a sliding window.
+    ///
+    /// A sliding window weights the previous window's count by how much of it
+    /// still overlaps the current moment, smoothing out the burst a fixed window
+    /// allows at its boundaries.
+    pub fn sliding(mut self) -> Self {
+        self.sliding = true;
+        self
+    }
+
     /// Uses a Redis store sharing the given connection, for distributed limiting.
     #[cfg(feature = "redis")]
     pub fn redis(mut self, redis: &crate::Redis) -> Self {
@@ -104,8 +120,9 @@ pub struct Throttler {
 
 struct Inner {
     policies: HashMap<String, Limit>,
-    default: Option<Limit>,
+    default: Option<(String, Limit)>,
     store: Arc<dyn ThrottleStore>,
+    sliding: bool,
 }
 
 /// The outcome of a rate-limit check.
@@ -117,52 +134,105 @@ enum Decision {
 impl Throttler {
     /// Builds the engine from its configuration.
     pub fn new(config: Throttle) -> Self {
-        let default = config
-            .default
-            .as_ref()
-            .and_then(|name| config.policies.get(name).copied());
+        let default = config.default.as_ref().and_then(|name| {
+            config
+                .policies
+                .get(name)
+                .map(|limit| (name.clone(), *limit))
+        });
         Self {
             inner: Arc::new(Inner {
                 policies: config.policies,
                 default,
                 store: config.store,
+                sliding: config.sliding,
             }),
         }
     }
 
-    /// Resolves a policy to a concrete limit, or `None` when the route is not
-    /// limited (skipped, or inherits with no default configured).
-    fn resolve(&self, policy: &ThrottlePolicy) -> Option<Limit> {
+    /// Resolves a policy into the concrete limits to enforce, each with a stable
+    /// discriminator so different policies on one route count separately. An empty
+    /// list means the route is not limited (skipped, or inherits with no default).
+    fn resolve(&self, policy: &ThrottlePolicy) -> Vec<(String, Limit)> {
         match policy {
-            ThrottlePolicy::Skip => None,
-            ThrottlePolicy::Inherit => self.inner.default,
-            ThrottlePolicy::Inline { limit, window_secs } => Some(Limit {
-                limit: *limit,
-                window: Duration::from_secs((*window_secs).max(1)),
-            }),
-            ThrottlePolicy::Named(name) => self.inner.policies.get(*name).copied(),
+            ThrottlePolicy::Skip => Vec::new(),
+            ThrottlePolicy::Inherit => self
+                .inner
+                .default
+                .as_ref()
+                .map(|(name, limit)| vec![(name.clone(), *limit)])
+                .unwrap_or_default(),
+            ThrottlePolicy::Inline { limit, window_secs } => vec![(
+                format!("inline:{limit}:{window_secs}"),
+                Limit {
+                    limit: *limit,
+                    window: Duration::from_secs((*window_secs).max(1)),
+                },
+            )],
+            ThrottlePolicy::Named(name) => self
+                .inner
+                .policies
+                .get(*name)
+                .map(|limit| vec![((*name).to_owned(), *limit)])
+                .unwrap_or_default(),
+            ThrottlePolicy::Multiple(names) => names
+                .iter()
+                .filter_map(|name| {
+                    self.inner
+                        .policies
+                        .get(*name)
+                        .map(|limit| ((*name).to_owned(), *limit))
+                })
+                .collect(),
         }
     }
 
-    /// Counts a hit and decides whether the request is allowed.
-    async fn decide(&self, scope: &str, limit: Limit, key: String) -> Decision {
+    /// Counts a hit against one limit and decides whether it is allowed.
+    async fn decide_one(&self, scope: &str, disc: &str, limit: Limit, key: &str) -> Decision {
         let window_secs = limit.window.as_secs().max(1);
         let now = unix_secs();
         let bucket = now / window_secs;
-        let storage_key = format!("throttle:{scope}:{key}:{bucket}");
+        let elapsed = now % window_secs;
+        let cap = u64::from(limit.limit);
 
-        match self.inner.store.incr(storage_key, limit.window).await {
-            Ok(count) if count > u64::from(limit.limit) => Decision::Deny {
-                // Seconds left in the current window.
-                retry_after: window_secs - (now % window_secs),
-            },
-            // Allow on a store error too, so a backend hiccup fails open rather
-            // than rejecting every request.
-            _ => Decision::Allow,
+        if self.inner.sliding {
+            // Sliding window: this window's count plus the previous window's count
+            // weighted by how much of it still overlaps now. Keep buckets for two
+            // windows so the previous one is still readable.
+            let current_key = format!("throttle:{scope}:{disc}:{key}:{bucket}");
+            let previous_key = format!("throttle:{scope}:{disc}:{key}:{}", bucket.wrapping_sub(1));
+            let current = self
+                .inner
+                .store
+                .incr(current_key, limit.window * 2)
+                .await
+                .unwrap_or(0);
+            let previous = self.inner.store.count(previous_key).await.unwrap_or(0);
+            let weight = (window_secs - elapsed) as f64 / window_secs as f64;
+            let estimate = current as f64 + previous as f64 * weight;
+            if estimate > cap as f64 {
+                return Decision::Deny {
+                    retry_after: window_secs - elapsed,
+                };
+            }
+        } else {
+            let storage_key = format!("throttle:{scope}:{disc}:{key}:{bucket}");
+            let count = self
+                .inner
+                .store
+                .incr(storage_key, limit.window)
+                .await
+                .unwrap_or(0);
+            if count > cap {
+                return Decision::Deny {
+                    retry_after: window_secs - elapsed,
+                };
+            }
         }
+        Decision::Allow
     }
 
-    /// Enforces a policy, returning `Err(429)` when the limit is exceeded.
+    /// Enforces a policy, returning `Err(429)` when a limit is exceeded.
     ///
     /// `key` is the precomputed tracker; `None` falls back to the client IP.
     pub async fn check(
@@ -178,7 +248,7 @@ impl Throttler {
         }
     }
 
-    /// Shared resolution: resolve the limit, compute the key, decide.
+    /// Shared resolution: resolve the limits, compute the key, check each.
     async fn enforce(
         &self,
         ctx: &RequestContext,
@@ -186,10 +256,10 @@ impl Throttler {
         policy: &ThrottlePolicy,
         key: Option<String>,
     ) -> Decision {
-        let limit = match self.resolve(policy) {
-            Some(limit) => limit,
-            None => return Decision::Allow,
-        };
+        let limits = self.resolve(policy);
+        if limits.is_empty() {
+            return Decision::Allow;
+        }
         let key = match key {
             Some(key) => key,
             None => match ByIp::throttle_key(ctx).await {
@@ -197,7 +267,14 @@ impl Throttler {
                 Err(_) => return Decision::Allow,
             },
         };
-        self.decide(scope, limit, key).await
+        // Every limit must allow; the first to deny wins.
+        for (disc, limit) in &limits {
+            if let Decision::Deny { retry_after } = self.decide_one(scope, disc, *limit, &key).await
+            {
+                return Decision::Deny { retry_after };
+            }
+        }
+        Decision::Allow
     }
 }
 
@@ -215,7 +292,7 @@ impl FromRequest for Throttler {
 }
 
 /// Generated-code entry point: enforce a route's policy, returning a `429`
-/// response when the limit is exceeded (or `None` to proceed).
+/// response when a limit is exceeded (or `None` to proceed).
 ///
 /// A no-op (returns `None`) when no [`Throttler`] is configured, so the check the
 /// route macro always emits costs only a state lookup in apps that do not throttle.

@@ -45,4 +45,16 @@ impl ThrottleStore for RedisThrottleStore {
             Ok(count.max(0) as u64)
         })
     }
+
+    fn count(&self, key: String) -> BoxFuture<'_, Result<u64>> {
+        Box::pin(async move {
+            let mut conn = self.redis.connection();
+            let count: Option<i64> = ::redis::cmd("GET")
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| Error::internal(format!("redis throttle failed: {error}")))?;
+            Ok(count.unwrap_or(0).max(0) as u64)
+        })
+    }
 }

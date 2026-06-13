@@ -42,6 +42,31 @@ async fn search() -> tork::Result<Results> { /* ... */ }
 async fn health() -> tork::Result<&'static str> { Ok("ok") }
 ```
 
+The same attribute works on `#[sse]`, `#[post_sse]`, and `#[websocket]` endpoints,
+limiting how often a client may open the stream or socket.
+
+## Several limits at once
+
+A route can be subject to more than one named policy — for example a per-second and
+a per-minute limit. List them, and a request must satisfy every one:
+
+```rust
+// Defined globally:
+// Throttle::new().policy("short", 3, 1).policy("long", 100, 60)
+#[get("/burst", throttle = ["short", "long"])]
+async fn burst() -> tork::Result<Data> { /* ... */ }
+```
+
+## Sliding window
+
+By default each window is fixed, which allows a short burst across a window boundary
+(up to twice the limit). Switch to a sliding window to smooth that out — it weights
+the previous window by how much of it still overlaps now:
+
+```rust
+App::new().throttle(Throttle::new().policy("default", 100, 60).default("default").sliding());
+```
+
 ## Router and endpoint levels
 
 A `throttle` on `#[api_router]` applies to every route in it; an endpoint's own

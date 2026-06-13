@@ -46,7 +46,7 @@ struct RouteArgs {
 }
 
 /// A parsed `throttle` policy from a route or router attribute.
-enum RouteThrottle {
+pub(crate) enum RouteThrottle {
     /// `throttle = "skip"` — bypass rate limiting.
     Skip,
     /// `throttle = "name"` or `throttle(name = "...", key = ...)`.
@@ -57,6 +57,8 @@ enum RouteThrottle {
         ttl: LitInt,
         key: Option<Path>,
     },
+    /// `throttle = ["short", "long"]` — apply several named policies at once.
+    Multiple(Vec<LitStr>),
 }
 
 /// The parenthesized `throttle(...)` arguments.
@@ -95,9 +97,9 @@ impl Parse for ThrottleArgs {
     }
 }
 
-/// Parses a `throttle` value in either form: `= "name"` / `= "skip"`, or
-/// `(name = "...", ...)` / `(limit = N, ttl = T, ...)`.
-fn parse_throttle(input: ParseStream) -> syn::Result<RouteThrottle> {
+/// Parses a `throttle` value in either form: `= "name"` / `= "skip"` /
+/// `= ["a", "b"]`, or `(name = "...", ...)` / `(limit = N, ttl = T, ...)`.
+pub(crate) fn parse_throttle(input: ParseStream) -> syn::Result<RouteThrottle> {
     if input.peek(token::Paren) {
         let content;
         parenthesized!(content in input);
@@ -119,6 +121,12 @@ fn parse_throttle(input: ParseStream) -> syn::Result<RouteThrottle> {
         }
     } else {
         input.parse::<Token![=]>()?;
+        if input.peek(token::Bracket) {
+            let content;
+            bracketed!(content in input);
+            let items = Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?;
+            return Ok(RouteThrottle::Multiple(items.into_iter().collect()));
+        }
         let value: LitStr = input.parse()?;
         if value.value() == "skip" {
             Ok(RouteThrottle::Skip)
@@ -127,6 +135,40 @@ fn parse_throttle(input: ParseStream) -> syn::Result<RouteThrottle> {
                 name: value,
                 key: None,
             })
+        }
+    }
+}
+
+/// Builds the rate-limit check emitted in a handler wrapper, before the body.
+///
+/// The route's own `throttle` wins over the router's injected one; with neither,
+/// it inherits the global default. Shared by the route, SSE, and WebSocket macros.
+pub(crate) fn throttle_check_tokens(
+    krate: &TokenStream,
+    throttle: Option<&RouteThrottle>,
+    router_throttle: Option<&RouteThrottle>,
+    method: &str,
+    full_path: &str,
+) -> TokenStream {
+    let effective = throttle.or(router_throttle);
+    let (policy_tokens, key_path) = match effective {
+        Some(throttle) => throttle.tokens(krate),
+        None => (quote! { &#krate::ThrottlePolicy::Inherit }, None),
+    };
+    let key_expr = match key_path {
+        Some(key) => quote! {
+            ::core::option::Option::Some(
+                <#key as #krate::ThrottleKey>::throttle_key(&ctx).await?
+            )
+        },
+        None => quote! { ::core::option::Option::None },
+    };
+    let scope = format!("{method} {full_path}");
+    quote! {
+        if let ::core::option::Option::Some(__tork_throttled) =
+            #krate::__throttle_check(&ctx, #scope, #policy_tokens, #key_expr).await
+        {
+            return ::core::result::Result::Ok(__tork_throttled);
         }
     }
 }
@@ -142,6 +184,10 @@ impl RouteThrottle {
             RouteThrottle::Inline { limit, ttl, key } => (
                 quote! { &#krate::ThrottlePolicy::Inline { limit: #limit, window_secs: #ttl } },
                 key.as_ref(),
+            ),
+            RouteThrottle::Multiple(names) => (
+                quote! { &#krate::ThrottlePolicy::Multiple(&[#(#names),*]) },
+                None,
             ),
         }
     }
@@ -436,32 +482,14 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     };
 
     // Rate-limit check, emitted on every route so a configured global default
-    // applies everywhere. The route's own `throttle` wins over the router's
-    // injected one; with neither, it inherits the global default. The call is a
-    // no-op (a single state lookup) when no throttler is configured.
-    let throttle_check = {
-        let effective = args.throttle.as_ref().or(args.router_throttle.as_ref());
-        let (policy_tokens, key_path) = match effective {
-            Some(throttle) => throttle.tokens(&krate),
-            None => (quote! { &#krate::ThrottlePolicy::Inherit }, None),
-        };
-        let key_expr = match key_path {
-            Some(key) => quote! {
-                ::core::option::Option::Some(
-                    <#key as #krate::ThrottleKey>::throttle_key(&ctx).await?
-                )
-            },
-            None => quote! { ::core::option::Option::None },
-        };
-        let scope = format!("{method} {full_path}");
-        quote! {
-            if let ::core::option::Option::Some(__tork_throttled) =
-                #krate::__throttle_check(&ctx, #scope, #policy_tokens, #key_expr).await
-            {
-                return ::core::result::Result::Ok(__tork_throttled);
-            }
-        }
-    };
+    // applies everywhere (a no-op state lookup when no throttler is configured).
+    let throttle_check = throttle_check_tokens(
+        &krate,
+        args.throttle.as_ref(),
+        args.router_throttle.as_ref(),
+        method,
+        &full_path,
+    );
 
     Ok(quote! {
         #emit_func

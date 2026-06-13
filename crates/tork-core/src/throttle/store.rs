@@ -16,6 +16,10 @@ pub trait ThrottleStore: Send + Sync + 'static {
     /// Atomically increments the counter at `key`, setting it to expire after
     /// `ttl` when first created, and returns the new count.
     fn incr(&self, key: String, ttl: Duration) -> BoxFuture<'_, Result<u64>>;
+
+    /// Returns the current count at `key` without changing it (`0` if absent or
+    /// expired). Used by the sliding-window estimate to read the previous window.
+    fn count(&self, key: String) -> BoxFuture<'_, Result<u64>>;
 }
 
 /// Number of entries past which a sweep of expired entries runs, bounding growth.
@@ -64,6 +68,19 @@ impl ThrottleStore for MemoryThrottleStore {
             }
             entry.count += 1;
             Ok(entry.count)
+        })
+    }
+
+    fn count(&self, key: String) -> BoxFuture<'_, Result<u64>> {
+        Box::pin(async move {
+            let now = Instant::now();
+            let map = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let count = map
+                .get(&key)
+                .filter(|entry| entry.expires_at > now)
+                .map(|entry| entry.count)
+                .unwrap_or(0);
+            Ok(count)
         })
     }
 }
