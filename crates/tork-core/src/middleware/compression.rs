@@ -112,11 +112,12 @@ impl Middleware for Compression {
                 return Ok(response);
             }
 
-            // If the response advertises a length over the cap, pass it through
-            // without buffering: this is the case that would otherwise pull a large
-            // streaming body fully into memory just to decline to compress it.
-            if content_length(response.headers()).is_some_and(|length| length > maximum_size) {
-                return Ok(response);
+            // If the response advertises a length over the cap, or is already below
+            // the minimum compression threshold, pass it through without buffering.
+            if let Some(length) = content_length(response.headers()) {
+                if length > maximum_size || length < minimum_size {
+                    return Ok(response);
+                }
             }
 
             let (mut parts, bytes) = into_body_bytes(response).await;

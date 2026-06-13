@@ -178,10 +178,14 @@ fn build_format(config: &LoggerConfig) -> TorkFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
     use tracing_subscriber::layer::SubscriberExt;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn env_filter_uses_explicit_level_and_fallback() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("RUST_LOG");
         let debug = env_filter("debug");
         assert_eq!(debug.to_string(), "debug");

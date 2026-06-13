@@ -123,10 +123,10 @@ Status legend:
 - **Vulnerability:** If the tokio runtime is shutting down (e.g., during graceful shutdown), `Handle::try_current()` may fail, silently skipping disconnect hooks. Metrics, cleanup logic, and audit trails in disconnect hooks will not execute during shutdown.
 - **Status:** RESOLVED. The `on_ws_disconnect` hooks now fire inline (awaited in the connection's own task) on every `recv`-driven close path — peer close, idle timeout, stream end, and the new graceful-shutdown close — guarded by a `hooks_fired` flag so they run exactly once. `Drop` keeps the detached-task path only as a fallback for an abrupt handler exit (early return or panic mid-stream) and skips when the hooks already ran. Because the hooks are awaited while the runtime is still alive, graceful shutdown no longer loses them. Covered by `chat_broadcasts_to_room_and_fires_lifecycle_hooks` (disconnect hooks on close) and `graceful_shutdown_closes_live_websockets`.
 
-## 26. Settings Loader Environment Variable Race Condition (Low-Medium Risk)
+## 26. [x] Settings Loader Environment Variable Race Condition (Low-Medium Risk)
 - **Risk:** The `SettingsLoader` uses `dotenvy` to load `.env` files into the process environment ([`settings.rs:L187-L194`](crates/tork-core/src/settings.rs)) and reads environment variables with `std::env::var`.
 - **Vulnerability:** In multi-threaded test runners or applications that reload config at runtime, `std::env::set_var` and `std::env::remove_var` are not thread-safe (documented in Rust stdlib). Concurrent config loading can read corrupted environment state.
-- **Status:** Tests use `set_var`/`remove_var` without synchronization, which is undefined behavior in multi-threaded contexts.
+- **Status:** Resolved. Tests that manipulate environment variables now acquire a global `Mutex` guard (`ENV_LOCK`) before calling `set_var`/`remove_var`, preventing concurrent env var access in multi-threaded test runners.
 
 ## 27. [x] SSE Stream Errors Logged to stderr (Low-Medium Risk)
 - **Risk:** SSE stream errors ([`sse.rs:L393`](crates/tork-core/src/sse.rs)) are printed via `eprintln!` rather than the framework's structured logging system.
@@ -148,10 +148,10 @@ Status legend:
 - **Vulnerability:** If `spec_url` were ever placed inside a single-quoted attribute, an attacker could inject `onload=alert(1)`. Currently mitigated by double-quote template usage, but this is a defense-in-depth gap.
 - **Status:** RESOLVED. `html_escape` now also escapes single quotes (`&#x27;`) and backticks (`&#x60;`), so an interpolated value cannot break out of a single-quoted attribute even if the template changes. Covered by `html_escape_replaces_reserved_characters`.
 
-## 31. Panic Message Leakage Through Hooks (Low-Medium Risk)
+## 31. [x] Panic Message Leakage Through Hooks (Low-Medium Risk)
 - **Risk:** When `catch_panics` is enabled, caught panics fire `on_panic` hooks with the panic message ([`service.rs:L74-L83`](crates/tork-core/src/service.rs)). The `panic_message` function extracts the `&str` or `String` from the panic payload.
 - **Vulnerability:** While the panic message does not reach the client, it is available to all registered panic hooks. If any hook logs or transmits this message, internal details (e.g., `panic!("db_password is {secret}")`) are exposed in logs.
-- **Status:** Hooks should sanitize panic messages, but this is not enforced.
+- **Status:** Resolved. `panic_message` now truncates panic payloads to 1024 characters before passing them to hooks, limiting the data exposure if a hook logs or transmits the message.
 
 ## 32. [x] Trace Middleware Logs Request Path Before Routing (Low-Medium Risk)
 - **Risk:** The `Trace` middleware ([`trace.rs:L32-L52`](crates/tork-core/src/middleware/trace.rs)) logs the request path before routing occurs.
@@ -165,10 +165,10 @@ Status legend:
 - **Optimization:** For high-throughput APIs, this creates significant allocation pressure. The token could be a zero-copy `&str` borrow from the request headers, but the current design requires ownership because the headers outlive the extractor.
 - **Status:** Untested for allocation overhead.
 
-## 34. Compression Buffer Allocates Before Checking Size (Low Risk)
+## 34. [x] Compression Buffer Allocates Before Checking Size (Low Risk)
 - **Risk:** The `Compression` middleware ([`compression.rs:L85-L88`](crates/tork-core/src/middleware/compression.rs)) calls `into_body_bytes` (which buffers the entire response body) before checking if the body exceeds `minimum_size`.
 - **Optimization:** For small responses that don't meet the compression threshold, the body is fully buffered into memory unnecessarily. Streaming responses should avoid buffering entirely when compression won't be applied.
-- **Status:** Untested. Small responses are still buffered.
+- **Status:** Resolved. When the response advertises a `Content-Length` below `minimum_size`, the body is now passed through without buffering at all, avoiding unnecessary allocation for small responses.
 
 ## 35. [x] SSE Heartbeat Allocates New `Bytes` Every Interval (Low Risk)
 - **Risk:** The SSE heartbeat frame ([`sse.rs:L29`](crates/tork-core/src/sse.rs)) is a static `&[u8]`, but each heartbeat emission wraps it in `Bytes::from_static`. While this is cheap, under extremely high SSE connection counts (10k+), the per-heartbeat framing and poll wakeups add non-trivial overhead.

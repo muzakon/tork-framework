@@ -280,6 +280,11 @@ mod tests {
     use garde::Validate;
     use serde::Deserialize;
     use std::io::Write;
+    use std::sync::{LazyLock, Mutex};
+
+    /// Serializes tests that touch environment variables, since `set_var`/`remove_var`
+    /// are not thread-safe.
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[derive(Debug, Deserialize, Validate)]
     struct Nested {
@@ -326,6 +331,7 @@ mod tests {
 
     #[test]
     fn environment_name_uses_prefix_and_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ENV");
         std::env::remove_var("CFGTESTENV_ENV");
         assert_eq!(
@@ -397,6 +403,7 @@ mod tests {
 
     #[test]
     fn environment_variable_overrides_and_nests() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // The prefix is unique to this test, so the variables do not collide.
         std::env::set_var("CFGTESTB_NAME", "From Env");
         std::env::set_var("CFGTESTB_ITEMS", "7");
@@ -422,6 +429,7 @@ mod tests {
 
     #[test]
     fn environment_variable_overrides_a_config_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut file = std::fs::File::create(&path).unwrap();
@@ -464,6 +472,7 @@ mod tests {
 
     #[test]
     fn load_merges_env_file_environment_specific_file_and_secrets() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("base.toml");
         let env_file = dir.path().join(".env");

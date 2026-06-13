@@ -186,12 +186,15 @@ impl AppInner {
 /// hooks.
 ///
 /// A panic payload is typically a `&str` or `String`; anything else is reported
-/// generically.
+/// generically. The message is truncated to 1024 characters to limit the data
+/// exposed to hooks in case the panic message contains sensitive information.
 fn panic_message(payload: &(dyn Any + Send)) -> String {
+    let max_len = 1024;
     if let Some(message) = payload.downcast_ref::<&str>() {
-        (*message).to_owned()
+        let s = (*message).to_owned();
+        if s.len() > max_len { s[..max_len].to_owned() } else { s }
     } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
+        if message.len() > max_len { message[..max_len].to_owned() } else { message.clone() }
     } else {
         "panic".to_owned()
     }
