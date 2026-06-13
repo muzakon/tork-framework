@@ -26,6 +26,8 @@ default = ["openapi"]
 openapi = ["dep:tork-openapi"]
 # Exports traces over OTLP via OpenTelemetry.
 otel = ["tork-core/otel"]
+# Enables the Redis cache store (`Cache::redis`).
+redis = ["tork-core/redis"]
 
 [dev-dependencies]
 serde = { workspace = true }

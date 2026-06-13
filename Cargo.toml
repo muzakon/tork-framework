@@ -71,6 +71,8 @@ serde_urlencoded = "0.7"
 
 # In-memory cache with per-entry TTL (async, tokio-friendly).
 moka = { version = "0.12", features = ["future"] }
+# Redis client for the optional Redis cache store (multiplexed async + reconnect).
+redis = { version = "1.2", features = ["tokio-comp", "connection-manager"] }
 
 # Multipart/form-data parsing and file uploads.
 multer = "3.1"

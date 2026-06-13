@@ -43,6 +43,7 @@ uuid.workspace = true
 time.workspace = true
 flate2.workspace = true
 moka.workspace = true
+redis = { workspace = true, optional = true }
 
 [features]
 # Exports traces over OTLP via OpenTelemetry. Off by default to keep the base
@@ -53,3 +54,6 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
 ]
+# Enables the Redis cache store (`RedisStore` / `Cache::redis`). Off by default so
+# the base build does not pull in the Redis client.
+redis = ["dep:redis"]

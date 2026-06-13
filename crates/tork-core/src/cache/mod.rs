@@ -14,8 +14,12 @@
 
 mod handle;
 mod memory;
+#[cfg(feature = "redis")]
+mod redis;
 mod store;
 
 pub use handle::Cache;
 pub use memory::MemoryStore;
+#[cfg(feature = "redis")]
+pub use redis::RedisStore;
 pub use store::CacheStore;

@@ -50,6 +50,15 @@ impl Cache {
         Self::new(MemoryStore::new())
     }
 
+    /// Builds a cache over a Redis store at `url` (for example
+    /// `redis://127.0.0.1:6379`), for sharing the cache across instances.
+    ///
+    /// Available with the `redis` feature.
+    #[cfg(feature = "redis")]
+    pub async fn redis(url: &str) -> Result<Self> {
+        Ok(Self::new(super::RedisStore::connect(url).await?))
+    }
+
     /// Sets the TTL applied by [`set`](Cache::set) when no explicit TTL is given.
     ///
     /// Without this, `set` stores entries with no expiry (they live until evicted

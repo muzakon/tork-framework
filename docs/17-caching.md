@@ -78,6 +78,29 @@ your own with `Cache::new(store)`:
 let cache = Cache::new(MyCustomStore::new());
 ```
 
-A Redis store (for sharing a cache across instances) is planned as a feature-gated
-backend, configured the same way: `App::cache(Cache::redis(url))`. Because handlers
-only see the `Cache` handle, switching stores does not change them.
+Because handlers only see the `Cache` handle, switching stores does not change them.
+
+## Redis store
+
+To share a cache across instances (a value cached by one process is visible to the
+others), use the Redis store. Enable the `redis` feature:
+
+```toml
+tork = { version = "...", features = ["redis"] }
+```
+
+Then point the cache at a Redis server:
+
+```rust
+use tork::{App, Cache};
+
+# async fn boot() -> tork::Result<()> {
+let cache = Cache::redis("redis://127.0.0.1:6379").await?;
+App::new().cache(cache);
+# Ok(())
+# }
+```
+
+Keys are namespaced with a `tork:` prefix, so `clear()` removes only this cache's
+keys (it scans and deletes by prefix, never flushing the whole database). The URL
+typically comes from configuration — see [Settings](13-settings.md).
