@@ -1045,8 +1045,14 @@ mod tests {
         let app = App::new()
             .state(Greeting("hello"))
             .state(Counter(42))
-            .build();
-        assert!(app.is_ok());
+            .build()
+            .expect("app builds");
+
+        // Both distinct state types are retrievable, each keyed by its own type.
+        let greeting = app.state().get::<Greeting>().expect("greeting registered");
+        let counter = app.state().get::<Counter>().expect("counter registered");
+        assert_eq!(greeting.0, "hello");
+        assert_eq!(counter.0, 42);
     }
 }
 
