@@ -14,8 +14,8 @@
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
+use figment::Figment;
 use garde::Validate;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -182,6 +182,23 @@ impl<T: DeserializeOwned + Validate<Context = ()>> SettingsLoader<T> {
     /// parsed into `T`, or `CONFIG_VALIDATION_ERROR` (with field details) when the
     /// value fails validation. Used at startup, either aborts before the app runs.
     pub fn load(self) -> Result<T> {
+        // `dotenvy` writes into the process environment via `set_var`, which races
+        // with any concurrent environment read/write from another thread. Hold the
+        // shared environment lock across the `.env` load and the environment reads
+        // (env name + the figment env provider) so concurrent `load()` calls
+        // serialize instead of racing. Mutating `std::env` from outside the loader
+        // while it runs is still the caller's responsibility to avoid.
+        let _env_guard = crate::env::env_guard();
+        self.load_locked()
+    }
+
+    /// Loads the configuration assuming the caller already holds the shared
+    /// environment lock (see [`load`](SettingsLoader::load)).
+    ///
+    /// Kept separate so callers that must hold the lock across their own
+    /// environment mutations (the tests below) do not deadlock by re-locking a
+    /// non-reentrant mutex inside `load`.
+    fn load_locked(self) -> Result<T> {
         // Load the `.env` file into the process environment. dotenvy does not
         // overwrite existing variables, so a real environment variable still wins.
         match &self.env_file {
@@ -221,9 +238,9 @@ impl<T: DeserializeOwned + Validate<Context = ()>> SettingsLoader<T> {
                 .with_source(error)
         })?;
 
-        value
-            .validate()
-            .map_err(|report| Error::from_garde_report(report).with_code("CONFIG_VALIDATION_ERROR"))?;
+        value.validate().map_err(|report| {
+            Error::from_garde_report(report).with_code("CONFIG_VALIDATION_ERROR")
+        })?;
 
         Ok(value)
     }
@@ -277,14 +294,10 @@ fn insert_nested(root: &mut Map<String, Value>, parts: &[&str], value: Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::env_guard;
     use garde::Validate;
     use serde::Deserialize;
     use std::io::Write;
-    use std::sync::{LazyLock, Mutex};
-
-    /// Serializes tests that touch environment variables, since `set_var`/`remove_var`
-    /// are not thread-safe.
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[derive(Debug, Deserialize, Validate)]
     struct Nested {
@@ -321,7 +334,10 @@ mod tests {
             .secrets_dir("secrets")
             .override_value("nested.port", 7000u16);
 
-        assert_eq!(loader.env_file.as_deref(), Some(Path::new("config/.env.test")));
+        assert_eq!(
+            loader.env_file.as_deref(),
+            Some(Path::new("config/.env.test"))
+        );
         assert_eq!(loader.prefix.as_deref(), Some("CFGTESTZ"));
         assert_eq!(loader.config_file.as_deref(), Some("config/base.toml"));
         assert_eq!(loader.files, vec!["config/{env}.toml"]);
@@ -331,7 +347,7 @@ mod tests {
 
     #[test]
     fn environment_name_uses_prefix_and_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::remove_var("ENV");
         std::env::remove_var("CFGTESTENV_ENV");
         assert_eq!(
@@ -341,7 +357,10 @@ mod tests {
 
         std::env::set_var("ENV", "staging");
         std::env::set_var("CFGTESTENV_ENV", "production");
-        assert_eq!(SettingsLoader::<Sample>::new().environment_name(), "staging");
+        assert_eq!(
+            SettingsLoader::<Sample>::new().environment_name(),
+            "staging"
+        );
         assert_eq!(
             SettingsLoader::<Sample>::new()
                 .prefix("CFGTESTENV")
@@ -403,7 +422,7 @@ mod tests {
 
     #[test]
     fn environment_variable_overrides_and_nests() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         // The prefix is unique to this test, so the variables do not collide.
         std::env::set_var("CFGTESTB_NAME", "From Env");
         std::env::set_var("CFGTESTB_ITEMS", "7");
@@ -413,7 +432,8 @@ mod tests {
 
         let value: Sample = SettingsLoader::new()
             .prefix("CFGTESTB")
-            .load()
+            // The guard is already held above, so use the non-locking variant.
+            .load_locked()
             .expect("load should succeed");
 
         assert_eq!(value.name, "From Env");
@@ -429,7 +449,7 @@ mod tests {
 
     #[test]
     fn environment_variable_overrides_a_config_file() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut file = std::fs::File::create(&path).unwrap();
@@ -445,7 +465,8 @@ mod tests {
         let value: Sample = SettingsLoader::new()
             .prefix("CFGTESTD")
             .config_file(path.to_string_lossy().into_owned())
-            .load()
+            // The guard is already held above, so use the non-locking variant.
+            .load_locked()
             .expect("load should succeed");
 
         assert_eq!(value.name, "From File"); // only in the file
@@ -472,7 +493,7 @@ mod tests {
 
     #[test]
     fn load_merges_env_file_environment_specific_file_and_secrets() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("base.toml");
         let env_file = dir.path().join(".env");
@@ -488,7 +509,11 @@ mod tests {
         .unwrap();
         std::fs::write(&env_file, "CFGTESTE_ENV=production\nCFGTESTE_ITEMS=9\n").unwrap();
         let mut env_override = std::fs::File::create(&env_toml).unwrap();
-        writeln!(env_override, "name = \"Prod\"\n[nested]\nhost = \"prod.host\"").unwrap();
+        writeln!(
+            env_override,
+            "name = \"Prod\"\n[nested]\nhost = \"prod.host\""
+        )
+        .unwrap();
         std::fs::write(secrets.join("TOKEN"), "from-secret\n").unwrap();
 
         let value: Sample = SettingsLoader::new()
@@ -497,7 +522,8 @@ mod tests {
             .config_file(base.to_string_lossy().into_owned())
             .file(dir.path().join("{env}.toml").to_string_lossy().into_owned())
             .secrets_dir(&secrets)
-            .load()
+            // The guard is already held above, so use the non-locking variant.
+            .load_locked()
             .expect("load should succeed");
 
         assert_eq!(value.name, "Prod");
@@ -514,7 +540,11 @@ mod tests {
     fn load_reports_configuration_parse_failures() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken.toml");
-        std::fs::write(&path, "items = \"oops\"\ntoken = \"x\"\n[nested]\nhost = \"h\"\nport = 1").unwrap();
+        std::fs::write(
+            &path,
+            "items = \"oops\"\ntoken = \"x\"\n[nested]\nhost = \"h\"\nport = 1",
+        )
+        .unwrap();
 
         let error = SettingsLoader::<Sample>::new()
             .config_file(path.to_string_lossy().into_owned())

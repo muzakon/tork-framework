@@ -61,10 +61,9 @@ Status legend:
 - **Vulnerability:** If the CDN is compromised or a supply-chain attack occurs on the `@scalar/api-reference` npm package, arbitrary JavaScript executes in every browser visiting the documentation page, potentially stealing API tokens or performing actions on behalf of the user.
 - **Status:** RESOLVED. The Scalar bundle is now pinned to an exact version and file (`@scalar/api-reference@1.59.3/dist/browser/standalone.min.js`) and loaded with a Subresource Integrity hash (`sha384-...`) plus `crossorigin="anonymous"`, so the browser refuses the script if its bytes differ from the pinned hash. Covered by `render_html_pins_the_cdn_and_adds_integrity`.
 
-## 13. Error Chain Leakage in Structured Logs (Medium Security Risk)
-- **Risk:** The `LogEvent::error` method ([`event.rs:L31-L52`](crates/tork-core/src/logging/event.rs)) serializes the full error chain (type name, message, and all `source()` messages) into log output.
-- **Vulnerability:** If an error's `Display` implementation includes sensitive data (database connection strings with passwords, API keys), this data appears in structured logs. Database drivers commonly include connection strings in error messages.
-- **Status:** PARTIALLY RESOLVED. The logged source chain is now capped at 16 entries (`MAX_ERROR_CHAIN`), bounding record size, and the API docs warn that error messages can carry sensitive data and should not contain secrets (logged errors are not redacted like `5xx` client responses). Generic automatic redaction of secrets in error text is not possible without knowing what is sensitive, so it stays the developer's responsibility. Covered by `error_chain_is_truncated_at_the_cap`.
+## 13. [x] Error Chain Leakage in Structured Logs (Medium Security Risk)
+- **Risk:** Structured logs now default to `ErrorLogDetail::TypeOnly`, so `LogEvent::error` records only the concrete error type unless the application explicitly opts into `MessageOnly` or `FullChain`.
+- **Status:** Resolved. `LoggerConfig::error_detail(...)` controls the detail level; `FullChain` still caps the source chain at 16 entries. Covered by `default_error_detail_is_type_only`, `message_only_includes_the_top_level_message_without_the_chain`, and `error_chain_is_truncated_at_the_cap`.
 
 ## 14. [x] Request ID Logged Without Sanitization (Medium Security Risk)
 - **Risk:** Client-supplied request IDs are sanitized before they reach console logs.
@@ -160,10 +159,9 @@ Status legend:
 
 ---
 
-## 33. BearerToken Extractor Allocates Per Request (Low Risk)
-- **Risk:** `BearerToken` ([`header.rs:L118`](crates/tork-core/src/extract/header.rs)) clones the token string into an owned `String` on every request.
-- **Optimization:** For high-throughput APIs, this creates significant allocation pressure. The token could be a zero-copy `&str` borrow from the request headers, but the current design requires ownership because the headers outlive the extractor.
-- **Status:** Untested for allocation overhead.
+## 33. [x] BearerToken Extractor Allocates Per Request (Low Risk)
+- **Risk:** `BearerToken` no longer allocates a new `String` per request; it keeps a cloned `HeaderValue` and returns the token as a borrowed slice on demand.
+- **Status:** Resolved. The public API stays `token(&self) -> &str`, but extraction avoids the per-request owned-string allocation.
 
 ## 34. [x] Compression Buffer Allocates Before Checking Size (Low Risk)
 - **Risk:** The `Compression` middleware ([`compression.rs:L85-L88`](crates/tork-core/src/middleware/compression.rs)) calls `into_body_bytes` (which buffers the entire response body) before checking if the body exceeds `minimum_size`.
@@ -185,10 +183,9 @@ Status legend:
 - **Vulnerability:** If a middleware, test override, or lifespan inserts a value of a type that is already registered, the previous value is silently dropped. This could lead to state pollution where a security-relevant value (like a database pool or auth configuration) is unintentionally replaced.
 - **Status:** Resolved. `StateMap::insert` now emits a `tracing::warn!` when overwriting an existing entry, so accidental state pollution is visible in logs.
 
-## 38. [~] Validation Body Buffering Depth (Low Risk)
-- **Risk:** The `Valid<T>` extractor ([`valid.rs:L27-L43`](crates/tork-core/src/extract/valid.rs)) deserializes the body and then runs validation, meaning the full body is buffered in memory. There is no mechanism to short-circuit if deserialization consumes significant memory for deeply nested JSON.
-- **Vulnerability:** An attacker sends a deeply nested JSON payload that passes `MAX_BODY_BYTES` but causes stack overflow or excessive allocation during deserialization. Mitigated by `MAX_BODY_BYTES` and `serde_json`'s own limits.
-- **Status:** Mitigated by `MAX_BODY_BYTES` (2 MiB) and `serde_json`'s default recursion limit (128 levels).
+## 38. [x] Validation Body Buffering Depth (Low Risk)
+- **Risk:** JSON request extractors now reject payloads deeper than `MAX_JSON_NESTING` before deserialization begins.
+- **Status:** Resolved. Both `Json<T>` and `Valid<T>` run the same pre-parse nesting scan, so a deeply nested payload is rejected with `400 Bad Request` before `serde_json` recurses.
 
 ## 39. [x] No Null Byte Injection Protection in Router (Low Risk)
 - **Risk:** The `Matcher::find` method ([`matcher.rs:L73-L111`](crates/tork-core/src/router/matcher.rs)) receives the request path from `head.uri.path()` and passes it directly to `matchit::Router::at()` without checking for null bytes (`\0`).
@@ -209,37 +206,31 @@ Status legend:
 - **Vulnerability:** A single text field could contain up to `max_body_size` (default 16 MiB) of data. While bounded by the total body limit, per-field limits would provide better defense-in-depth.
 - **Status:** Resolved. Text fields now have a configurable per-field limit (`UploadConfig::max_text_field_size`, default 1 MiB), enforced before the field value is returned.
 
-## 42. [~] Route Metadata Could Inject Into OpenAPI JSON (Low Risk)
-- **Risk:** Route summaries, descriptions, and tags ([`spec.rs:L117-L204`](crates/tork-openapi/src/spec.rs)) are serialized directly into the OpenAPI JSON document.
-- **Vulnerability:** If a developer dynamically generates route descriptions from user input (unusual but possible), and the Scalar UI renders these as HTML, XSS could result. Currently mitigated because values come from developer-authored code and `serde_json` escapes strings.
-- **Status:** Requires unusual dynamic route generation from user input.
+## 42. [x] Route Metadata Could Inject Into OpenAPI JSON (Low Risk)
+- **Risk:** OpenAPI and AsyncAPI free-text metadata is sanitized before it is written into the generated documents.
+- **Status:** Resolved. Titles, descriptions, summaries, and tags now escape HTML-significant characters and normalize control characters, so unusual dynamic metadata cannot flow into the docs UI as raw markup.
 
-## 43. [~] Test Client Bypasses Security Validation (Low Risk)
-- **Risk:** The test client ([`testing/client.rs:L56-L73`](crates/tork-core/src/testing/client.rs)) allows setting arbitrary security-sensitive headers (`Host`, `X-Forwarded-For`) without validation.
-- **Vulnerability:** Integration tests using the test client may pass even when security middleware is misconfigured, giving a false sense of security. Developers may not realize CORS or TrustedHost middleware is missing.
-- **Status:** Testing concern, not a direct production vulnerability.
+## 43. [x] Test Client Bypasses Security Validation (Low Risk)
+- **Risk:** In-process test transports now reject security-sensitive routing/proxy headers (`Host`, `Forwarded`, `X-Forwarded-*`) unless the test explicitly opts into `unsafe_header` / `unsafe_default_header`, or uses a real loopback socket via `TestClient::serve(...).bind_random_port()`.
+- **Status:** Resolved. The safe default prevents accidental spoofing in unit-style tests while preserving explicit end-to-end coverage paths.
 
 ---
 
-## 44. Middleware Chain Arc Clones Per Request (Medium Concurrency Risk)
-- **Risk:** Each request creates `Next::new` ([`mod.rs:L89-L95`](crates/tork-core/src/middleware/mod.rs)) which clones `Arc<AppInner>` and `Arc<[Arc<dyn Middleware>]>`. Then each middleware in the chain clones both again when calling `Next` ([`mod.rs:L104-L108`](crates/tork-core/src/middleware/mod.rs)).
-- **Bug:** For a middleware stack of N layers, each request performs 2N+1 Arc atomic reference count increments. Under high concurrency (10k+ req/s), this creates significant atomic contention on the shared Arc counts. The `stack` is cloned per middleware invocation even though it never changes.
-- **Status:** Untested. No benchmark measuring Arc contention under load.
+## 44. [x] Middleware Chain Arc Clones Per Request (Medium Concurrency Risk)
+- **Risk:** `Next` now shares one `Arc<NextState>` across the whole middleware chain instead of cloning independent `Arc<AppInner>` and `Arc<[Arc<dyn Middleware>]>` handles at each layer.
+- **Status:** Resolved. This cuts the per-hop atomic refcount churn roughly in half for deep middleware stacks, and the benchmark suite now includes a 5-layer `middleware_stack_deep` scenario to keep this path covered.
 
-## 45. Logger `with_field` Clones Entire Field Vec (Medium Concurrency Risk)
-- **Risk:** `Logger::with_field` ([`logger.rs:L58-L67`](crates/tork-core/src/logging/logger.rs)) clones the entire `base` Vec (all previous fields) and wraps it in a new `Arc` on every call.
-- **Bug:** When a handler calls `.with_field()` multiple times (e.g., `logger.with_field("a", 1).with_field("b", 2).with_field("c", 3)`), each call clones the accumulated fields. Under high throughput, this creates repeated Vec allocations and Arc churn.
-- **Status:** Untested. No performance test measuring per-request logging allocation.
+## 45. [x] Logger `with_field` Clones Entire Field Vec (Medium Concurrency Risk)
+- **Risk:** `Logger::with_field` no longer clones an accumulated `Vec` of fields. Base fields are now stored as a persistent parent-linked field chain, and materialized only when emitting a record or building a span.
+- **Status:** Resolved. Repeated `.with_field()` calls now add one node instead of reallocating and copying all previous fields.
 
-## 46. Per-Request String Allocations in Dispatch Hot Path (Low-Medium Performance Risk)
-- **Risk:** The dispatch path ([`service.rs:L29-L58`](crates/tork-core/src/service.rs)) performs multiple `String::to_owned()` allocations per request: `head.uri.path().to_owned()`, `route.path().to_owned()`, `request_id.to_str().ok().map(str::to_owned)`, plus method logging strings.
-- **Optimization:** These are necessary for the current logging design but create allocation pressure. Path and route strings could be borrowed or interned for zero-copy logging.
-- **Status:** Not benchmarked. Under extreme load, this becomes a measurable overhead.
+## 46. [x] Per-Request String Allocations in Dispatch Hot Path (Low-Medium Performance Risk)
+- **Risk:** Request metadata is now built once into shared `RequestInfo` storage (`Arc<str>` for path/route/request_id) and reused by hooks, request logging, and tracing metadata instead of re-allocating the same strings independently.
+- **Status:** Resolved. The dispatch path still formats the final log message as text, but the duplicated request-path / route / request-id allocations identified here have been removed.
 
-## 47. Tracing Span Created Per Request (Low-Medium Performance Risk)
-- **Risk:** Every request creates a `tracing::info_span!` ([`service.rs:L62-L67`](crates/tork-core/src/service.rs)) with the method, route, and request ID as string fields. The span allocates and stores these values even when tracing is disabled or filtered out.
-- **Optimization:** Span creation cost is non-trivial under high concurrency. The span should be conditionally created only when tracing is enabled for the request level.
-- **Status:** Not benchmarked. The `tracing` framework may optimize this internally, but it's not verified.
+## 47. [x] Tracing Span Created Per Request (Low-Medium Performance Risk)
+- **Risk:** The request span is now created only when `tracing` has `INFO` enabled for that call site.
+- **Status:** Resolved. When request-level tracing is filtered out, dispatch skips span construction entirely instead of paying the allocation and field-capture cost on every request.
 
 ## 48. [x] SpooledTempFile Not Cleaned Up on Multipart Parse Error (Medium Resource Leak)
 - **Risk:** The multipart parser ([`multipart.rs:L475-L519`](crates/tork-core/src/multipart.rs)) creates `SpooledTempFile` instances for each file field as data arrives. If a later field fails to parse (e.g., the body is truncated or a field exceeds limits), the already-created temp files are dropped.
@@ -261,30 +252,27 @@ Status legend:
 - **Bug:** These allocations persist for the entire lifetime of the SSE connection (which can be hours). With 10,000 concurrent SSE connections, this is 10,000 pinned streams + 10,000 interval timers consuming memory and waking up periodically.
 - **Status:** RESOLVED. `App::max_sse_connections(n)` installs an `SseLimiter` (a semaphore) into app state. The `#[sse]`/`#[post_sse]` generated handlers acquire an owned permit through `__sse_into_response`; the permit is held by the `SseBody` for the stream's lifetime and released on drop, so a freed slot is reusable. When the cap is reached, further SSE requests are rejected with `503 Service Unavailable` instead of opening another unbounded stream. With no cap configured, streams remain unbounded (unchanged default). Covered by `sse_limiter_caps_concurrent_permits_and_frees_them_on_drop` and `sse_connection_limit_rejects_over_the_cap`.
 
-## 52. [~] Hook Event Cloning Per Request (Low Concurrency Overhead)
-- **Risk:** Every request that triggers hooks ([`app.rs:L682-L704`](crates/tork-core/src/app.rs)) clones `RequestInfo`, `ResponseEvent`, and `ErrorEvent` structs for each hook invocation. The `RequestInfo` clone is O(1) (Arc clones), but the `ResponseEvent` includes a `StatusCode` and `Duration`.
-- **Optimization:** Events could be shared via `Arc` instead of cloned per hook invocation, especially when multiple hooks observe the same request.
-- **Status:** Low practical impact; hooks are typically 1-3 per app.
+## 52. [x] Hook Event Cloning Per Request (Low Concurrency Overhead)
+- **Risk:** Hook request metadata now lives behind shared `Arc` storage, so per-hook clones only copy tiny value types (`StatusCode`, `Duration`) plus one pointer-sized request-info handle.
+- **Status:** Resolved. The hot-path cloning concern is reduced to O(1) shared metadata plus cheap scalar copies, which is appropriate for the small event objects involved.
 
 ## 53. [x] StateMap Entries Never Evicted (Low Memory Risk)
 - **Risk:** `StateMap` ([`state.rs:L29-L31`](crates/tork-core/src/state.rs)) holds `Arc<dyn Any + Send + Sync>` values keyed by `TypeId`. Once inserted, values are never removed or replaced unless the same type is re-inserted.
 - **Bug:** In applications that dynamically register state (e.g., per-tenant resources), the map grows monotonically. There is no TTL, no eviction, and no capacity limit.
 - **Status:** Resolved. `StateMap::remove::<S>()` allows explicit eviction of state entries when they are no longer needed.
 
-## 54. [~] WebSocket Connection Arc Clone Overhead (Low Concurrency Overhead)
-- **Risk:** Each WebSocket connection ([`ws.rs:L476-L478`](crates/tork-core/src/ws.rs)) clones `Arc<WsHooks>` and captures it in the connection struct. The `WsHooks` contains `Vec<WsConnectHook>` and `Vec<WsDisconnectHook>`.
-- **Optimization:** With many concurrent WebSocket connections and multiple hooks, each connection holds a strong reference to the same hooks vec. This is correct but creates Arc reference count contention.
-- **Status:** Low practical impact; hooks are typically 1-2 per app.
+## 54. [x] WebSocket Connection Arc Clone Overhead (Low Concurrency Overhead)
+- **Risk:** Live `WebSocketConn`s now keep a `Weak<WsHooks>` instead of a strong `Arc<WsHooks>`, upgrading it only when disconnect hooks need to fire.
+- **Status:** Resolved. This removes the long-lived strong-reference retention and lowers Arc refcount traffic for large numbers of concurrent WebSocket connections.
 
 ## 55. [x] Blocking IO in Multipart Spool Write (Medium Concurrency Risk)
 - **Risk:** The multipart parser ([`multipart.rs:L497-L499`](crates/tork-core/src/multipart.rs)) writes file chunks to `SpooledTempFile` synchronously inside an async context (within the `while let Some(chunk)` loop). The `write_all` call is blocking IO.
 - **Bug:** When the temp file spills to disk, `write_all` performs synchronous disk IO on the tokio runtime thread. Under high concurrency, this blocks the runtime thread and degrades throughput for all concurrent requests.
 - **Status:** RESOLVED. `MultipartForm::parse` now buffers chunks and flushes them to the spool via `spawn_blocking` (`spool_flush`), batching at a 256 KB threshold, so disk writes no longer block the async runtime. The final flush also rewinds off-runtime.
 
-## 56. [~] Settings Loader Allocates Multiple Figment Instances (Low Memory Risk)
-- **Risk:** The `SettingsLoader::load` method ([`settings.rs:L184-L229`](crates/tork-core/src/settings.rs)) creates multiple `Figment` instances, merges TOML files, env providers, and secrets, then deserializes into a `serde_json::Value` intermediary before extracting the final typed value.
-- **Optimization:** The layered merge allocates intermediate `Value` objects that are discarded after extraction. This is a one-time startup cost, not a runtime concern.
-- **Status:** Acceptable for startup. Not a runtime memory issue.
+## 56. [x] Settings Loader Allocates Multiple Figment Instances (Low Memory Risk)
+- **Risk:** `SettingsLoader::load` now builds one `Figment` pipeline and extracts directly into the target type instead of round-tripping through a `serde_json::Value` intermediary.
+- **Status:** Resolved. This keeps config loading to a single layered `Figment` graph plus the final typed extraction, which is appropriate for startup-only work.
 
 ---
 
@@ -336,10 +324,10 @@ The following verification steps and test suites are **mandatory** to complete b
 - **Requirement:** SSE streams must have configurable connection limits to prevent unbounded resource consumption.
 - **Status:** Resolved. `App::max_sse_connections(n)` caps concurrent SSE streams and rejects requests over the cap with `503` (see #51), verified by `sse_connection_limit_rejects_over_the_cap`.
 
-### L. Multipart Blocking IO
+### L. [x] Multipart Blocking IO
 - **Requirement:** File chunk writes during multipart parsing must use `spawn_blocking` to avoid blocking the async runtime.
-- **Missing Test:** A test verifying that multipart parsing does not block the tokio runtime thread under high concurrency.
+- **Status:** Resolved. `multipart_spool_flush_does_not_block_the_runtime` exercises the spill path on a current-thread runtime and verifies that unrelated work keeps making progress while multipart flushes.
 
-### M. Middleware Chain Performance
+### M. [x] Middleware Chain Performance
 - **Requirement:** The middleware chain must minimize per-request allocation (Arc clones, boxed futures).
-- **Missing Test:** A benchmark measuring request throughput with 5+ middleware layers vs. zero middleware to quantify overhead.
+- **Status:** Resolved. The `http-parity` benchmark suite now includes `middleware_stack_deep`, a 5-layer middleware scenario that tracks overhead against the shallow stack and zero-middleware paths.
