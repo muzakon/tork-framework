@@ -16,6 +16,10 @@ const OPENAPI_VERSION: &str = "3.1.0";
 /// Default path at which the specification document is served.
 const DEFAULT_JSON_PATH: &str = "/openapi.json";
 
+/// A predicate gating access to the documentation routes. Returning `false`
+/// hides the spec and docs UI behind a `404`.
+pub(crate) type DocGuard = Arc<dyn Fn(&RequestContext) -> bool + Send + Sync>;
+
 /// Configures OpenAPI document generation.
 ///
 /// The document describes paths, methods, summaries, descriptions, tags, path
@@ -27,6 +31,7 @@ pub struct OpenApi {
     description: Option<String>,
     json_path: String,
     docs_path: Option<String>,
+    guard: Option<DocGuard>,
 }
 
 impl Default for OpenApi {
@@ -44,6 +49,7 @@ impl OpenApi {
             description: None,
             json_path: DEFAULT_JSON_PATH.to_owned(),
             docs_path: None,
+            guard: None,
         }
     }
 
@@ -77,6 +83,31 @@ impl OpenApi {
         self
     }
 
+    /// Restricts access to the spec and docs routes to requests the predicate
+    /// accepts; rejected requests get a `404` (hiding that the routes exist).
+    ///
+    /// Use this to keep the API surface from being publicly discoverable — for
+    /// example, gate it on a bearer token, an internal network, or an environment
+    /// flag. The predicate runs on every request to the documentation routes.
+    ///
+    /// ```
+    /// # use tork_openapi::OpenApi;
+    /// let api = OpenApi::new().docs("/docs").protect(|ctx| {
+    ///     ctx.headers()
+    ///         .get("authorization")
+    ///         .and_then(|v| v.to_str().ok())
+    ///         == Some("Bearer secret-docs-token")
+    /// });
+    /// # let _ = api;
+    /// ```
+    pub fn protect<F>(mut self, predicate: F) -> Self
+    where
+        F: Fn(&RequestContext) -> bool + Send + Sync + 'static,
+    {
+        self.guard = Some(Arc::new(predicate));
+        self
+    }
+
     /// Builds the OpenAPI document for the given routes as a JSON value.
     pub fn build_document(&self, routes: &[Route]) -> Value {
         build_document(self, routes)
@@ -88,20 +119,42 @@ impl OpenApiProvider for OpenApi {
         let document = build_document(self, registered);
         let body = serde_json::to_vec(&document).unwrap_or_default();
 
-        let mut routes = vec![spec_route(&self.json_path, Bytes::from(body))];
+        let mut routes = vec![spec_route(
+            &self.json_path,
+            Bytes::from(body),
+            self.guard.clone(),
+        )];
         if let Some(docs_path) = &self.docs_path {
-            routes.push(crate::docs::docs_route(docs_path, &self.title, &self.json_path));
+            routes.push(crate::docs::docs_route(
+                docs_path,
+                &self.title,
+                &self.json_path,
+                self.guard.clone(),
+            ));
         }
         routes
     }
 }
 
+/// Rejects a request with `404` when a documentation guard denies it, hiding the
+/// route's existence; returns `Ok(())` when there is no guard or it allows access.
+pub(crate) fn check_guard(guard: &Option<DocGuard>, ctx: &RequestContext) -> Result<()> {
+    match guard {
+        Some(guard) if !guard(ctx) => Err(tork_core::Error::not_found("not found")),
+        _ => Ok(()),
+    }
+}
+
 /// Builds a route that serves a pre-serialized document at `path`.
-fn spec_route(path: &str, body: Bytes) -> Route {
+fn spec_route(path: &str, body: Bytes, guard: Option<DocGuard>) -> Route {
     let handler: HandlerFn =
-        Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+        Arc::new(move |ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             let body = body.clone();
-            Box::pin(async move { Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, body)) })
+            let guard = guard.clone();
+            Box::pin(async move {
+                check_guard(&guard, &ctx)?;
+                Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, body))
+            })
         });
 
     Route::new(Method::GET, path.to_owned(), handler).summary("OpenAPI specification")

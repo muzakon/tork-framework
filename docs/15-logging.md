@@ -46,11 +46,17 @@ Production output (`format = json`):
 ```
 
 Nothing is logged until `emit` is called. `error` attaches an error's type, message,
-and source chain:
+and source chain (the chain is capped at 16 entries so a deep error cannot produce
+an unbounded record):
 
 ```rust
 self.logger.error("Payment failed").error(&err).field("order_id", id).emit();
 ```
+
+Logged errors are not redacted the way `5xx` client responses are, and an error's
+`Display`/`source` text can carry sensitive data (a database driver may include a
+connection string in its message). Keep secrets out of error messages so they do
+not reach your logs.
 
 A `Logger` injected directly into a handler has the default context; call
 `for_context("...")` to set one, or `with_field(...)` to add a field to every line.

@@ -71,6 +71,29 @@ A request to `/openapi.json` returns a document like:
 
 `docs("/docs")` serves an HTML page that renders the document with the Scalar API
 reference. Open `http://127.0.0.1:8000/docs` in a browser to read and try the API.
+The Scalar bundle is loaded from a CDN pinned to an exact version and guarded with
+a Subresource Integrity hash, so the browser rejects the script if its bytes ever
+change — a compromised or bumped CDN cannot inject code into the page.
+
+## Protecting the spec and docs
+
+The spec (`/openapi.json`) and docs UI describe your whole API surface, which you
+may not want publicly discoverable. `protect` gates both routes behind a predicate;
+a request the predicate rejects gets a `404`, hiding that the routes exist:
+
+```rust
+OpenApi::new()
+    .json("/openapi.json")
+    .docs("/docs")
+    .protect(|ctx| {
+        ctx.headers().get("authorization").and_then(|v| v.to_str().ok())
+            == Some("Bearer secret-docs-token")
+    });
+```
+
+Gate it on a bearer token, an internal-only network, or an environment flag — or
+simply do not call `.openapi(...)` in production. (Global middleware such as
+`TrustedHost` also applies to these routes.)
 
 OpenAPI support is behind a default-on `openapi` feature. If you do not need it,
 disable default features to drop the dependency.

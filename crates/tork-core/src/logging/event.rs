@@ -6,6 +6,10 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use tracing::Level;
 
+/// Maximum number of `source()` entries recorded for a logged error, bounding the
+/// size of a single error record.
+const MAX_ERROR_CHAIN: usize = 16;
+
 /// A log record being built. Add fields and an error, then [`emit`](LogEvent::emit).
 ///
 /// Created by the level methods on [`Logger`](crate::Logger) (`info`, `warn`, ...).
@@ -29,6 +33,12 @@ impl LogEvent {
     }
 
     /// Attaches an error: its type name, message, and source chain.
+    ///
+    /// The source chain is bounded to [`MAX_ERROR_CHAIN`] entries so a pathological
+    /// or deeply nested error cannot produce an unbounded log record. Note that an
+    /// error's `Display`/`source` output can carry sensitive data (a database
+    /// driver may include a connection string); keep secrets out of error messages,
+    /// since logged errors are not redacted the way `5xx` client responses are.
     pub fn error<E: std::error::Error>(mut self, error: &E) -> Self {
         let mut object = Map::new();
         object.insert(
@@ -40,6 +50,10 @@ impl LogEvent {
         let mut chain = Vec::new();
         let mut source = error.source();
         while let Some(error) = source {
+            if chain.len() >= MAX_ERROR_CHAIN {
+                chain.push(Value::String("... (chain truncated)".to_owned()));
+                break;
+            }
             chain.push(Value::String(error.to_string()));
             source = error.source();
         }
@@ -161,5 +175,51 @@ mod tests {
         assert_eq!(records[0].context, "Orders");
         assert_eq!(records[0].message, "failed");
         assert_eq!(records[0].fields["ok"], Value::from(1));
+    }
+
+    /// An error whose source is another `Deep` of one less depth, forming a chain.
+    #[derive(Debug)]
+    struct Deep(usize, Option<Box<Deep>>);
+
+    impl std::fmt::Display for Deep {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "level {}", self.0)
+        }
+    }
+
+    impl std::error::Error for Deep {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    fn deep_chain(depth: usize) -> Deep {
+        let mut error = Deep(0, None);
+        for level in 1..depth {
+            error = Deep(level, Some(Box::new(error)));
+        }
+        error
+    }
+
+    #[test]
+    fn error_chain_is_truncated_at_the_cap() {
+        let event = LogEvent {
+            level: Level::ERROR,
+            context: Arc::<str>::from("X"),
+            message: "boom".to_owned(),
+            fields: Map::new(),
+            error: None,
+        }
+        .error(&deep_chain(100));
+
+        let chain = event.error.as_ref().unwrap()["chain"].as_array().unwrap();
+        // MAX_ERROR_CHAIN entries plus the truncation marker.
+        assert_eq!(chain.len(), MAX_ERROR_CHAIN + 1);
+        assert_eq!(
+            chain.last().unwrap(),
+            &Value::String("... (chain truncated)".to_owned())
+        );
     }
 }

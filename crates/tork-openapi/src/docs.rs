@@ -13,19 +13,39 @@ use tork_core::{
     bytes_response,
 };
 
+use crate::spec::{DocGuard, check_guard};
+
 /// CDN URL for the Scalar API reference standalone bundle.
-const SCALAR_CDN_URL: &str = "https://cdn.jsdelivr.net/npm/@scalar/api-reference";
+///
+/// Pinned to an exact version and file (not the floating `latest`) so the served
+/// bytes are immutable, and paired with [`SCALAR_SRI`] so the browser refuses the
+/// script if its bytes ever differ from the pinned hash. Together these close the
+/// supply-chain hole where a compromised or bumped CDN could inject JavaScript.
+const SCALAR_CDN_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.59.3/dist/browser/standalone.min.js";
+
+/// Subresource Integrity hash for [`SCALAR_CDN_URL`] (sha384 of the pinned file).
+const SCALAR_SRI: &str = "sha384-irPuG6Dqh5tfvLv4Yl+FeLzXKTA6CfA5aON/ACBCOuvhKXG8yK4umxZg8E7rBxQf";
 
 /// Builds a route serving the Scalar documentation UI at `path`.
 ///
 /// `spec_url` is the path at which the OpenAPI document is served.
-pub(crate) fn docs_route(path: &str, title: &str, spec_url: &str) -> Route {
+pub(crate) fn docs_route(
+    path: &str,
+    title: &str,
+    spec_url: &str,
+    guard: Option<DocGuard>,
+) -> Route {
     let body = Bytes::from(render_html(title, spec_url));
 
     let handler: HandlerFn =
-        Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+        Arc::new(move |ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             let body = body.clone();
-            Box::pin(async move { Ok(bytes_response(StatusCode::OK, TEXT_HTML_UTF8, body)) })
+            let guard = guard.clone();
+            Box::pin(async move {
+                check_guard(&guard, &ctx)?;
+                Ok(bytes_response(StatusCode::OK, TEXT_HTML_UTF8, body))
+            })
         });
 
     Route::new(Method::GET, path.to_owned(), handler).summary("API documentation")
@@ -45,7 +65,7 @@ fn render_html(title: &str, spec_url: &str) -> String {
          </head>\n\
          <body>\n  \
          <script id=\"api-reference\" data-url=\"{spec_url}\"></script>\n  \
-         <script src=\"{SCALAR_CDN_URL}\"></script>\n\
+         <script src=\"{SCALAR_CDN_URL}\" integrity=\"{SCALAR_SRI}\" crossorigin=\"anonymous\"></script>\n\
          </body>\n\
          </html>\n"
     )
@@ -82,8 +102,19 @@ mod tests {
     }
 
     #[test]
+    fn render_html_pins_the_cdn_and_adds_integrity() {
+        let html = render_html("API", "/openapi.json");
+        // Version-pinned, not the floating `latest`.
+        assert!(html.contains("@scalar/api-reference@1.59.3/"));
+        assert!(!html.contains("npm/@scalar/api-reference\""));
+        // Subresource Integrity and crossorigin are present.
+        assert!(html.contains(&format!("integrity=\"{SCALAR_SRI}\"")));
+        assert!(html.contains("crossorigin=\"anonymous\""));
+    }
+
+    #[test]
     fn docs_route_uses_requested_path() {
-        let route = docs_route("/docs", "API", "/openapi.json");
+        let route = docs_route("/docs", "API", "/openapi.json", None);
 
         assert_eq!(route.path(), "/docs");
         assert_eq!(route.method(), Method::GET);

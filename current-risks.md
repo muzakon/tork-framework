@@ -54,17 +54,17 @@ Status legend:
 ## 11. OpenAPI Documentation UI Unprotected (Medium Security Risk)
 - **Risk:** The OpenAPI spec (`/openapi.json`) and Scalar documentation UI (`/docs`) routes ([`docs.rs:L22-L31`](crates/tork-openapi/src/docs.rs), [`spec.rs:L86-L108`](crates/tork-openapi/src/spec.rs)) are registered as plain GET routes with no authentication or authorization checks.
 - **Vulnerability:** An attacker accesses `/openapi.json` to discover the full API surface including parameter names, types, error codes, and internal route structures. This information disclosure aids in crafting targeted attacks. The routes are added after the developer's router configuration, making them difficult to gate behind auth middleware.
-- **Status:** Untested. No built-in protection mechanism.
+- **Status:** RESOLVED. `OpenApi::protect(predicate)` gates the spec and docs routes; a rejected request gets a `404` (hiding the routes exist). Gate on a token, internal network, or env flag, or omit `.openapi(...)` in production. Global middleware also covers these routes. Covered by `protect_gates_the_docs_and_spec_routes`.
 
 ## 12. Scalar CDN Without Subresource Integrity (Medium Security Risk / Supply Chain)
 - **Risk:** The documentation UI loads the Scalar API reference library from `https://cdn.jsdelivr.net/npm/@scalar/api-reference` ([`docs.rs:L17`](crates/tork-openapi/src/docs.rs)) without an SRI hash.
 - **Vulnerability:** If the CDN is compromised or a supply-chain attack occurs on the `@scalar/api-reference` npm package, arbitrary JavaScript executes in every browser visiting the documentation page, potentially stealing API tokens or performing actions on behalf of the user.
-- **Status:** Untested. No SRI hash or fallback mechanism.
+- **Status:** RESOLVED. The Scalar bundle is now pinned to an exact version and file (`@scalar/api-reference@1.59.3/dist/browser/standalone.min.js`) and loaded with a Subresource Integrity hash (`sha384-...`) plus `crossorigin="anonymous"`, so the browser refuses the script if its bytes differ from the pinned hash. Covered by `render_html_pins_the_cdn_and_adds_integrity`.
 
 ## 13. Error Chain Leakage in Structured Logs (Medium Security Risk)
 - **Risk:** The `LogEvent::error` method ([`event.rs:L31-L52`](crates/tork-core/src/logging/event.rs)) serializes the full error chain (type name, message, and all `source()` messages) into log output.
 - **Vulnerability:** If an error's `Display` implementation includes sensitive data (database connection strings with passwords, API keys), this data appears in structured logs. Database drivers commonly include connection strings in error messages.
-- **Status:** Untested. No sensitive data filtering in error logging.
+- **Status:** PARTIALLY RESOLVED. The logged source chain is now capped at 16 entries (`MAX_ERROR_CHAIN`), bounding record size, and the API docs warn that error messages can carry sensitive data and should not contain secrets (logged errors are not redacted like `5xx` client responses). Generic automatic redaction of secrets in error text is not possible without knowing what is sensitive, so it stays the developer's responsibility. Covered by `error_chain_is_truncated_at_the_cap`.
 
 ## 14. [x] Request ID Logged Without Sanitization (Medium Security Risk)
 - **Risk:** Client-supplied request IDs are sanitized before they reach console logs.
