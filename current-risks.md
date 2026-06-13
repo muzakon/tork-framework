@@ -153,10 +153,10 @@ Status legend:
 - **Vulnerability:** While the panic message does not reach the client, it is available to all registered panic hooks. If any hook logs or transmits this message, internal details (e.g., `panic!("db_password is {secret}")`) are exposed in logs.
 - **Status:** Hooks should sanitize panic messages, but this is not enforced.
 
-## 32. Trace Middleware Logs Request Path Before Routing (Low-Medium Risk)
+## 32. [x] Trace Middleware Logs Request Path Before Routing (Low-Medium Risk)
 - **Risk:** The `Trace` middleware ([`trace.rs:L32-L52`](crates/tork-core/src/middleware/trace.rs)) logs the request path before routing occurs.
 - **Vulnerability:** Even requests that result in a `404` or `405` generate log entries with their full path. An attacker can use this to enumerate paths by observing which paths generate log entries, even if those paths are protected by middleware.
-- **Status:** Information disclosure through logs.
+- **Status:** Resolved. Pre-routing logs now use `debug` level instead of `info`, so they are hidden from production log aggregation at the default `info` threshold. The framework's built-in HTTP log still covers matched routes at `info`.
 
 ---
 
@@ -266,10 +266,10 @@ Status legend:
 - **Optimization:** Events could be shared via `Arc` instead of cloned per hook invocation, especially when multiple hooks observe the same request.
 - **Status:** Low practical impact; hooks are typically 1-3 per app.
 
-## 53. StateMap Entries Never Evicted (Low Memory Risk)
+## 53. [x] StateMap Entries Never Evicted (Low Memory Risk)
 - **Risk:** `StateMap` ([`state.rs:L29-L31`](crates/tork-core/src/state.rs)) holds `Arc<dyn Any + Send + Sync>` values keyed by `TypeId`. Once inserted, values are never removed or replaced unless the same type is re-inserted.
 - **Bug:** In applications that dynamically register state (e.g., per-tenant resources), the map grows monotonically. There is no TTL, no eviction, and no capacity limit.
-- **Status:** Typically state is registered once at startup, so practical impact is low unless dynamic registration is used.
+- **Status:** Resolved. `StateMap::remove::<S>()` allows explicit eviction of state entries when they are no longer needed.
 
 ## 54. WebSocket Connection Arc Clone Overhead (Low Concurrency Overhead)
 - **Risk:** Each WebSocket connection ([`ws.rs:L476-L478`](crates/tork-core/src/ws.rs)) clones `Arc<WsHooks>` and captures it in the connection struct. The `WsHooks` contains `Vec<WsConnectHook>` and `Vec<WsDisconnectHook>`.

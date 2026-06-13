@@ -50,6 +50,11 @@ impl StateMap {
     pub fn contains<S: Send + Sync + 'static>(&self) -> bool {
         self.entries.contains_key(&TypeId::of::<S>())
     }
+
+    /// Removes the stored value of type `S`, if present.
+    pub fn remove<S: Send + Sync + 'static>(&mut self) {
+        self.entries.remove(&TypeId::of::<S>());
+    }
 }
 
 /// A shared, reference-counted handle to the application state map.

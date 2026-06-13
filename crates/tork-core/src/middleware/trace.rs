@@ -42,7 +42,7 @@ impl Middleware for Trace {
                 Err(error) => error.kind().status(),
             };
             Logger::framework("HTTP")
-                .info(format!("{method} {path} {}", status.as_u16()))
+                .debug(format!("{method} {path} {}", status.as_u16()))
                 .field("method", method.as_str())
                 .field("path", &path)
                 .field("status", status.as_u16())
