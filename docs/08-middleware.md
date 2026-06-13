@@ -51,6 +51,25 @@ All of these live under `tork::middleware`:
   allow any origin.
 - `Compression::new().gzip().minimum_size(1000)`: gzip-compresses responses when
   the client accepts gzip and the body meets the minimum size.
+- `SecurityHeaders::new()`: adds a baseline of security headers to every response
+  that does not already set them — `Strict-Transport-Security`,
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and
+  `Referrer-Policy: no-referrer`. Builder: `hsts` / `hsts_max_age` / `without_hsts`,
+  `frame_options` / `without_frame_options`, `referrer_policy` /
+  `without_referrer_policy`, `without_content_type_options`, and
+  `content_security_policy` (a `Content-Security-Policy` is app-specific and off by
+  default). Because each header is only added when absent, a handler can override
+  any of them.
+
+```rust
+use tork::middleware::SecurityHeaders;
+
+App::new().middleware(
+    SecurityHeaders::new()
+        .frame_options("SAMEORIGIN")
+        .content_security_policy("default-src 'self'"),
+);
+```
 
 ## Custom middleware
 
@@ -111,5 +130,5 @@ Each middleware reports a duplicate policy. The policies are:
 - `Reject`: fail the build with the message above.
 - `Replace`: keep only the most recent registration.
 
-`RequestId`, `Trace`, `Cors`, `Compression`, `TrustedHost`, `HttpsRedirect`,
-`BodyLimit`, `ProxyHeaders`, and `Timeout` use `Reject`.
+`RequestId`, `Trace`, `Cors`, `Compression`, `SecurityHeaders`, `TrustedHost`,
+`HttpsRedirect`, `BodyLimit`, `ProxyHeaders`, and `Timeout` use `Reject`.

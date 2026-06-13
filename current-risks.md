@@ -92,7 +92,7 @@ Status legend:
 ## 19. Missing Security Headers Middleware (Medium Risk / Feature Deficit)
 - **Risk:** The framework provides no middleware for standard security headers (`Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Content-Security-Policy`, `Referrer-Policy`).
 - **Vulnerability:** Applications must implement these headers manually. Without them, applications are vulnerable to clickjacking, MIME-sniffing attacks, and will fail security audits.
-- **Status:** Unimplemented.
+- **Status:** RESOLVED. Added the `SecurityHeaders` middleware (`tork::middleware::SecurityHeaders`) with secure defaults — `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` — plus a builder for HSTS/frame-options/referrer-policy and an opt-in `Content-Security-Policy`. Each header is set only when absent so handlers can override. Single-registration (`Reject`). Covered by unit tests and `security_headers_*` integration tests; documented in docs/08-middleware.md.
 
 ## 20. WebSocket Upgrade No Handshake Timeout (Medium Risk)
 - **Risk:** The WebSocket upgrade process ([`ws.rs:L461-L488`](crates/tork-core/src/ws.rs)) awaits `on_upgrade.await` without a timeout.

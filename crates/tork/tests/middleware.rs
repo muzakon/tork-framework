@@ -721,3 +721,54 @@ async fn body_limit_allows_chunked_requests_under_limit() {
     let response = app.handle(req).await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn security_headers_set_baseline_on_responses() {
+    use tork::middleware::SecurityHeaders;
+
+    let response = app_with(SecurityHeaders::new()).handle(request()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+    assert_eq!(
+        headers.get("strict-transport-security").unwrap(),
+        "max-age=31536000; includeSubDomains"
+    );
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
+    assert_eq!(headers.get("referrer-policy").unwrap(), "no-referrer");
+    // CSP is off by default.
+    assert!(headers.get("content-security-policy").is_none());
+}
+
+#[tokio::test]
+async fn security_headers_respect_builder_and_handler_overrides() {
+    use tork::middleware::SecurityHeaders;
+
+    let mw = SecurityHeaders::new()
+        .frame_options("SAMEORIGIN")
+        .content_security_policy("default-src 'self'")
+        .without_hsts();
+    let response = app_with(mw).handle(request()).await;
+    let headers = response.headers();
+    assert_eq!(headers.get("x-frame-options").unwrap(), "SAMEORIGIN");
+    assert_eq!(
+        headers.get("content-security-policy").unwrap(),
+        "default-src 'self'"
+    );
+    // without_hsts() drops the HSTS header entirely.
+    assert!(headers.get("strict-transport-security").is_none());
+}
+
+#[tokio::test]
+async fn security_headers_rejects_duplicate_registration() {
+    use tork::middleware::SecurityHeaders;
+
+    let err = App::new()
+        .middleware(SecurityHeaders::new())
+        .middleware(SecurityHeaders::new())
+        .include_router(Router::new().route(Route::new(Method::GET, "/", ok_handler())))
+        .build()
+        .err()
+        .expect("duplicate SecurityHeaders should be rejected");
+    assert!(err.to_string().contains("SecurityHeaders"));
+}
