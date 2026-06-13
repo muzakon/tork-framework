@@ -185,10 +185,10 @@ Status legend:
 - **Vulnerability:** If a middleware, test override, or lifespan inserts a value of a type that is already registered, the previous value is silently dropped. This could lead to state pollution where a security-relevant value (like a database pool or auth configuration) is unintentionally replaced.
 - **Status:** Resolved. `StateMap::insert` now emits a `tracing::warn!` when overwriting an existing entry, so accidental state pollution is visible in logs.
 
-## 38. Validation Body Buffering Depth (Low Risk)
+## 38. [~] Validation Body Buffering Depth (Low Risk)
 - **Risk:** The `Valid<T>` extractor ([`valid.rs:L27-L43`](crates/tork-core/src/extract/valid.rs)) deserializes the body and then runs validation, meaning the full body is buffered in memory. There is no mechanism to short-circuit if deserialization consumes significant memory for deeply nested JSON.
 - **Vulnerability:** An attacker sends a deeply nested JSON payload that passes `MAX_BODY_BYTES` but causes stack overflow or excessive allocation during deserialization. Mitigated by `MAX_BODY_BYTES` and `serde_json`'s own limits.
-- **Status:** Low practical risk due to existing mitigations.
+- **Status:** Mitigated by `MAX_BODY_BYTES` (2 MiB) and `serde_json`'s default recursion limit (128 levels).
 
 ## 39. [x] No Null Byte Injection Protection in Router (Low Risk)
 - **Risk:** The `Matcher::find` method ([`matcher.rs:L73-L111`](crates/tork-core/src/router/matcher.rs)) receives the request path from `head.uri.path()` and passes it directly to `matchit::Router::at()` without checking for null bytes (`\0`).
@@ -204,17 +204,17 @@ Status legend:
 - **Vulnerability:** A known vulnerability in any dependency could be exploited directly.
 - **Status:** Resolved. `cargo audit` reports 0 known vulnerabilities across all 312 crate dependencies.
 
-## 41. Multipart Text Fields No Per-Field Size Limit (Low Risk)
+## 41. [x] Multipart Text Fields No Per-Field Size Limit (Low Risk)
 - **Risk:** The multipart parser ([`multipart.rs:L511-L518`](crates/tork-core/src/multipart.rs)) reads entire text field values into `String` via `field.text()` without a per-field size limit.
 - **Vulnerability:** A single text field could contain up to `max_body_size` (default 16 MiB) of data. While bounded by the total body limit, per-field limits would provide better defense-in-depth.
-- **Status:** Mitigated by `max_body_size` but no per-field enforcement.
+- **Status:** Resolved. Text fields now have a configurable per-field limit (`UploadConfig::max_text_field_size`, default 1 MiB), enforced before the field value is returned.
 
-## 42. Route Metadata Could Inject Into OpenAPI JSON (Low Risk)
+## 42. [~] Route Metadata Could Inject Into OpenAPI JSON (Low Risk)
 - **Risk:** Route summaries, descriptions, and tags ([`spec.rs:L117-L204`](crates/tork-openapi/src/spec.rs)) are serialized directly into the OpenAPI JSON document.
 - **Vulnerability:** If a developer dynamically generates route descriptions from user input (unusual but possible), and the Scalar UI renders these as HTML, XSS could result. Currently mitigated because values come from developer-authored code and `serde_json` escapes strings.
 - **Status:** Requires unusual dynamic route generation from user input.
 
-## 43. Test Client Bypasses Security Validation (Low Risk)
+## 43. [~] Test Client Bypasses Security Validation (Low Risk)
 - **Risk:** The test client ([`testing/client.rs:L56-L73`](crates/tork-core/src/testing/client.rs)) allows setting arbitrary security-sensitive headers (`Host`, `X-Forwarded-For`) without validation.
 - **Vulnerability:** Integration tests using the test client may pass even when security middleware is misconfigured, giving a false sense of security. Developers may not realize CORS or TrustedHost middleware is missing.
 - **Status:** Testing concern, not a direct production vulnerability.
@@ -261,7 +261,7 @@ Status legend:
 - **Bug:** These allocations persist for the entire lifetime of the SSE connection (which can be hours). With 10,000 concurrent SSE connections, this is 10,000 pinned streams + 10,000 interval timers consuming memory and waking up periodically.
 - **Status:** RESOLVED. `App::max_sse_connections(n)` installs an `SseLimiter` (a semaphore) into app state. The `#[sse]`/`#[post_sse]` generated handlers acquire an owned permit through `__sse_into_response`; the permit is held by the `SseBody` for the stream's lifetime and released on drop, so a freed slot is reusable. When the cap is reached, further SSE requests are rejected with `503 Service Unavailable` instead of opening another unbounded stream. With no cap configured, streams remain unbounded (unchanged default). Covered by `sse_limiter_caps_concurrent_permits_and_frees_them_on_drop` and `sse_connection_limit_rejects_over_the_cap`.
 
-## 52. Hook Event Cloning Per Request (Low Concurrency Overhead)
+## 52. [~] Hook Event Cloning Per Request (Low Concurrency Overhead)
 - **Risk:** Every request that triggers hooks ([`app.rs:L682-L704`](crates/tork-core/src/app.rs)) clones `RequestInfo`, `ResponseEvent`, and `ErrorEvent` structs for each hook invocation. The `RequestInfo` clone is O(1) (Arc clones), but the `ResponseEvent` includes a `StatusCode` and `Duration`.
 - **Optimization:** Events could be shared via `Arc` instead of cloned per hook invocation, especially when multiple hooks observe the same request.
 - **Status:** Low practical impact; hooks are typically 1-3 per app.
@@ -271,7 +271,7 @@ Status legend:
 - **Bug:** In applications that dynamically register state (e.g., per-tenant resources), the map grows monotonically. There is no TTL, no eviction, and no capacity limit.
 - **Status:** Resolved. `StateMap::remove::<S>()` allows explicit eviction of state entries when they are no longer needed.
 
-## 54. WebSocket Connection Arc Clone Overhead (Low Concurrency Overhead)
+## 54. [~] WebSocket Connection Arc Clone Overhead (Low Concurrency Overhead)
 - **Risk:** Each WebSocket connection ([`ws.rs:L476-L478`](crates/tork-core/src/ws.rs)) clones `Arc<WsHooks>` and captures it in the connection struct. The `WsHooks` contains `Vec<WsConnectHook>` and `Vec<WsDisconnectHook>`.
 - **Optimization:** With many concurrent WebSocket connections and multiple hooks, each connection holds a strong reference to the same hooks vec. This is correct but creates Arc reference count contention.
 - **Status:** Low practical impact; hooks are typically 1-2 per app.
@@ -281,7 +281,7 @@ Status legend:
 - **Bug:** When the temp file spills to disk, `write_all` performs synchronous disk IO on the tokio runtime thread. Under high concurrency, this blocks the runtime thread and degrades throughput for all concurrent requests.
 - **Status:** RESOLVED. `MultipartForm::parse` now buffers chunks and flushes them to the spool via `spawn_blocking` (`spool_flush`), batching at a 256 KB threshold, so disk writes no longer block the async runtime. The final flush also rewinds off-runtime.
 
-## 56. Settings Loader Allocates Multiple Figment Instances (Low Memory Risk)
+## 56. [~] Settings Loader Allocates Multiple Figment Instances (Low Memory Risk)
 - **Risk:** The `SettingsLoader::load` method ([`settings.rs:L184-L229`](crates/tork-core/src/settings.rs)) creates multiple `Figment` instances, merges TOML files, env providers, and secrets, then deserializes into a `serde_json::Value` intermediary before extracting the final typed value.
 - **Optimization:** The layered merge allocates intermediate `Value` objects that are discarded after extraction. This is a one-time startup cost, not a runtime concern.
 - **Status:** Acceptable for startup. Not a runtime memory issue.

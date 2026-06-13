@@ -26,6 +26,8 @@ use crate::extract::{FromRequest, RequestContext};
 const DEFAULT_MAX_BODY_SIZE: usize = 16 * 1024 * 1024;
 /// Default cap on a single uploaded file.
 const DEFAULT_MAX_FILE_SIZE: usize = 8 * 1024 * 1024;
+/// Default cap on a single text field.
+const DEFAULT_MAX_TEXT_FIELD_SIZE: usize = 1024 * 1024;
 /// Default size a file may reach in memory before spilling to disk.
 const DEFAULT_MEMORY_THRESHOLD: usize = 1024 * 1024;
 /// Default cap on the number of file parts in one request.
@@ -43,6 +45,7 @@ const SPOOL_FLUSH_THRESHOLD: usize = 256 * 1024;
 pub struct UploadConfig {
     max_body_size: Option<usize>,
     max_file_size: Option<usize>,
+    max_text_field_size: Option<usize>,
     memory_threshold: Option<usize>,
     max_files: Option<usize>,
     temp_dir: Option<PathBuf>,
@@ -76,6 +79,17 @@ impl UploadConfig {
         self.max_file_size(mb * 1024 * 1024)
     }
 
+    /// Sets the maximum size of a single text field, in bytes.
+    pub fn max_text_field_size(mut self, bytes: usize) -> Self {
+        self.max_text_field_size = Some(bytes);
+        self
+    }
+
+    /// Sets the maximum size of a single text field, in kibibytes.
+    pub fn max_text_field_size_kb(self, kb: usize) -> Self {
+        self.max_text_field_size(kb * 1024)
+    }
+
     /// Sets the in-memory threshold before a file spills to disk, in bytes.
     pub fn memory_threshold(mut self, bytes: usize) -> Self {
         self.memory_threshold = Some(bytes);
@@ -99,6 +113,7 @@ impl UploadConfig {
         Self {
             max_body_size: self.max_body_size.or(base.max_body_size),
             max_file_size: self.max_file_size.or(base.max_file_size),
+            max_text_field_size: self.max_text_field_size.or(base.max_text_field_size),
             memory_threshold: self.memory_threshold.or(base.memory_threshold),
             max_files: self.max_files.or(base.max_files),
             temp_dir: self.temp_dir.or_else(|| base.temp_dir.clone()),
@@ -110,6 +125,7 @@ impl UploadConfig {
         ResolvedConfig {
             max_body_size: self.max_body_size.unwrap_or(DEFAULT_MAX_BODY_SIZE),
             max_file_size: self.max_file_size.unwrap_or(DEFAULT_MAX_FILE_SIZE),
+            max_text_field_size: self.max_text_field_size.unwrap_or(DEFAULT_MAX_TEXT_FIELD_SIZE),
             memory_threshold: self.memory_threshold.unwrap_or(DEFAULT_MEMORY_THRESHOLD),
             max_files: self.max_files.unwrap_or(DEFAULT_MAX_FILES),
             temp_dir: self.temp_dir.clone(),
@@ -121,6 +137,7 @@ impl UploadConfig {
 struct ResolvedConfig {
     max_body_size: usize,
     max_file_size: usize,
+    max_text_field_size: usize,
     memory_threshold: usize,
     max_files: usize,
     temp_dir: Option<PathBuf>,
@@ -602,6 +619,10 @@ impl MultipartForm {
                 total += text.len();
                 if total > resolved.max_body_size {
                     return Err(Error::payload_too_large("request body is too large"));
+                }
+                if text.len() > resolved.max_text_field_size {
+                    return Err(Error::payload_too_large("form field is too large")
+                        .with_code("FIELD_TOO_LARGE"));
                 }
                 texts.push((name, text));
             }
