@@ -180,20 +180,20 @@ Status legend:
 - **Vulnerability:** Path traversal attempts using `//` or `..` may bypass route matching or reach unintended handlers depending on upstream proxy behavior.
 - **Status:** Untested for path traversal vectors.
 
-## 37. StateMap Silent Value Replacement (Low Risk)
+## 37. [x] StateMap Silent Value Replacement (Low Risk)
 - **Risk:** The `StateMap` ([`state.rs:L29-L38`](crates/tork-core/src/state.rs)) uses `TypeId` for keying and silently replaces any existing value of the same type on `insert`.
 - **Vulnerability:** If a middleware, test override, or lifespan inserts a value of a type that is already registered, the previous value is silently dropped. This could lead to state pollution where a security-relevant value (like a database pool or auth configuration) is unintentionally replaced.
-- **Status:** Primarily a testing/debugging concern, not a direct production attack vector.
+- **Status:** Resolved. `StateMap::insert` now emits a `tracing::warn!` when overwriting an existing entry, so accidental state pollution is visible in logs.
 
 ## 38. Validation Body Buffering Depth (Low Risk)
 - **Risk:** The `Valid<T>` extractor ([`valid.rs:L27-L43`](crates/tork-core/src/extract/valid.rs)) deserializes the body and then runs validation, meaning the full body is buffered in memory. There is no mechanism to short-circuit if deserialization consumes significant memory for deeply nested JSON.
 - **Vulnerability:** An attacker sends a deeply nested JSON payload that passes `MAX_BODY_BYTES` but causes stack overflow or excessive allocation during deserialization. Mitigated by `MAX_BODY_BYTES` and `serde_json`'s own limits.
 - **Status:** Low practical risk due to existing mitigations.
 
-## 39. No Null Byte Injection Protection in Router (Low Risk)
+## 39. [x] No Null Byte Injection Protection in Router (Low Risk)
 - **Risk:** The `Matcher::find` method ([`matcher.rs:L73-L111`](crates/tork-core/src/router/matcher.rs)) receives the request path from `head.uri.path()` and passes it directly to `matchit::Router::at()` without checking for null bytes (`\0`).
 - **Vulnerability:** If a reverse proxy forwards a request with a null byte in the path, the router might match it differently than expected. Mitigated by HTTP parsers typically rejecting null bytes in URIs.
-- **Status:** Defense-in-depth gap. Mitigated at the HTTP layer.
+- **Status:** Resolved. `Matcher::find` rejects paths containing `\0` with `Match::NotFound`, closing the defense-in-depth gap.
 
 ## 40. Dependency Version Audit Required (Informational)
 - **Risk:** Several dependencies should be checked against the RustSec advisory database:
@@ -246,10 +246,10 @@ Status legend:
 - **Bug:** `SpooledTempFile::drop` closes the file handle, but if the file was spilled to disk, the OS may not immediately reclaim the disk space. Under sustained error conditions (e.g., an attacker sending malformed multipart bodies), temp files accumulate faster than the OS reclaims them.
 - **Status:** RESOLVED (by design + test). The spill path uses `tempfile`'s anonymous temp file (`spooled_tempfile`/`spooled_tempfile_in`), which is unlinked from the filesystem the moment it is created. There is no named path to leak: once the `SpooledTempFile` is dropped, its last file descriptor closes and the OS reclaims the inode and disk space immediately, even on an early-return error path. Cleanup on a truncated/failed parse is exercised end-to-end by the upload tests (see requirement I).
 
-## 49. LogRecorder Accumulates Records Indefinitely (Low Resource Leak)
+## 49. [x] LogRecorder Accumulates Records Indefinitely (Low Resource Leak)
 - **Risk:** `LogRecorder` ([`recorder.rs:L55-L68`](crates/tork-core/src/testing/recorder.rs)) pushes every `LogRecord` into a `Vec` behind a `Mutex`. There is no eviction, no max capacity, and no `clear()` method.
 - **Bug:** In long-running tests or integration tests that generate many log lines, the `Vec` grows unboundedly. This is a test-only concern but can cause test OOM failures.
-- **Status:** Untested. No max capacity or auto-cleanup.
+- **Status:** Resolved. `LogRecorder::clear()` allows tests to discard accumulated records between test phases.
 
 ## 50. Compression Buffers Entire Response Before Compressing (Medium Memory Risk)
 - **Risk:** The `Compression` middleware ([`compression.rs:L85-L88`](crates/tork-core/src/middleware/compression.rs)) calls `into_body_bytes(response)` which collects the entire response body into a single `Bytes` buffer before checking size and compressing.

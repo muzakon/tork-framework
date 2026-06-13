@@ -41,6 +41,11 @@ impl LogRecorder {
         self.records.lock().expect("recorder mutex poisoned").clone()
     }
 
+    /// Removes all captured records.
+    pub fn clear(&self) {
+        self.records.lock().expect("recorder mutex poisoned").clear();
+    }
+
     /// Returns `true` if any record has the given context.
     pub fn contains_context(&self, context: &str) -> bool {
         self.records().iter().any(|record| record.context == context)

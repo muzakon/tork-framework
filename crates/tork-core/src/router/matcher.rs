@@ -71,6 +71,12 @@ impl Matcher {
 
     /// Matches `method` and `path` against the route table.
     pub fn find(&self, method: &Method, path: &str) -> Match<'_> {
+        // Reject null bytes in the path — a reverse proxy should never forward
+        // them, but if one does, the router must not interpret the path beyond
+        // the null (which could bypass route guards).
+        if path.contains('\0') {
+            return Match::NotFound;
+        }
         if let Some(method_router) = self.by_method.get(method) {
             if let Ok(matched) = method_router.at(path) {
                 let mut params = PathParams::new();

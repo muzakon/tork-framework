@@ -4,6 +4,8 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tracing::warn;
+
 use crate::error::{Error, Result};
 use crate::extract::{FromRequest, RequestContext};
 
@@ -27,6 +29,13 @@ impl StateMap {
 
     /// Inserts a state value, replacing any existing value of the same type.
     pub fn insert<S: Send + Sync + 'static>(&mut self, value: S) {
+        if self.entries.contains_key(&TypeId::of::<S>()) {
+            warn!(
+                target: "tork",
+                "state value of type `{}` is being silently replaced",
+                std::any::type_name::<S>(),
+            );
+        }
         self.entries.insert(TypeId::of::<S>(), Arc::new(value));
     }
 
