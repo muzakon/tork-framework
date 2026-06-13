@@ -7,13 +7,15 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use tork_core::constants::APPLICATION_JSON;
 use tork_core::{
-    AsyncApiProvider, BoxFuture, HandlerFn, Method, RequestContext, Response, Result, Route,
-    StatusCode, bytes_response,
+    bytes_response, AsyncApiProvider, BoxFuture, HandlerFn, Method, RequestContext, Response,
+    Result, Route, StatusCode,
 };
+
+use crate::spec::sanitize_doc_text;
 
 /// AsyncAPI specification version emitted by the document.
 const ASYNCAPI_VERSION: &str = "3.0.0";
@@ -88,11 +90,12 @@ impl AsyncApiProvider for AsyncApi {
 
 /// Builds a route that serves a pre-serialized document at `path`.
 fn spec_route(path: &str, body: Bytes) -> Route {
-    let handler: HandlerFn =
-        Arc::new(move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+    let handler: HandlerFn = Arc::new(
+        move |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             let body = body.clone();
             Box::pin(async move { Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, body)) })
-        });
+        },
+    );
 
     Route::new(Method::GET, path.to_owned(), handler).summary("AsyncAPI specification")
 }
@@ -160,10 +163,13 @@ fn build_document(api: &AsyncApi, routes: &[Route]) -> Value {
     }
 
     let mut info = Map::new();
-    info.insert("title".to_owned(), json!(api.title));
+    info.insert("title".to_owned(), json!(sanitize_doc_text(&api.title)));
     info.insert("version".to_owned(), json!(api.version));
     if let Some(description) = &api.description {
-        info.insert("description".to_owned(), json!(description));
+        info.insert(
+            "description".to_owned(),
+            json!(sanitize_doc_text(description)),
+        );
     }
 
     let mut document = json!({
@@ -229,9 +235,17 @@ mod tests {
     }
 
     fn dummy_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-            Box::pin(async { Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, Bytes::new())) })
-        })
+        Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async {
+                    Ok(bytes_response(
+                        StatusCode::OK,
+                        APPLICATION_JSON,
+                        Bytes::new(),
+                    ))
+                })
+            },
+        )
     }
 
     #[test]
@@ -257,7 +271,10 @@ mod tests {
         assert!(document["channels"]["chat_room"]["messages"]["incoming"].is_object());
         assert!(document["channels"]["chat_room"]["messages"]["outgoing"].is_object());
         // Operations describe the direction of each channel.
-        assert_eq!(document["operations"]["chat_room_receive"]["action"], "receive");
+        assert_eq!(
+            document["operations"]["chat_room_receive"]["action"],
+            "receive"
+        );
         assert_eq!(document["operations"]["chat_room_send"]["action"], "send");
         // Message payloads are registered as component schemas.
         assert!(document["components"]["schemas"]["ChatIn"].is_object());
@@ -293,10 +310,17 @@ mod tests {
         assert_eq!(document["channels"]["ticks"]["address"], "/ticks");
         assert!(document["channels"]["ticks"]["messages"]["data"].is_null());
         assert!(document["channels"]["in_room"]["messages"]["incoming"].is_object());
-        assert!(document["channels"]["in_room"]["messages"].get("outgoing").is_none());
+        assert!(document["channels"]["in_room"]["messages"]
+            .get("outgoing")
+            .is_none());
         assert!(document["channels"]["out_room"]["messages"]["outgoing"].is_object());
-        assert!(document["channels"]["out_room"]["messages"].get("incoming").is_none());
-        assert_eq!(document["operations"]["in_room_receive"]["action"], "receive");
+        assert!(document["channels"]["out_room"]["messages"]
+            .get("incoming")
+            .is_none());
+        assert_eq!(
+            document["operations"]["in_room_receive"]["action"],
+            "receive"
+        );
         assert_eq!(document["operations"]["out_room_send"]["action"], "send");
     }
 
@@ -333,5 +357,17 @@ mod tests {
     fn channel_name_covers_root_and_placeholders() {
         assert_eq!(channel_name("/"), "root");
         assert_eq!(channel_name("/chat/{room}/members"), "chat_room_members");
+    }
+
+    #[test]
+    fn build_document_sanitizes_info_text_fields() {
+        let routes = vec![Route::new(Method::GET, "/events", dummy_handler()).streaming()];
+        let document = AsyncApi::new()
+            .title("Realtime <unsafe>")
+            .description("Event\u{0001}`docs`")
+            .build_document(&routes);
+
+        assert_eq!(document["info"]["title"], "Realtime &lt;unsafe&gt;");
+        assert_eq!(document["info"]["description"], "Event &#x60;docs&#x60;");
     }
 }

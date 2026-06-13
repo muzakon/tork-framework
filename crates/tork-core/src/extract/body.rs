@@ -10,6 +10,9 @@ use crate::error::{Error, Result};
 use crate::extract::{FromRequest, RequestContext};
 use crate::response::Json;
 
+/// Maximum nesting depth accepted for a buffered JSON payload.
+pub(crate) const MAX_JSON_NESTING: usize = 128;
+
 /// Deserializes the request body as JSON.
 ///
 /// The body is buffered with a size cap of [`MAX_BODY_BYTES`] to guard against
@@ -31,11 +34,48 @@ where
         async move {
             let body = taken?;
             let bytes = read_body_capped(body).await?;
+            ensure_json_depth_within_limit(&bytes)?;
             let value = serde_json::from_slice::<T>(&bytes)
                 .map_err(|_| Error::unprocessable("request body is not valid JSON"))?;
             Ok(Json(value))
         }
     }
+}
+
+/// Rejects deeply nested JSON before deserialization.
+pub(crate) fn ensure_json_depth_within_limit(bytes: &[u8]) -> Result<()> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for byte in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_JSON_NESTING {
+                    return Err(Error::bad_request("request body is too deeply nested"));
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 
 /// Buffers a request body, rejecting payloads larger than [`MAX_BODY_BYTES`].
@@ -111,10 +151,16 @@ mod tests {
 
     #[tokio::test]
     async fn preserves_payload_too_large_errors_from_the_body() {
-        let body = crate::body::box_body(http_body_util::StreamBody::new(futures_util::stream::iter(vec![
-            Ok::<_, crate::body::BoxError>(http_body::Frame::data(Bytes::from_static(b"hello"))),
-            Err::<http_body::Frame<Bytes>, _>(Box::new(Error::payload_too_large("request body too large")) as crate::body::BoxError),
-        ])));
+        let body = crate::body::box_body(http_body_util::StreamBody::new(
+            futures_util::stream::iter(vec![
+                Ok::<_, crate::body::BoxError>(http_body::Frame::data(Bytes::from_static(
+                    b"hello",
+                ))),
+                Err::<http_body::Frame<Bytes>, _>(Box::new(Error::payload_too_large(
+                    "request body too large",
+                )) as crate::body::BoxError),
+            ]),
+        ));
 
         let error = read_body_capped(body).await.unwrap_err();
         assert_eq!(error.kind(), crate::error::ErrorKind::PayloadTooLarge);
@@ -159,5 +205,23 @@ mod tests {
         };
         assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
         assert_eq!(error.message(), "request body has already been consumed");
+    }
+
+    #[test]
+    fn json_depth_guard_rejects_payloads_beyond_the_cap() {
+        let too_deep = format!(
+            "{}0{}",
+            "[".repeat(MAX_JSON_NESTING + 1),
+            "]".repeat(MAX_JSON_NESTING + 1)
+        );
+        let error = ensure_json_depth_within_limit(too_deep.as_bytes()).unwrap_err();
+        assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
+        assert_eq!(error.message(), "request body is too deeply nested");
+    }
+
+    #[test]
+    fn json_depth_guard_ignores_brackets_inside_strings() {
+        let payload = br#"{"name":"[[[[not nesting]]]]","values":[1,2,3]}"#;
+        ensure_json_depth_within_limit(payload).unwrap();
     }
 }

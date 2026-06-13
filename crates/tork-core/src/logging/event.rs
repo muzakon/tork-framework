@@ -1,14 +1,22 @@
 //! The fluent log-event builder.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tracing::Level;
 
+use super::config::ErrorLogDetail;
+
 /// Maximum number of `source()` entries recorded for a logged error, bounding the
 /// size of a single error record.
 const MAX_ERROR_CHAIN: usize = 16;
+const ERROR_DETAIL_TYPE_ONLY: u8 = 0;
+const ERROR_DETAIL_MESSAGE_ONLY: u8 = 1;
+const ERROR_DETAIL_FULL_CHAIN: u8 = 2;
+
+static ERROR_LOG_DETAIL: AtomicU8 = AtomicU8::new(ERROR_DETAIL_TYPE_ONLY);
 
 /// A log record being built. Add fields and an error, then [`emit`](LogEvent::emit).
 ///
@@ -45,20 +53,28 @@ impl LogEvent {
             "type".to_owned(),
             Value::String(std::any::type_name::<E>().to_owned()),
         );
-        object.insert("message".to_owned(), Value::String(error.to_string()));
-
-        let mut chain = Vec::new();
-        let mut source = error.source();
-        while let Some(error) = source {
-            if chain.len() >= MAX_ERROR_CHAIN {
-                chain.push(Value::String("... (chain truncated)".to_owned()));
-                break;
+        match error_log_detail() {
+            ErrorLogDetail::TypeOnly => {}
+            ErrorLogDetail::MessageOnly => {
+                object.insert("message".to_owned(), Value::String(error.to_string()));
             }
-            chain.push(Value::String(error.to_string()));
-            source = error.source();
-        }
-        if !chain.is_empty() {
-            object.insert("chain".to_owned(), Value::Array(chain));
+            ErrorLogDetail::FullChain => {
+                object.insert("message".to_owned(), Value::String(error.to_string()));
+
+                let mut chain = Vec::new();
+                let mut source = error.source();
+                while let Some(error) = source {
+                    if chain.len() >= MAX_ERROR_CHAIN {
+                        chain.push(Value::String("... (chain truncated)".to_owned()));
+                        break;
+                    }
+                    chain.push(Value::String(error.to_string()));
+                    source = error.source();
+                }
+                if !chain.is_empty() {
+                    object.insert("chain".to_owned(), Value::Array(chain));
+                }
+            }
         }
 
         self.error = Some(Value::Object(object));
@@ -110,11 +126,31 @@ impl LogEvent {
     }
 }
 
+pub(crate) fn set_error_log_detail(detail: ErrorLogDetail) {
+    let raw = match detail {
+        ErrorLogDetail::TypeOnly => ERROR_DETAIL_TYPE_ONLY,
+        ErrorLogDetail::MessageOnly => ERROR_DETAIL_MESSAGE_ONLY,
+        ErrorLogDetail::FullChain => ERROR_DETAIL_FULL_CHAIN,
+    };
+    ERROR_LOG_DETAIL.store(raw, Ordering::Relaxed);
+}
+
+fn error_log_detail() -> ErrorLogDetail {
+    match ERROR_LOG_DETAIL.load(Ordering::Relaxed) {
+        ERROR_DETAIL_MESSAGE_ONLY => ErrorLogDetail::MessageOnly,
+        ERROR_DETAIL_FULL_CHAIN => ErrorLogDetail::FullChain,
+        _ => ErrorLogDetail::TypeOnly,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::LogRecorder;
+    use std::sync::Mutex;
     use tracing_subscriber::layer::SubscriberExt;
+
+    static ERROR_DETAIL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[derive(Debug)]
     struct InnerError;
@@ -155,6 +191,8 @@ mod tests {
 
     #[test]
     fn field_skips_unserializable_values_and_emit_records_error_chain() {
+        let _guard = ERROR_DETAIL_TEST_LOCK.lock().unwrap();
+        set_error_log_detail(ErrorLogDetail::FullChain);
         let recorder = LogRecorder::new();
         let subscriber = tracing_subscriber::registry().with(recorder.clone());
         let event = LogEvent {
@@ -175,6 +213,7 @@ mod tests {
         assert_eq!(records[0].context, "Orders");
         assert_eq!(records[0].message, "failed");
         assert_eq!(records[0].fields["ok"], Value::from(1));
+        set_error_log_detail(ErrorLogDetail::TypeOnly);
     }
 
     /// An error whose source is another `Deep` of one less depth, forming a chain.
@@ -205,6 +244,8 @@ mod tests {
 
     #[test]
     fn error_chain_is_truncated_at_the_cap() {
+        let _guard = ERROR_DETAIL_TEST_LOCK.lock().unwrap();
+        set_error_log_detail(ErrorLogDetail::FullChain);
         let event = LogEvent {
             level: Level::ERROR,
             context: Arc::<str>::from("X"),
@@ -221,5 +262,45 @@ mod tests {
             chain.last().unwrap(),
             &Value::String("... (chain truncated)".to_owned())
         );
+        set_error_log_detail(ErrorLogDetail::TypeOnly);
+    }
+
+    #[test]
+    fn default_error_detail_is_type_only() {
+        let _guard = ERROR_DETAIL_TEST_LOCK.lock().unwrap();
+        set_error_log_detail(ErrorLogDetail::TypeOnly);
+        let event = LogEvent {
+            level: Level::ERROR,
+            context: Arc::<str>::from("X"),
+            message: "boom".to_owned(),
+            fields: Map::new(),
+            error: None,
+        }
+        .error(&OuterError);
+        let object = event.error.as_ref().unwrap().as_object().unwrap();
+        let ty = object.get("type").unwrap().as_str().unwrap();
+        assert!(ty.ends_with("OuterError"), "{ty}");
+        assert!(object.get("message").is_none());
+        assert!(object.get("chain").is_none());
+    }
+
+    #[test]
+    fn message_only_includes_the_top_level_message_without_the_chain() {
+        let _guard = ERROR_DETAIL_TEST_LOCK.lock().unwrap();
+        set_error_log_detail(ErrorLogDetail::MessageOnly);
+        let event = LogEvent {
+            level: Level::ERROR,
+            context: Arc::<str>::from("X"),
+            message: "boom".to_owned(),
+            fields: Map::new(),
+            error: None,
+        }
+        .error(&OuterError);
+        let object = event.error.as_ref().unwrap().as_object().unwrap();
+        let ty = object.get("type").unwrap().as_str().unwrap();
+        assert!(ty.ends_with("OuterError"), "{ty}");
+        assert_eq!(object.get("message").unwrap(), "outer");
+        assert!(object.get("chain").is_none());
+        set_error_log_detail(ErrorLogDetail::TypeOnly);
     }
 }

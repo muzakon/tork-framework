@@ -10,6 +10,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use super::config::{FileLogConfig, LogFormat, LoggerConfig, Rotation};
+use super::event::set_error_log_detail;
 use super::format::{ConsoleFormat, JsonFormat, TorkFormat};
 
 /// A boxed layer over the registry.
@@ -40,6 +41,7 @@ impl Drop for LoggerHandle {
 /// Installation is best-effort: if a global subscriber is already set (for example
 /// in tests, or when the host application configured its own), this is a no-op.
 pub(crate) fn install(config: &LoggerConfig) -> LoggerHandle {
+    set_error_log_detail(config.error_detail);
     let mut guards = Vec::new();
     let mut layers: Vec<BoxLayer> = Vec::new();
     layers.push(stdout_layer(config, &mut guards));
@@ -126,7 +128,11 @@ fn stdout_layer(config: &LoggerConfig, guards: &mut Vec<WorkerGuard>) -> BoxLaye
 }
 
 /// Builds the rolling JSON file layer.
-fn file_layer(config: &LoggerConfig, file: &FileLogConfig, guards: &mut Vec<WorkerGuard>) -> BoxLayer {
+fn file_layer(
+    config: &LoggerConfig,
+    file: &FileLogConfig,
+    guards: &mut Vec<WorkerGuard>,
+) -> BoxLayer {
     // Ensure the directory exists; ignore the error and let writing surface it.
     let _ = std::fs::create_dir_all(&file.directory);
     let appender = match file.rotation {
@@ -178,14 +184,15 @@ fn build_format(config: &LoggerConfig) -> TorkFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
+    use crate::env::env_guard;
     use tracing_subscriber::layer::SubscriberExt;
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn env_filter_uses_explicit_level_and_fallback() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        // The shared, crate-wide environment lock: this test mutates `RUST_LOG`,
+        // and must not run concurrently with any other test that touches `std::env`
+        // (e.g. the settings loader tests), since concurrent env writes are UB.
+        let _guard = env_guard();
         std::env::remove_var("RUST_LOG");
         let debug = env_filter("debug");
         assert_eq!(debug.to_string(), "debug");
@@ -203,7 +210,11 @@ mod tests {
 
     #[test]
     fn build_format_honors_explicit_json_and_console_preferences() {
-        let json = build_format(&LoggerConfig::new().format(LogFormat::Json).service_name("svc"));
+        let json = build_format(
+            &LoggerConfig::new()
+                .format(LogFormat::Json)
+                .service_name("svc"),
+        );
         match json {
             TorkFormat::Json(format) => assert_eq!(format.service_name, "svc"),
             _ => panic!("expected json formatter"),
@@ -222,12 +233,17 @@ mod tests {
     #[test]
     fn stdout_and_file_layers_cover_blocking_and_non_blocking_paths() {
         let mut guards = Vec::new();
-        let config = LoggerConfig::new().format(LogFormat::Json).non_blocking(true);
+        let config = LoggerConfig::new()
+            .format(LogFormat::Json)
+            .non_blocking(true);
         let _ = stdout_layer(&config, &mut guards);
         assert_eq!(guards.len(), 1);
 
         let mut no_guards = Vec::new();
-        let _ = stdout_layer(&LoggerConfig::new().format(LogFormat::Pretty), &mut no_guards);
+        let _ = stdout_layer(
+            &LoggerConfig::new().format(LogFormat::Pretty),
+            &mut no_guards,
+        );
         assert!(no_guards.is_empty());
 
         let dir = tempfile::tempdir().unwrap();

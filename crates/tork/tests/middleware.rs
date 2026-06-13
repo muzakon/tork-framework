@@ -5,14 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use futures_util::stream;
 use http::HeaderValue;
 use http_body_util::{BodyExt, Full, StreamBody};
-use futures_util::stream;
 use tork::testing::{LogRecorder, TestClient};
 use tork::{
-    App, BoxFuture, DuplicatePolicy, HandlerFn, LoggerConfig, Method, Middleware, Next, ReqBody,
-    Request, RequestContext, Response, Result, Route, Router, StatusCode, box_body,
-    bytes_response, middleware, get,
+    box_body, bytes_response, get, middleware, App, BoxFuture, DuplicatePolicy, HandlerFn,
+    LoggerConfig, Method, Middleware, Next, ReqBody, Request, RequestContext, Response, Result,
+    Route, Router, StatusCode,
 };
 
 struct Noop;
@@ -42,11 +42,17 @@ async fn add_marker(req: Request, next: Next) -> Result<Response> {
 }
 
 fn ok_handler() -> HandlerFn {
-    std::sync::Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-        Box::pin(async {
-            Ok(bytes_response(StatusCode::OK, "text/plain; charset=utf-8", Bytes::from_static(b"ok")))
-        })
-    })
+    std::sync::Arc::new(
+        |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async {
+                Ok(bytes_response(
+                    StatusCode::OK,
+                    "text/plain; charset=utf-8",
+                    Bytes::from_static(b"ok"),
+                ))
+            })
+        },
+    )
 }
 
 fn request() -> http::Request<ReqBody> {
@@ -111,12 +117,18 @@ async fn request_id_generates_when_absent() {
 }
 
 fn slow_handler() -> HandlerFn {
-    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-        Box::pin(async {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            Ok(bytes_response(StatusCode::OK, "text/plain; charset=utf-8", Bytes::from_static(b"slow")))
-        })
-    })
+    Arc::new(
+        |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(bytes_response(
+                    StatusCode::OK,
+                    "text/plain; charset=utf-8",
+                    Bytes::from_static(b"slow"),
+                ))
+            })
+        },
+    )
 }
 
 #[tokio::test]
@@ -228,8 +240,8 @@ async fn proxy_headers_rewrite_host_for_trusted_proxies() {
 
     let response = client
         .get("/")
-        .header("host", "proxy.internal")
-        .header("x-forwarded-host", "real.example.com")
+        .unsafe_header("host", "proxy.internal")
+        .unsafe_header("x-forwarded-host", "real.example.com")
         .send()
         .await
         .unwrap();
@@ -259,11 +271,17 @@ async fn cors_answers_preflight() {
     let response = app.handle(preflight).await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
-        response.headers().get("access-control-allow-origin").unwrap(),
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
         "https://app.example.com"
     );
     assert_eq!(
-        response.headers().get("access-control-allow-methods").unwrap(),
+        response
+            .headers()
+            .get("access-control-allow-methods")
+            .unwrap(),
         "GET, POST"
     );
 }
@@ -272,32 +290,44 @@ async fn cors_answers_preflight() {
 async fn cors_annotates_actual_request() {
     use tork::middleware::Cors;
 
-    let app = app_with(Cors::new().allow_origin("*").expose_headers(["X-Request-Id"]));
+    let app = app_with(
+        Cors::new()
+            .allow_origin("*")
+            .expose_headers(["X-Request-Id"]),
+    );
     let response = app
         .handle(get_with_headers(&[("origin", "https://anywhere.test")]))
         .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        response.headers().get("access-control-allow-origin").unwrap(),
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
         "*"
     );
     assert_eq!(
-        response.headers().get("access-control-expose-headers").unwrap(),
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .unwrap(),
         "X-Request-Id"
     );
 }
 
 fn large_handler() -> HandlerFn {
-    Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-        Box::pin(async {
-            Ok(bytes_response(
-                StatusCode::OK,
-                "text/plain; charset=utf-8",
-                Bytes::from(vec![b'a'; 2000]),
-            ))
-        })
-    })
+    Arc::new(
+        |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+            Box::pin(async {
+                Ok(bytes_response(
+                    StatusCode::OK,
+                    "text/plain; charset=utf-8",
+                    Bytes::from(vec![b'a'; 2000]),
+                ))
+            })
+        },
+    )
 }
 
 fn app_with_handler<M: Middleware>(mw: M, handler: HandlerFn) -> Arc<tork::AppInner> {
@@ -338,7 +368,10 @@ async fn compression_skips_bodies_over_the_maximum_size() {
     // The 2000-byte body exceeds the 1500-byte cap, so it is sent uncompressed
     // (and, advertising a Content-Length, is never buffered for compression).
     let app = app_with_handler(
-        Compression::new().gzip().minimum_size(1000).maximum_size(1500),
+        Compression::new()
+            .gzip()
+            .minimum_size(1000)
+            .maximum_size(1500),
         large_handler(),
     );
     let response = app
@@ -413,7 +446,10 @@ async fn request_id_supports_custom_header_name() {
     let response = app_with(RequestId::new().header_name("x-correlation-id"))
         .handle(req)
         .await;
-    assert_eq!(response.headers().get("x-correlation-id").unwrap(), "corr-1");
+    assert_eq!(
+        response.headers().get("x-correlation-id").unwrap(),
+        "corr-1"
+    );
 }
 
 #[tokio::test]
@@ -437,7 +473,9 @@ async fn trace_middleware_logs_success_and_errors() {
 
     let records = recorder.records();
     assert!(records.iter().any(|r| r.message.contains("GET / 200")));
-    assert!(records.iter().any(|r| r.message.contains("GET /missing 404")));
+    assert!(records
+        .iter()
+        .any(|r| r.message.contains("GET /missing 404")));
 }
 
 #[tokio::test]
@@ -482,7 +520,10 @@ async fn cors_wildcard_with_credentials_fails_closed_and_keeps_other_headers() {
             .unwrap(),
         "true"
     );
-    assert_eq!(response.headers().get("access-control-max-age").unwrap(), "600");
+    assert_eq!(
+        response.headers().get("access-control-max-age").unwrap(),
+        "600"
+    );
 }
 
 #[tokio::test]
@@ -530,7 +571,8 @@ async fn https_redirect_spoofing_via_x_forwarded_proto() {
 
     let app = app_with(HttpsRedirect::new());
 
-    let response = app.clone()
+    let response = app
+        .clone()
         .handle(get_with_headers(&[
             ("host", "example.com"),
             ("x-forwarded-proto", "https"),
@@ -563,8 +605,8 @@ async fn https_redirect_honors_trusted_proxy_scheme() {
 
     let response = client
         .get("/")
-        .header("host", "example.com")
-        .header("x-forwarded-proto", "https")
+        .unsafe_header("host", "example.com")
+        .unsafe_header("x-forwarded-proto", "https")
         .send()
         .await
         .unwrap();
@@ -577,11 +619,7 @@ async fn https_redirect_honors_trusted_proxy_scheme() {
 async fn cors_wildcard_with_credentials_is_rejected() {
     use tork::middleware::Cors;
 
-    let app = app_with(
-        Cors::new()
-            .allow_origin("*")
-            .allow_credentials(true),
-    );
+    let app = app_with(Cors::new().allow_origin("*").allow_credentials(true));
 
     let response = app
         .handle(get_with_headers(&[("origin", "https://evil.example.com")]))
@@ -655,11 +693,13 @@ async fn trusted_host_accepts_bracketed_ipv6_with_a_port() {
 #[tokio::test]
 async fn panic_recovery_returns_500_by_default() {
     fn panic_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-            Box::pin(async {
-                panic!("intentional panic for testing");
-            })
-        })
+        Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async {
+                    panic!("intentional panic for testing");
+                })
+            },
+        )
     }
 
     let app = Arc::new(
@@ -702,9 +742,9 @@ async fn panic_recovery_with_test_client_returns_500() {
 
 #[tokio::test]
 async fn body_limit_chunked_requests_are_rejected_once_the_stream_crosses_the_limit() {
-    use tork::middleware::BodyLimit;
     use bytes::Bytes;
     use http_body::Frame;
+    use tork::middleware::BodyLimit;
 
     let app = app_with_post(BodyLimit::bytes(100));
 
@@ -726,9 +766,9 @@ async fn body_limit_chunked_requests_are_rejected_once_the_stream_crosses_the_li
 
 #[tokio::test]
 async fn body_limit_allows_chunked_requests_under_limit() {
-    use tork::middleware::BodyLimit;
     use bytes::Bytes;
     use http_body::Frame;
+    use tork::middleware::BodyLimit;
 
     let app = app_with_post(BodyLimit::bytes(1000));
 
@@ -809,11 +849,13 @@ async fn compression_sets_vary_even_when_not_compressing() {
     let response = app_with(Compression::new().gzip()).handle(request()).await;
 
     assert!(response.headers().get("content-encoding").is_none());
-    let varies = response
-        .headers()
-        .get_all("vary")
-        .iter()
-        .any(|value| value.to_str().unwrap().to_ascii_lowercase().contains("accept-encoding"));
+    let varies = response.headers().get_all("vary").iter().any(|value| {
+        value
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("accept-encoding")
+    });
     assert!(varies, "expected Vary: Accept-Encoding");
 }
 

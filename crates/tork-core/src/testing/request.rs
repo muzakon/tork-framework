@@ -7,7 +7,7 @@ use http::header::CONTENT_TYPE;
 use http::{HeaderName, HeaderValue, Method};
 use serde::Serialize;
 
-use super::client::Shared;
+use super::client::{Shared, TestHeader};
 use super::response::TestResponse;
 use crate::error::{Error, Result};
 
@@ -31,7 +31,7 @@ pub struct TestRequestBuilder {
     method: Method,
     path: String,
     query: Vec<(String, String)>,
-    headers: Vec<(HeaderName, HeaderValue)>,
+    headers: Vec<TestHeader>,
     body: PendingBody,
 }
 
@@ -49,10 +49,22 @@ impl TestRequestBuilder {
 
     /// Adds a request header. An invalid name or value is ignored.
     pub fn header(mut self, name: &str, value: &str) -> Self {
-        if let (Ok(name), Ok(value)) =
-            (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value))
-        {
-            self.headers.push((name, value));
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            self.headers.push(TestHeader::safe(name, value));
+        }
+        self
+    }
+
+    /// Adds a security-sensitive request header, bypassing the in-process guard.
+    pub fn unsafe_header(mut self, name: &str, value: &str) -> Self {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            self.headers.push(TestHeader::unsafe_allowed(name, value));
         }
         self
     }
@@ -143,7 +155,7 @@ pub struct TestMultipartBuilder {
     method: Method,
     path: String,
     query: Vec<(String, String)>,
-    headers: Vec<(HeaderName, HeaderValue)>,
+    headers: Vec<TestHeader>,
     parts: Vec<MultipartPart>,
 }
 
@@ -178,10 +190,22 @@ impl TestMultipartBuilder {
 
     /// Adds a request header.
     pub fn header(mut self, name: &str, value: &str) -> Self {
-        if let (Ok(name), Ok(value)) =
-            (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value))
-        {
-            self.headers.push((name, value));
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            self.headers.push(TestHeader::safe(name, value));
+        }
+        self
+    }
+
+    /// Adds a security-sensitive request header, bypassing the in-process guard.
+    pub fn unsafe_header(mut self, name: &str, value: &str) -> Self {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            self.headers.push(TestHeader::unsafe_allowed(name, value));
         }
         self
     }
@@ -214,11 +238,8 @@ impl TestMultipartBuilder {
                 }
                 (None, _) => {
                     body.extend_from_slice(
-                        format!(
-                            "Content-Disposition: form-data; name=\"{}\"\r\n",
-                            part.name
-                        )
-                        .as_bytes(),
+                        format!("Content-Disposition: form-data; name=\"{}\"\r\n", part.name)
+                            .as_bytes(),
                     );
                 }
             }
@@ -228,9 +249,10 @@ impl TestMultipartBuilder {
         }
         body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}--\r\n").as_bytes());
 
-        let content_type =
-            HeaderValue::from_str(&format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}"))
-                .map_err(|_| Error::internal("failed to build multipart content type"))?;
+        let content_type = HeaderValue::from_str(&format!(
+            "multipart/form-data; boundary={MULTIPART_BOUNDARY}"
+        ))
+        .map_err(|_| Error::internal("failed to build multipart content type"))?;
         let pending = PendingBody {
             content_type: Some(content_type),
             bytes: Bytes::from(body),
@@ -246,9 +268,9 @@ pub(crate) const CONTENT_TYPE_HEADER: HeaderName = CONTENT_TYPE;
 
 #[cfg(test)]
 mod tests {
+    use super::super::client::{Shared, Transport};
     use super::*;
     use crate::app::App;
-    use super::super::client::{Shared, Transport};
     use std::sync::Mutex;
 
     #[derive(serde::Serialize)]
@@ -271,6 +293,7 @@ mod tests {
         Arc::new(Shared {
             transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
             default_headers: http::HeaderMap::new(),
+            unsafe_default_headers: http::HeaderMap::new(),
             cookies: Mutex::new(super::super::cookie::CookieJar::default()),
         })
     }
@@ -294,9 +317,22 @@ mod tests {
             .bytes(Bytes::from_static(b"payload"));
 
         assert_eq!(request.headers.len(), 1);
-        assert_eq!(request.query, vec![("q".to_owned(), "space value".to_owned())]);
+        assert_eq!(
+            request.query,
+            vec![("q".to_owned(), "space value".to_owned())]
+        );
         assert_eq!(request.body.bytes, Bytes::from_static(b"payload"));
         assert!(request.body.content_type.is_none());
+        assert!(!request.headers[0].unsafe_allowed);
+    }
+
+    #[test]
+    fn unsafe_header_marks_the_entry() {
+        let request = TestRequestBuilder::new(shared(), Method::GET, "/items")
+            .unsafe_header("host", "example.com");
+
+        assert_eq!(request.headers.len(), 1);
+        assert!(request.headers[0].unsafe_allowed);
     }
 
     #[tokio::test]
@@ -322,7 +358,9 @@ mod tests {
 
         assert_eq!(
             request.body.content_type,
-            Some(HeaderValue::from_static("application/x-www-form-urlencoded"))
+            Some(HeaderValue::from_static(
+                "application/x-www-form-urlencoded"
+            ))
         );
         assert_eq!(request.body.bytes, Bytes::from_static(b"word=hello+world"));
     }

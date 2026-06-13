@@ -14,6 +14,19 @@ pub(crate) const DEFAULT_SERVICE_NAME: &str = "app";
 /// Default file name prefix for the rolling file sink.
 pub(crate) const DEFAULT_FILE_PREFIX: &str = "app";
 
+/// How much structured error detail a logged record includes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorLogDetail {
+    /// Log only the error's concrete type name.
+    #[default]
+    TypeOnly,
+    /// Log the type name and the top-level error message.
+    MessageOnly,
+    /// Log the type name, top-level message, and the bounded `source()` chain.
+    FullChain,
+}
+
 /// The console output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -122,6 +135,7 @@ pub struct LoggerConfig {
     pub(crate) format: LogFormat,
     pub(crate) color: bool,
     pub(crate) service_name: String,
+    pub(crate) error_detail: ErrorLogDetail,
     pub(crate) request_logs: bool,
     // include_source/include_thread_ids are reserved for the formatter; telemetry
     // is consumed by the OTel layer behind the `otel` feature.
@@ -142,6 +156,7 @@ impl Default for LoggerConfig {
             format: LogFormat::Auto,
             color: true,
             service_name: DEFAULT_SERVICE_NAME.to_owned(),
+            error_detail: ErrorLogDetail::default(),
             request_logs: true,
             include_source: false,
             include_thread_ids: false,
@@ -180,6 +195,12 @@ impl LoggerConfig {
     /// Sets the service name reported in structured logs.
     pub fn service_name(mut self, name: impl Into<String>) -> Self {
         self.service_name = name.into();
+        self
+    }
+
+    /// Sets how much error detail structured log records include.
+    pub fn error_detail(mut self, detail: ErrorLogDetail) -> Self {
+        self.error_detail = detail;
         self
     }
 
@@ -230,6 +251,7 @@ mod tests {
         assert_eq!(config.level, "info");
         assert_eq!(config.format, LogFormat::Auto);
         assert!(config.color);
+        assert_eq!(config.error_detail, ErrorLogDetail::TypeOnly);
         assert!(config.request_logs);
         assert!(config.file.is_none());
         assert!(config.telemetry.is_none());
@@ -241,15 +263,21 @@ mod tests {
             .level("debug")
             .format(LogFormat::Json)
             .service_name("tork-api")
+            .error_detail(ErrorLogDetail::FullChain)
             .request_logs(false)
             .include_source(true)
             .include_thread_ids(true)
             .non_blocking(true)
-            .file(FileLogConfig::new("./logs").prefix("api").rotation(Rotation::Hourly));
+            .file(
+                FileLogConfig::new("./logs")
+                    .prefix("api")
+                    .rotation(Rotation::Hourly),
+            );
 
         assert_eq!(config.level, "debug");
         assert_eq!(config.format, LogFormat::Json);
         assert_eq!(config.service_name, "tork-api");
+        assert_eq!(config.error_detail, ErrorLogDetail::FullChain);
         assert!(!config.request_logs);
         assert!(config.include_source);
         assert!(config.include_thread_ids);

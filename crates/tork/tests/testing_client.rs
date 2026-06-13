@@ -1,16 +1,16 @@
 //! Integration tests for the in-process `TestClient` (HTTP).
 
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use http::HeaderValue;
 use http::header::SET_COOKIE;
+use http::HeaderValue;
 use serde_json::json;
 use tork::testing::TestClient;
 use tork::{
-    App, FileBytes, Form, FromRequest, Inject, Next, RequestContext, Resources, Response, Router,
-    Valid, api_model, get, middleware, post,
+    api_model, get, middleware, post, App, FileBytes, Form, FromRequest, Inject, Next,
+    RequestContext, Resources, Response, Router, Valid,
 };
 
 #[get("/hello")]
@@ -242,6 +242,36 @@ async fn seeded_cookie_and_invalid_default_header_behavior() {
     assert_eq!(body["cookie"], "session=seeded");
 }
 
+#[tokio::test]
+async fn sensitive_default_headers_require_explicit_opt_in() {
+    let app = App::new().include_router(Router::new().route(__tork_route_read_headers()));
+    let error = match TestClient::builder(app)
+        .default_header("Host", "example.com")
+        .build()
+        .await
+    {
+        Ok(_) => panic!("sensitive default header must fail without opt-in"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.code(), "TEST_UNSAFE_HEADER_REQUIRES_OPT_IN");
+    assert!(error.message().contains("host"));
+}
+
+#[tokio::test]
+async fn unsafe_default_header_is_applied_in_process() {
+    let app = App::new().include_router(Router::new().route(__tork_route_read_headers()));
+    let client = TestClient::builder(app)
+        .unsafe_default_header("Host", "example.com")
+        .default_header("X-Token", "cone-of-silence")
+        .build()
+        .await
+        .unwrap();
+
+    let response = client.get("/headers").send().await.unwrap();
+    assert_eq!(response.status(), 200);
+}
+
 #[derive(Clone)]
 struct Greeting(String);
 
@@ -312,7 +342,10 @@ async fn builder_override_dependency_with_and_extra_http_verbs_work() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.json::<serde_json::Value>().await.unwrap(), json!({ "id": "abc", "value": 7, "method": "put" }));
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        json!({ "id": "abc", "value": 7, "method": "put" })
+    );
 
     let response = client
         .patch("/items/abc")
@@ -320,15 +353,24 @@ async fn builder_override_dependency_with_and_extra_http_verbs_work() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.json::<serde_json::Value>().await.unwrap(), json!({ "id": "abc", "value": 8, "method": "patch" }));
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        json!({ "id": "abc", "value": 8, "method": "patch" })
+    );
 
     let response = client.delete("/items/abc").send().await.unwrap();
-    assert_eq!(response.json::<serde_json::Value>().await.unwrap(), json!({ "id": "abc", "method": "delete" }));
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        json!({ "id": "abc", "method": "delete" })
+    );
 
     let first = client.get("/dependency").send().await.unwrap();
     let second = client.get("/dependency").send().await.unwrap();
     assert_eq!(first.json::<serde_json::Value>().await.unwrap()["value"], 1);
-    assert_eq!(second.json::<serde_json::Value>().await.unwrap()["value"], 2);
+    assert_eq!(
+        second.json::<serde_json::Value>().await.unwrap()["value"],
+        2
+    );
 }
 
 #[derive(Clone)]

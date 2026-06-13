@@ -24,7 +24,16 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 #[derive(Clone)]
 pub struct Logger {
     context: Arc<str>,
-    base: Arc<Vec<(&'static str, Value)>>,
+    base: Arc<LogFields>,
+}
+
+enum LogFields {
+    Empty,
+    Field {
+        parent: Arc<LogFields>,
+        key: &'static str,
+        value: Value,
+    },
 }
 
 impl Logger {
@@ -32,7 +41,7 @@ impl Logger {
     pub fn new(context: impl AsRef<str>) -> Self {
         Self {
             context: Arc::from(context.as_ref()),
-            base: Arc::new(Vec::new()),
+            base: Arc::new(LogFields::Empty),
         }
     }
 
@@ -56,22 +65,23 @@ impl Logger {
 
     /// Returns a logger with an extra field included on every record.
     pub fn with_field<T: Serialize>(&self, key: &'static str, value: T) -> Logger {
-        let mut base = (*self.base).clone();
         if let Ok(value) = serde_json::to_value(value) {
-            base.push((key, value));
+            return Logger {
+                context: self.context.clone(),
+                base: Arc::new(LogFields::Field {
+                    parent: self.base.clone(),
+                    key,
+                    value,
+                }),
+            };
         }
-        Logger {
-            context: self.context.clone(),
-            base: Arc::new(base),
-        }
+        self.clone()
     }
 
     /// Starts a record at the given level.
     fn event(&self, level: Level, message: impl Into<String>) -> LogEvent {
         let mut fields = Map::new();
-        for (key, value) in self.base.iter() {
-            fields.insert((*key).to_owned(), value.clone());
-        }
+        populate_fields(&self.base, &mut fields);
         LogEvent {
             level,
             context: self.context.clone(),
@@ -108,17 +118,33 @@ impl Logger {
 
     /// Builds a span for an operation, to [`enter`](super::LogSpan::enter) a scope.
     pub fn span(&self, name: impl Into<String>) -> super::LogSpan {
-        super::LogSpan::new(self.context.clone(), name, &self.base)
+        let mut fields = Map::new();
+        populate_fields(&self.base, &mut fields);
+        super::LogSpan::new(self.context.clone(), name, fields)
     }
 
     /// Builds a span to [`run`](super::LogSpan::run) a future inside.
     pub fn instrument(&self, name: impl Into<String>) -> super::LogSpan {
-        super::LogSpan::new(self.context.clone(), name, &self.base)
+        let mut fields = Map::new();
+        populate_fields(&self.base, &mut fields);
+        super::LogSpan::new(self.context.clone(), name, fields)
+    }
+}
+
+fn populate_fields(fields: &Arc<LogFields>, out: &mut Map<String, Value>) {
+    match fields.as_ref() {
+        LogFields::Empty => {}
+        LogFields::Field { parent, key, value } => {
+            populate_fields(parent, out);
+            out.insert((*key).to_owned(), value.clone());
+        }
     }
 }
 
 impl FromRequest for Logger {
-    fn from_request(ctx: &RequestContext) -> impl std::future::Future<Output = Result<Self>> + Send {
+    fn from_request(
+        ctx: &RequestContext,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send {
         let mut base: Vec<(&'static str, Value)> = Vec::new();
         if let Some(request_id) = ctx
             .headers()
@@ -132,7 +158,11 @@ impl FromRequest for Logger {
 
         let logger = Logger {
             context: Arc::from(DEFAULT_CONTEXT),
-            base: Arc::new(base),
+            base: base
+                .into_iter()
+                .fold(Arc::new(LogFields::Empty), |parent, (key, value)| {
+                    Arc::new(LogFields::Field { parent, key, value })
+                }),
         };
         async move { Ok(logger) }
     }
@@ -144,13 +174,13 @@ mod tests {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
+    use super::super::format::{JsonFormat, TorkFormat};
+    use crate::extract::FromRequest;
+    use crate::{box_body, PathParams, RequestContext, StateMap};
     use bytes::Bytes;
     use http_body_util::Full;
     use serde::ser::Error as _;
     use serde::Serializer;
-    use super::super::format::{JsonFormat, TorkFormat};
-    use crate::{PathParams, RequestContext, StateMap, box_body};
-    use crate::extract::FromRequest;
     use std::sync::Arc as StdArc;
     use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::prelude::*;
@@ -206,7 +236,10 @@ mod tests {
 
         let bytes = buffer.lock().unwrap().clone();
         let output = String::from_utf8(bytes).unwrap();
-        assert!(output.contains("\"context\":\"PaymentService\""), "{output}");
+        assert!(
+            output.contains("\"context\":\"PaymentService\""),
+            "{output}"
+        );
         assert!(output.contains("\"message\":\"Charging user\""), "{output}");
         assert!(output.contains("\"user_id\":42"), "{output}");
         assert!(output.contains("\"tenant\":\"acme\""), "{output}");
@@ -228,9 +261,9 @@ mod tests {
                 }))
                 .with_writer(BufWriter(buffer.clone()));
             let subscriber = tracing_subscriber::registry().with(layer);
-        tracing::subscriber::with_default(subscriber, || {
-            relabeled.info("Boot").emit();
-        });
+            tracing::subscriber::with_default(subscriber, || {
+                relabeled.info("Boot").emit();
+            });
             let bytes = buffer.lock().unwrap().clone();
             String::from_utf8(bytes).unwrap()
         };
@@ -269,18 +302,10 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(layer);
 
         tracing::subscriber::with_default(subscriber, || {
-            Logger::framework("boot")
-                .trace("trace")
-                .emit();
-            Logger::new("worker")
-                .debug("debug")
-                .emit();
-            Logger::new("worker")
-                .warn("warn")
-                .emit();
-            Logger::new("worker")
-                .error("error")
-                .emit();
+            Logger::framework("boot").trace("trace").emit();
+            Logger::new("worker").debug("debug").emit();
+            Logger::new("worker").warn("warn").emit();
+            Logger::new("worker").error("error").emit();
             let _ = Logger::new("worker").span("span").enter();
             let _ = Logger::new("worker").instrument("task");
         });

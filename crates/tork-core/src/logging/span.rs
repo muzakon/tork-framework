@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tracing::Instrument;
 use tracing::span::EnteredSpan;
+use tracing::Instrument;
 
 /// A span being built. Add fields, then [`enter`](LogSpan::enter) a scope or
 /// [`run`](LogSpan::run) a future inside it.
@@ -23,11 +23,11 @@ pub struct LogSpan {
 
 impl LogSpan {
     /// Builds a span for an operation named `name`, seeded with `base` fields.
-    pub(crate) fn new(context: Arc<str>, name: impl Into<String>, base: &[(&'static str, Value)]) -> Self {
-        let mut fields = Map::new();
-        for (key, value) in base {
-            fields.insert((*key).to_owned(), value.clone());
-        }
+    pub(crate) fn new(
+        context: Arc<str>,
+        name: impl Into<String>,
+        fields: Map<String, Value>,
+    ) -> Self {
         Self {
             context,
             name: name.into(),
@@ -45,8 +45,8 @@ impl LogSpan {
 
     /// Builds the underlying `tracing` span.
     fn build(&self) -> tracing::Span {
-        let fields =
-            serde_json::to_string(&Value::Object(self.fields.clone())).unwrap_or_else(|_| "{}".to_owned());
+        let fields = serde_json::to_string(&Value::Object(self.fields.clone()))
+            .unwrap_or_else(|_| "{}".to_owned());
         let context = self.context.as_ref();
         let name = self.name.as_str();
         tracing::info_span!(

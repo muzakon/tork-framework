@@ -13,14 +13,14 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use super::TestOverrides;
 use super::cookie::CookieJar;
 use super::recorder::LogRecorder;
 use super::request::{PendingBody, TestRequestBuilder};
 use super::response::TestResponse;
 use super::websocket::TestWebSocketBuilder;
+use super::TestOverrides;
 use crate::app::{App, AppInner, TestApp};
-use crate::body::{BoxError, ReqBody, box_body};
+use crate::body::{box_body, BoxError, ReqBody};
 use crate::error::{Error, Result};
 use crate::state::StateMap;
 
@@ -30,6 +30,40 @@ pub(crate) type StreamingBody =
 
 /// A closure that registers one override resource into the state map.
 type ResourceRegister = Box<dyn FnOnce(&mut StateMap)>;
+
+/// A header attached to a test request.
+#[derive(Clone)]
+pub(crate) struct TestHeader {
+    pub(crate) name: HeaderName,
+    pub(crate) value: HeaderValue,
+    pub(crate) unsafe_allowed: bool,
+}
+
+impl TestHeader {
+    pub(crate) fn safe(name: HeaderName, value: HeaderValue) -> Self {
+        Self {
+            name,
+            value,
+            unsafe_allowed: false,
+        }
+    }
+
+    pub(crate) fn unsafe_allowed(name: HeaderName, value: HeaderValue) -> Self {
+        Self {
+            name,
+            value,
+            unsafe_allowed: true,
+        }
+    }
+}
+
+const SENSITIVE_TEST_HEADERS: [&str; 5] = [
+    "host",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+];
 
 /// How a built request reaches the application.
 ///
@@ -86,7 +120,8 @@ impl Transport {
             Transport::RealPort(addr) => {
                 let response = send_over_socket(*addr, request).await?;
                 let (parts, body) = response.into_parts();
-                let boxed: StreamingBody = Box::pin(body.map_err(|error| Box::new(error) as BoxError));
+                let boxed: StreamingBody =
+                    Box::pin(body.map_err(|error| Box::new(error) as BoxError));
                 Ok((parts.status, parts.headers, boxed))
             }
         }
@@ -138,6 +173,7 @@ async fn send_over_socket(
 pub(crate) struct Shared {
     pub(crate) transport: Transport,
     pub(crate) default_headers: HeaderMap,
+    pub(crate) unsafe_default_headers: HeaderMap,
     pub(crate) cookies: Mutex<CookieJar>,
 }
 
@@ -148,7 +184,7 @@ impl Shared {
         method: Method,
         path: String,
         query: Vec<(String, String)>,
-        headers: Vec<(HeaderName, HeaderValue)>,
+        headers: Vec<TestHeader>,
         body: PendingBody,
     ) -> Result<TestResponse> {
         let request = self.build_request(method, &path, &query, headers, body)?;
@@ -171,7 +207,7 @@ impl Shared {
         method: Method,
         path: String,
         query: Vec<(String, String)>,
-        headers: Vec<(HeaderName, HeaderValue)>,
+        headers: Vec<TestHeader>,
     ) -> Result<super::sse::TestSseStream> {
         let request = self.build_request(method, &path, &query, headers, PendingBody::default())?;
         let (_status, headers, body) = self.transport.execute_streaming(request).await?;
@@ -189,7 +225,7 @@ impl Shared {
         method: Method,
         path: &str,
         query: &[(String, String)],
-        headers: Vec<(HeaderName, HeaderValue)>,
+        headers: Vec<TestHeader>,
         body: PendingBody,
     ) -> Result<http::Request<ReqBody>> {
         let uri = if query.is_empty() {
@@ -206,12 +242,17 @@ impl Shared {
             .parse()
             .map_err(|_| Error::bad_request(format!("invalid request URI: {uri}")))?;
 
+        self.reject_in_process_sensitive_headers(&headers)?;
+
         let map = request.headers_mut();
         for (name, value) in self.default_headers.iter() {
             map.insert(name, value.clone());
         }
-        for (name, value) in headers {
-            map.insert(name, value);
+        for (name, value) in self.unsafe_default_headers.iter() {
+            map.insert(name, value.clone());
+        }
+        for header in headers {
+            map.insert(header.name, header.value);
         }
         self.cookies
             .lock()
@@ -223,6 +264,38 @@ impl Shared {
 
         Ok(request)
     }
+
+    pub(crate) fn reject_in_process_sensitive_headers(&self, headers: &[TestHeader]) -> Result<()> {
+        if !matches!(self.transport, Transport::InProcess(_)) {
+            return Ok(());
+        }
+
+        let mut blocked = Vec::new();
+        for header in headers {
+            if !header.unsafe_allowed && is_sensitive_test_header(&header.name) {
+                blocked.push(header.name.as_str().to_owned());
+            }
+        }
+        if blocked.is_empty() {
+            Ok(())
+        } else {
+            Err(sensitive_header_error(&blocked))
+        }
+    }
+}
+
+fn is_sensitive_test_header(name: &HeaderName) -> bool {
+    SENSITIVE_TEST_HEADERS
+        .iter()
+        .any(|candidate| *candidate == name.as_str())
+}
+
+fn sensitive_header_error(headers: &[String]) -> Error {
+    Error::bad_request(format!(
+        "in-process test clients reject security-sensitive header(s): {}; use unsafe_header/unsafe_default_header or TestClient::serve(...).bind_random_port()",
+        headers.join(", ")
+    ))
+    .with_code("TEST_UNSAFE_HEADER_REQUIRES_OPT_IN")
 }
 
 /// An in-process client for exercising an application in tests.
@@ -257,6 +330,7 @@ impl TestClient {
             shared: Arc::new(Shared {
                 transport: Transport::InProcess(app.inner.clone()),
                 default_headers: HeaderMap::new(),
+                unsafe_default_headers: HeaderMap::new(),
                 cookies: Mutex::new(CookieJar::default()),
             }),
             teardown: Teardown::InProcess(Box::new(app)),
@@ -375,6 +449,7 @@ impl ServeBuilder {
             shared: Arc::new(Shared {
                 transport: Transport::RealPort(addr),
                 default_headers: HeaderMap::new(),
+                unsafe_default_headers: HeaderMap::new(),
                 cookies: Mutex::new(CookieJar::default()),
             }),
             teardown: Teardown::RealPort {
@@ -393,6 +468,8 @@ pub struct TestClientBuilder {
     resources: Vec<ResourceRegister>,
     overrides: TestOverrides,
     default_headers: HeaderMap,
+    unsafe_default_headers: HeaderMap,
+    blocked_sensitive_headers: Vec<String>,
     cookies: CookieJar,
     recorder: Option<LogRecorder>,
 }
@@ -404,6 +481,8 @@ impl TestClientBuilder {
             resources: Vec::new(),
             overrides: TestOverrides::default(),
             default_headers: HeaderMap::new(),
+            unsafe_default_headers: HeaderMap::new(),
+            blocked_sensitive_headers: Vec::new(),
             cookies: CookieJar::default(),
             recorder: None,
         }
@@ -444,10 +523,27 @@ impl TestClientBuilder {
 
     /// Sets a default header sent with every request.
     pub fn default_header(mut self, name: &str, value: &str) -> Self {
-        if let (Ok(name), Ok(value)) =
-            (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value))
-        {
-            self.default_headers.insert(name, value);
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            if is_sensitive_test_header(&name) {
+                self.blocked_sensitive_headers
+                    .push(name.as_str().to_owned());
+            } else {
+                self.default_headers.insert(name, value);
+            }
+        }
+        self
+    }
+
+    /// Sets a default security-sensitive header, bypassing the in-process guard.
+    pub fn unsafe_default_header(mut self, name: &str, value: &str) -> Self {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            self.unsafe_default_headers.insert(name, value);
         }
         self
     }
@@ -463,8 +559,14 @@ impl TestClientBuilder {
         let resources = self.resources;
         let overrides = self.overrides;
         let default_headers = self.default_headers;
+        let unsafe_default_headers = self.unsafe_default_headers;
+        let blocked_sensitive_headers = self.blocked_sensitive_headers;
         let cookies = self.cookies;
         let recorder = self.recorder;
+
+        if !blocked_sensitive_headers.is_empty() {
+            return Err(sensitive_header_error(&blocked_sensitive_headers));
+        }
 
         let app = self
             .app
@@ -489,6 +591,7 @@ impl TestClientBuilder {
             shared: Arc::new(Shared {
                 transport: Transport::InProcess(app.inner.clone()),
                 default_headers,
+                unsafe_default_headers,
                 cookies: Mutex::new(cookies),
             }),
             teardown: Teardown::InProcess(Box::new(app)),
@@ -505,10 +608,10 @@ mod tests {
     use crate::response::Response as TorkResponse;
     use crate::router::{BoxFuture, HandlerFn, Route, Router};
     use bytes::Bytes;
+    use futures_util::stream;
     use http::header::{CONTENT_TYPE, COOKIE};
     use http_body::Frame;
     use http_body_util::{BodyExt, StreamBody};
-    use futures_util::stream;
     use std::sync::Arc;
 
     fn json_handler() -> HandlerFn {
@@ -544,6 +647,7 @@ mod tests {
         Shared {
             transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
             default_headers,
+            unsafe_default_headers: HeaderMap::new(),
             cookies: Mutex::new(cookies),
         }
     }
@@ -555,7 +659,7 @@ mod tests {
                 Method::POST,
                 "/items",
                 &[("q".to_owned(), "hello world".to_owned())],
-                vec![(
+                vec![TestHeader::safe(
                     HeaderName::from_static("x-custom"),
                     HeaderValue::from_static("yes"),
                 )],
@@ -589,15 +693,48 @@ mod tests {
         assert!(error.message().starts_with("invalid request URI:"));
     }
 
+    #[test]
+    fn build_request_rejects_sensitive_headers_in_process_without_opt_in() {
+        let error = shared()
+            .build_request(
+                Method::GET,
+                "/items",
+                &[],
+                vec![TestHeader::safe(
+                    HeaderName::from_static("host"),
+                    HeaderValue::from_static("example.com"),
+                )],
+                PendingBody::default(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "TEST_UNSAFE_HEADER_REQUIRES_OPT_IN");
+        assert!(error.message().contains("host"));
+    }
+
+    #[test]
+    fn build_request_allows_sensitive_headers_with_opt_in() {
+        let request = shared()
+            .build_request(
+                Method::GET,
+                "/items",
+                &[],
+                vec![TestHeader::unsafe_allowed(
+                    HeaderName::from_static("host"),
+                    HeaderValue::from_static("example.com"),
+                )],
+                PendingBody::default(),
+            )
+            .unwrap();
+        assert_eq!(request.headers()["host"], "example.com");
+    }
+
     #[tokio::test]
     async fn real_port_transport_exercises_execute_and_execute_streaming() {
-        let app = App::new()
-            .include_router(
-                Router::new()
-                    .route(Route::new(Method::GET, "/json", json_handler()))
-                    .route(Route::new(Method::GET, "/stream", stream_handler())),
-            )
-            ;
+        let app = App::new().include_router(
+            Router::new()
+                .route(Route::new(Method::GET, "/json", json_handler()))
+                .route(Route::new(Method::GET, "/stream", stream_handler())),
+        );
         let client = TestClient::serve(app).bind_random_port().await.unwrap();
 
         assert!(client.local_addr().is_some());
@@ -605,7 +742,13 @@ mod tests {
 
         let request = client
             .shared
-            .build_request(Method::GET, "/json", &[], Vec::new(), PendingBody::default())
+            .build_request(
+                Method::GET,
+                "/json",
+                &[],
+                Vec::new(),
+                PendingBody::default(),
+            )
             .unwrap();
         let (status, headers, bytes) = client.shared.transport.execute(request).await.unwrap();
         assert_eq!(status, StatusCode::OK);
@@ -614,7 +757,13 @@ mod tests {
 
         let request = client
             .shared
-            .build_request(Method::GET, "/stream", &[], Vec::new(), PendingBody::default())
+            .build_request(
+                Method::GET,
+                "/stream",
+                &[],
+                Vec::new(),
+                PendingBody::default(),
+            )
             .unwrap();
         let (status, headers, mut body) = client
             .shared

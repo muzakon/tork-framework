@@ -1,6 +1,6 @@
 //! Header-based extractors.
 
-use http::header::{AUTHORIZATION, HeaderName};
+use http::header::{HeaderName, AUTHORIZATION};
 
 use crate::constants::BEARER_PREFIX;
 use crate::error::{Error, Result};
@@ -16,12 +16,16 @@ const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 /// This extractor only parses the header. Verifying the token (signature,
 /// expiry, claims) is layered on top by application code, typically by a
 /// `#[tork::dependency]` that takes a `BearerToken`.
-pub struct BearerToken(String);
+pub struct BearerToken(http::HeaderValue);
 
 impl BearerToken {
     /// Returns the raw token, the part of the header after the `Bearer ` prefix.
     pub fn token(&self) -> &str {
-        &self.0
+        self.0
+            .to_str()
+            .ok()
+            .and_then(|value| value.strip_prefix(BEARER_PREFIX))
+            .expect("BearerToken invariant: stored header must stay a valid bearer token")
     }
 }
 
@@ -111,11 +115,11 @@ fn resolve(ctx: &RequestContext) -> Result<BearerToken> {
         .to_str()
         .map_err(|_| Error::unauthorized("invalid Authorization header"))?;
 
-    let token = value
+    value
         .strip_prefix(BEARER_PREFIX)
         .ok_or_else(|| Error::unauthorized("expected a bearer token"))?;
 
-    Ok(BearerToken(token.to_owned()))
+    Ok(BearerToken(header.clone()))
 }
 
 #[cfg(test)]
@@ -185,7 +189,10 @@ mod tests {
     #[tokio::test]
     async fn bearer_token_invalid_utf8_header_is_unauthorized() {
         let mut builder = http::Request::builder();
-        builder = builder.header("Authorization", http::HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap());
+        builder = builder.header(
+            "Authorization",
+            http::HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap(),
+        );
         let head = builder.body(()).unwrap().into_parts().0;
         let body = box_body(Full::new(Bytes::new()));
         let ctx = RequestContext::new(head, PathParams::new(), Arc::new(StateMap::new()), body);

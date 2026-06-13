@@ -4,7 +4,7 @@ use garde::Validate;
 use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
-use crate::extract::body::read_body_capped;
+use crate::extract::body::{ensure_json_depth_within_limit, read_body_capped};
 use crate::extract::{FromRequest, RequestContext};
 
 /// Deserializes the JSON request body into `T` and validates it.
@@ -34,6 +34,7 @@ where
         let taken = ctx.take_body();
         async move {
             let bytes = read_body_capped(taken?).await?;
+            ensure_json_depth_within_limit(&bytes)?;
             let value: T = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::unprocessable("request body is not valid JSON"))?;
             value.validate().map_err(Error::from_garde_report)?;
@@ -61,9 +62,9 @@ mod tests {
         count: i64,
     }
 
-    fn context_with_body(json: &'static str) -> RequestContext {
+    fn context_with_body(json: &str) -> RequestContext {
         let head = http::Request::new(()).into_parts().0;
-        let body = box_body(Full::new(Bytes::from_static(json.as_bytes())));
+        let body = box_body(Full::new(Bytes::copy_from_slice(json.as_bytes())));
         RequestContext::new(head, PathParams::new(), Arc::new(StateMap::new()), body)
     }
 
@@ -83,6 +84,24 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Unprocessable);
-        assert!(!error.details().is_empty(), "should report the failing field");
+        assert!(
+            !error.details().is_empty(),
+            "should report the failing field"
+        );
+    }
+
+    #[tokio::test]
+    async fn deeply_nested_body_is_rejected_before_validation() {
+        let json = format!(
+            "{}0{}",
+            "{\"count\":".to_owned() + &"[".repeat(crate::extract::body::MAX_JSON_NESTING + 1),
+            "]".repeat(crate::extract::body::MAX_JSON_NESTING + 1) + "}"
+        );
+        let ctx = context_with_body(&json);
+        let error = <Valid<Sample> as FromRequest>::from_request(&ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::BadRequest);
+        assert_eq!(error.message(), "request body is too deeply nested");
     }
 }

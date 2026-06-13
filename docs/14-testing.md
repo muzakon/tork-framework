@@ -105,6 +105,22 @@ let client = TestClient::builder(app)
     .await?;
 ```
 
+In-process tests reject security-sensitive routing/proxy headers (`Host`,
+`Forwarded`, `X-Forwarded-*`) by default so a unit-style test cannot silently
+spoof proxy state. When you need that behavior, either opt in explicitly:
+
+```rust
+let response = client
+    .get("/")
+    .unsafe_header("host", "example.com")
+    .unsafe_header("x-forwarded-proto", "https")
+    .send()
+    .await?;
+```
+
+or run the app over a real loopback socket with
+`TestClient::serve(app).bind_random_port().await?`.
+
 ## WebSockets
 
 `websocket(path).connect()` opens a connection over an in-memory duplex (no

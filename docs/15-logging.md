@@ -45,18 +45,29 @@ Production output (`format = json`):
 {"timestamp":"2026-06-11T14:32:11Z","level":"INFO","service":"tork-api","context":"PaymentService","message":"Charging user","user_id":42,"request_id":"req-..."}
 ```
 
-Nothing is logged until `emit` is called. `error` attaches an error's type, message,
-and source chain (the chain is capped at 16 entries so a deep error cannot produce
-an unbounded record):
+Nothing is logged until `emit` is called. `error` always attaches the error's type
+name; the top-level message and source chain are configurable through
+`LoggerConfig::error_detail(...)`. The most conservative default is
+`ErrorLogDetail::TypeOnly`.
 
 ```rust
 self.logger.error("Payment failed").error(&err).field("order_id", id).emit();
 ```
 
-Logged errors are not redacted the way `5xx` client responses are, and an error's
+To include more detail explicitly:
+
+```rust
+use tork::{ErrorLogDetail, LoggerConfig};
+
+let logger = LoggerConfig::new().error_detail(ErrorLogDetail::MessageOnly);
+```
+
+`ErrorLogDetail::FullChain` also includes the bounded `source()` chain (capped at
+16 entries so a deep error cannot produce an unbounded record). Logged errors are
+not redacted the way `5xx` client responses are, and an error's
 `Display`/`source` text can carry sensitive data (a database driver may include a
-connection string in its message). Keep secrets out of error messages so they do
-not reach your logs.
+connection string in its message). Keep secrets out of error messages unless you
+have deliberately enabled that detail in logs.
 
 A `Logger` injected directly into a handler has the default context; call
 `for_context("...")` to set one, or `with_field(...)` to add a field to every line.

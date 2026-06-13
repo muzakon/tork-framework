@@ -9,18 +9,20 @@ use http::header::{
     CONNECTION, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;
-use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::WebSocketStream;
 
-use super::client::{Shared, Transport};
+use super::client::{Shared, TestHeader, Transport};
 use crate::body::box_body;
 use crate::error::{Error, Result};
-use crate::ws::{WsClose, WsCloseCode, WsMessage, connection_error, from_tungstenite, into_tungstenite};
+use crate::ws::{
+    connection_error, from_tungstenite, into_tungstenite, WsClose, WsCloseCode, WsMessage,
+};
 
 /// Buffer size for the in-process duplex connecting client and server.
 const WS_DUPLEX_BUFFER: usize = 64 * 1024;
@@ -82,7 +84,7 @@ pub struct TestWebSocketBuilder {
     shared: Arc<Shared>,
     path: String,
     query: Vec<(String, String)>,
-    headers: Vec<(HeaderName, HeaderValue)>,
+    headers: Vec<TestHeader>,
     subprotocols: Vec<String>,
 }
 
@@ -99,10 +101,23 @@ impl TestWebSocketBuilder {
 
     /// Adds a header to the upgrade request.
     pub fn header(mut self, name: &str, value: &str) -> Self {
-        if let (Ok(name), Ok(value)) =
-            (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value))
-        {
-            self.headers.push((name, value));
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            self.headers.push(TestHeader::safe(name, value));
+        }
+        self
+    }
+
+    /// Adds a security-sensitive header to the upgrade request, bypassing the
+    /// in-process guard.
+    pub fn unsafe_header(mut self, name: &str, value: &str) -> Self {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            self.headers.push(TestHeader::unsafe_allowed(name, value));
         }
         self
     }
@@ -137,8 +152,13 @@ impl TestWebSocketBuilder {
         for (name, value) in self.shared.default_headers.iter() {
             base_headers.insert(name, value.clone());
         }
-        for (name, value) in &self.headers {
-            base_headers.insert(name.clone(), value.clone());
+        for (name, value) in self.shared.unsafe_default_headers.iter() {
+            base_headers.insert(name, value.clone());
+        }
+        self.shared
+            .reject_in_process_sensitive_headers(&self.headers)?;
+        for header in &self.headers {
+            base_headers.insert(header.name.clone(), header.value.clone());
         }
         self.shared
             .cookies
@@ -174,9 +194,12 @@ impl TestWebSocketBuilder {
                 if response.status() != StatusCode::SWITCHING_PROTOCOLS {
                     return Err(rejected(response.status()));
                 }
-                let stream =
-                    WebSocketStream::from_raw_socket(ClientIo::Duplex(client_io), Role::Client, None)
-                        .await;
+                let stream = WebSocketStream::from_raw_socket(
+                    ClientIo::Duplex(client_io),
+                    Role::Client,
+                    None,
+                )
+                .await;
                 Ok(TestWebSocket { stream })
             }
             Transport::RealPort(addr) => {
@@ -324,20 +347,21 @@ fn decode_error(error: serde_json::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use super::super::client::{Shared, Transport};
+    use super::super::cookie::CookieJar;
     use super::*;
     use crate::app::App;
-    use super::super::cookie::CookieJar;
-    use super::super::client::{Shared, Transport};
     use http::HeaderMap;
     use std::sync::Arc;
-    use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn builder_ignores_invalid_headers_and_keeps_query_and_subprotocols() {
         let shared = Arc::new(Shared {
             transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
             default_headers: HeaderMap::new(),
+            unsafe_default_headers: HeaderMap::new(),
             cookies: std::sync::Mutex::new(CookieJar::default()),
         });
 
@@ -350,8 +374,27 @@ mod tests {
             .subprotocol("binary");
 
         assert_eq!(builder.headers.len(), 1);
-        assert_eq!(builder.query, vec![("room".to_owned(), "main hall".to_owned())]);
-        assert_eq!(builder.subprotocols, vec!["json".to_owned(), "binary".to_owned()]);
+        assert_eq!(
+            builder.query,
+            vec![("room".to_owned(), "main hall".to_owned())]
+        );
+        assert_eq!(
+            builder.subprotocols,
+            vec!["json".to_owned(), "binary".to_owned()]
+        );
+    }
+
+    #[test]
+    fn unsafe_header_marks_the_entry() {
+        let shared = Arc::new(Shared {
+            transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
+            default_headers: HeaderMap::new(),
+            unsafe_default_headers: HeaderMap::new(),
+            cookies: std::sync::Mutex::new(CookieJar::default()),
+        });
+        let builder = TestWebSocketBuilder::new(shared, "/ws").unsafe_header("host", "example.com");
+        assert_eq!(builder.headers.len(), 1);
+        assert!(builder.headers[0].unsafe_allowed);
     }
 
     #[test]
@@ -456,6 +499,7 @@ mod tests {
         let shared = Arc::new(Shared {
             transport: Transport::InProcess(Arc::new(App::new().build().unwrap())),
             default_headers: HeaderMap::new(),
+            unsafe_default_headers: HeaderMap::new(),
             cookies: std::sync::Mutex::new(CookieJar::default()),
         });
 

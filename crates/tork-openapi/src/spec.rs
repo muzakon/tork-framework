@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use tork_core::constants::APPLICATION_JSON;
 use tork_core::{
-    BoxFuture, HandlerFn, Method, OpenApiProvider, RequestBodyKind, RequestContext, Response,
-    Result, Route, StatusCode, bytes_response,
+    bytes_response, BoxFuture, HandlerFn, Method, OpenApiProvider, RequestBodyKind, RequestContext,
+    Response, Result, Route, StatusCode,
 };
 
 /// OpenAPI specification version emitted by the document.
@@ -147,15 +147,16 @@ pub(crate) fn check_guard(guard: &Option<DocGuard>, ctx: &RequestContext) -> Res
 
 /// Builds a route that serves a pre-serialized document at `path`.
 fn spec_route(path: &str, body: Bytes, guard: Option<DocGuard>) -> Route {
-    let handler: HandlerFn =
-        Arc::new(move |ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+    let handler: HandlerFn = Arc::new(
+        move |ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
             let body = body.clone();
             let guard = guard.clone();
             Box::pin(async move {
                 check_guard(&guard, &ctx)?;
                 Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, body))
             })
-        });
+        },
+    );
 
     Route::new(Method::GET, path.to_owned(), handler).summary("OpenAPI specification")
 }
@@ -174,15 +175,22 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
 
         let mut operation = Map::new();
         if let Some(summary) = &meta.summary {
-            operation.insert("summary".to_owned(), json!(summary));
+            operation.insert("summary".to_owned(), json!(sanitize_doc_text(summary)));
         }
         if let Some(description) = &meta.description {
-            operation.insert("description".to_owned(), json!(description));
+            operation.insert(
+                "description".to_owned(),
+                json!(sanitize_doc_text(description)),
+            );
         }
         if !meta.tags.is_empty() {
-            operation.insert("tags".to_owned(), json!(meta.tags));
+            let tags: Vec<String> = meta.tags.iter().map(|tag| sanitize_doc_text(tag)).collect();
+            operation.insert("tags".to_owned(), json!(tags));
         }
-        operation.insert("operationId".to_owned(), json!(operation_id(&method, &path)));
+        operation.insert(
+            "operationId".to_owned(),
+            json!(operation_id(&method, &path)),
+        );
 
         let parameters: Vec<Value> = placeholder_names(&path)
             .into_iter()
@@ -257,10 +265,13 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
     }
 
     let mut info = Map::new();
-    info.insert("title".to_owned(), json!(api.title));
+    info.insert("title".to_owned(), json!(sanitize_doc_text(&api.title)));
     info.insert("version".to_owned(), json!(api.version));
     if let Some(description) = &api.description {
-        info.insert("description".to_owned(), json!(description));
+        info.insert(
+            "description".to_owned(),
+            json!(sanitize_doc_text(description)),
+        );
     }
 
     let mut document = json!({
@@ -276,6 +287,24 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
     }
 
     document
+}
+
+pub(crate) fn sanitize_doc_text(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => sanitized.push_str("&amp;"),
+            '<' => sanitized.push_str("&lt;"),
+            '>' => sanitized.push_str("&gt;"),
+            '"' => sanitized.push_str("&quot;"),
+            '\'' => sanitized.push_str("&#x27;"),
+            '`' => sanitized.push_str("&#x60;"),
+            '\n' | '\r' | '\t' => sanitized.push(ch),
+            ch if ch.is_control() => sanitized.push(' '),
+            _ => sanitized.push(ch),
+        }
+    }
+    sanitized
 }
 
 /// Derives a stable `operationId` from the method and path.
@@ -316,18 +345,24 @@ mod tests {
     use super::*;
 
     fn dummy_handler() -> HandlerFn {
-        Arc::new(|_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
-            Box::pin(async { Ok(bytes_response(StatusCode::OK, APPLICATION_JSON, Bytes::new())) })
-        })
+        Arc::new(
+            |_ctx: RequestContext| -> BoxFuture<'static, Result<Response>> {
+                Box::pin(async {
+                    Ok(bytes_response(
+                        StatusCode::OK,
+                        APPLICATION_JSON,
+                        Bytes::new(),
+                    ))
+                })
+            },
+        )
     }
 
     #[test]
     fn document_describes_routes() {
-        let routes = vec![
-            Route::new(Method::GET, "/users/{user_id}", dummy_handler())
-                .summary("Get user")
-                .tag("users"),
-        ];
+        let routes = vec![Route::new(Method::GET, "/users/{user_id}", dummy_handler())
+            .summary("Get user")
+            .tag("users")];
 
         let document = OpenApi::new()
             .title("My API")
@@ -372,16 +407,17 @@ mod tests {
 
         let schemas = &OpenApi::new().build_document(&routes)["components"]["schemas"];
         assert!(schemas["Outer"].is_object(), "outer missing: {schemas}");
-        assert!(schemas["Inner"].is_object(), "nested inner missing: {schemas}");
+        assert!(
+            schemas["Inner"].is_object(),
+            "nested inner missing: {schemas}"
+        );
     }
 
     #[test]
     fn document_includes_component_schemas() {
-        let routes = vec![
-            Route::new(Method::POST, "/samples", dummy_handler())
-                .request_schema::<Sample>()
-                .response_schema::<Sample>(),
-        ];
+        let routes = vec![Route::new(Method::POST, "/samples", dummy_handler())
+            .request_schema::<Sample>()
+            .response_schema::<Sample>()];
 
         let document = OpenApi::new().build_document(&routes);
 
@@ -392,7 +428,8 @@ mod tests {
         );
 
         let operation = &document["paths"]["/samples"]["post"];
-        let request_ref = &operation["requestBody"]["content"]["application/json"]["schema"]["$ref"];
+        let request_ref =
+            &operation["requestBody"]["content"]["application/json"]["schema"]["$ref"];
         let response_ref =
             &operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
         assert_eq!(request_ref, "#/components/schemas/Sample");
@@ -415,11 +452,9 @@ mod tests {
             .unwrap()
         }
 
-        let routes = vec![
-            Route::new(Method::POST, "/files", dummy_handler())
-                .request_schema_fn(form_schema)
-                .request_kind(RequestBodyKind::Multipart),
-        ];
+        let routes = vec![Route::new(Method::POST, "/files", dummy_handler())
+            .request_schema_fn(form_schema)
+            .request_kind(RequestBodyKind::Multipart)];
 
         let document = OpenApi::new().build_document(&routes);
         let content = &document["paths"]["/files"]["post"]["requestBody"]["content"];
@@ -434,11 +469,9 @@ mod tests {
 
     #[test]
     fn urlencoded_route_documents_form_content_type() {
-        let routes = vec![
-            Route::new(Method::POST, "/login", dummy_handler())
-                .request_schema::<Sample>()
-                .request_kind(RequestBodyKind::Form),
-        ];
+        let routes = vec![Route::new(Method::POST, "/login", dummy_handler())
+            .request_schema::<Sample>()
+            .request_kind(RequestBodyKind::Form)];
 
         let document = OpenApi::new().build_document(&routes);
         let content = &document["paths"]["/login"]["post"]["requestBody"]["content"];
@@ -452,11 +485,9 @@ mod tests {
 
     #[test]
     fn streaming_route_documents_event_stream() {
-        let routes = vec![
-            Route::new(Method::GET, "/stream", dummy_handler())
-                .response_schema::<Sample>()
-                .streaming(),
-        ];
+        let routes = vec![Route::new(Method::GET, "/stream", dummy_handler())
+            .response_schema::<Sample>()
+            .streaming()];
 
         let document = OpenApi::new().build_document(&routes);
         let response = &document["paths"]["/stream"]["get"]["responses"]["200"];
@@ -498,5 +529,28 @@ mod tests {
             placeholder_names("/teams/{team_id}/members/{*rest}"),
             vec!["team_id".to_owned(), "rest".to_owned()]
         );
+    }
+
+    #[test]
+    fn document_sanitizes_route_and_info_text_fields() {
+        let routes = vec![Route::new(Method::GET, "/users/{user_id}", dummy_handler())
+            .summary("<script>alert(1)</script>")
+            .description("bad\u{0007}`quote`")
+            .tag("ops<script>")];
+
+        let document = OpenApi::new()
+            .title("Docs <unsafe>")
+            .description("line\u{0001}two")
+            .build_document(&routes);
+
+        let operation = &document["paths"]["/users/{user_id}"]["get"];
+        assert_eq!(
+            operation["summary"],
+            "&lt;script&gt;alert(1)&lt;/script&gt;"
+        );
+        assert_eq!(operation["description"], "bad &#x60;quote&#x60;");
+        assert_eq!(operation["tags"][0], "ops&lt;script&gt;");
+        assert_eq!(document["info"]["title"], "Docs &lt;unsafe&gt;");
+        assert_eq!(document["info"]["description"], "line two");
     }
 }
