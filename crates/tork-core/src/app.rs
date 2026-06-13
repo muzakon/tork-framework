@@ -418,6 +418,10 @@ impl App {
 
         // Make the default WebSocket config available to websocket handlers.
         if let Some(config) = ws_config {
+            // A per-IP connection cap needs one shared counter for the whole app.
+            if let Some(max) = config.ip_connection_limit() {
+                state.insert(crate::ws::WsIpLimiter::new(max));
+            }
             state.insert(AppWsConfig(config));
         }
         // Make the WebSocket lifecycle hooks available to websocket handlers.

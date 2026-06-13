@@ -8,8 +8,10 @@
 //! `tokio-tungstenite`, which users never see directly.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -47,6 +49,9 @@ const WEBSOCKET_VERSION: &str = "13";
 const NOT_A_WEBSOCKET: &str = "NOT_A_WEBSOCKET";
 /// Header consulted to correlate a connection with a request identifier.
 const REQUEST_ID_HEADER: &str = "x-request-id";
+/// Default time allowed for the upgrade handshake to complete before the
+/// pending connection is abandoned, so a stalled client cannot hold a slot.
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A WebSocket close status code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +198,8 @@ pub struct WebSocketConfig {
     max_message_size: Option<usize>,
     max_frame_size: Option<usize>,
     idle_timeout: Option<Duration>,
+    handshake_timeout: Option<Duration>,
+    max_connections_per_ip: Option<usize>,
     origin_policy: Option<WsOriginPolicy>,
 }
 
@@ -241,6 +248,22 @@ impl WebSocketConfig {
         self.idle_timeout(Duration::from_secs(secs))
     }
 
+    /// Sets how long the upgrade handshake may take before the pending
+    /// connection is abandoned (default 10 seconds). Guards against a slow client
+    /// that opens the upgrade and then stalls, holding a connection slot.
+    pub fn handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = Some(timeout);
+        self
+    }
+
+    /// Limits the number of concurrent WebSocket connections from a single client
+    /// IP; further connections from that IP are rejected with `429`. An
+    /// application-level setting (`App::websocket_config`).
+    pub fn max_connections_per_ip(mut self, max: usize) -> Self {
+        self.max_connections_per_ip = Some(max);
+        self
+    }
+
     /// Allows a browser `Origin` for this WebSocket endpoint.
     pub fn allow_origin(mut self, origin: impl Into<String>) -> Self {
         match &mut self.origin_policy {
@@ -262,8 +285,15 @@ impl WebSocketConfig {
             max_message_size: self.max_message_size.or(base.max_message_size),
             max_frame_size: self.max_frame_size.or(base.max_frame_size),
             idle_timeout: self.idle_timeout.or(base.idle_timeout),
+            handshake_timeout: self.handshake_timeout.or(base.handshake_timeout),
+            max_connections_per_ip: self.max_connections_per_ip.or(base.max_connections_per_ip),
             origin_policy: self.origin_policy.or_else(|| base.origin_policy.clone()),
         }
+    }
+
+    /// The configured per-IP connection cap, if any.
+    pub(crate) fn ip_connection_limit(&self) -> Option<usize> {
+        self.max_connections_per_ip
     }
 
     /// Maps the size limits onto a tungstenite config, or `None` if both unset.
@@ -282,6 +312,56 @@ impl WebSocketConfig {
 /// The application-wide default WebSocket configuration, stored in the state map.
 #[derive(Clone)]
 pub(crate) struct AppWsConfig(pub(crate) WebSocketConfig);
+
+/// Tracks live WebSocket connections per client IP to cap how many a single
+/// client may hold open. Shared app-wide via the state map.
+#[derive(Clone)]
+pub(crate) struct WsIpLimiter {
+    counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    max: usize,
+}
+
+impl WsIpLimiter {
+    pub(crate) fn new(max: usize) -> Self {
+        Self {
+            counts: Arc::new(Mutex::new(HashMap::new())),
+            max,
+        }
+    }
+
+    /// Reserves a connection slot for `ip`, returning a permit that releases it on
+    /// drop, or `None` if the client already holds the maximum.
+    fn try_acquire(&self, ip: IpAddr) -> Option<WsIpPermit> {
+        let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+        let count = counts.entry(ip).or_insert(0);
+        if *count >= self.max {
+            return None;
+        }
+        *count += 1;
+        Some(WsIpPermit {
+            counts: Arc::clone(&self.counts),
+            ip,
+        })
+    }
+}
+
+/// Releases an IP's reserved connection slot when the connection ends.
+struct WsIpPermit {
+    counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl Drop for WsIpPermit {
+    fn drop(&mut self) {
+        let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(count) = counts.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                counts.remove(&self.ip);
+            }
+        }
+    }
+}
 
 /// Connection metadata shared by the lifecycle events.
 #[derive(Clone)]
@@ -440,6 +520,7 @@ pub struct WebSocket {
     config: WebSocketConfig,
     hooks: Arc<WsHooks>,
     info: WsConnInfo,
+    permit: Option<WsIpPermit>,
 }
 
 impl WebSocket {
@@ -457,6 +538,24 @@ impl WebSocket {
             .get::<AppWsConfig>()
             .map(|config| config.0.clone())
             .unwrap_or_default();
+        let config = route.merge(&app_default);
+
+        // Enforce the per-IP connection cap before the upgrade, so an abusive
+        // client is rejected with a normal HTTP `429` rather than completing a
+        // socket. The permit is held for the connection's lifetime.
+        let permit = match (
+            config.max_connections_per_ip,
+            ctx.state().get::<WsIpLimiter>(),
+            ctx.peer_addr(),
+        ) {
+            (Some(_), Some(limiter), Some(peer)) => {
+                Some(limiter.try_acquire(peer.ip()).ok_or_else(|| {
+                    Error::too_many_requests("too many WebSocket connections from this client")
+                })?)
+            }
+            _ => None,
+        };
+
         let hooks = ctx
             .state()
             .get::<WsHooks>()
@@ -473,9 +572,10 @@ impl WebSocket {
         };
         Ok(Self {
             upgrade,
-            config: route.merge(&app_default),
+            config,
             hooks,
             info,
+            permit,
         })
     }
 
@@ -484,11 +584,20 @@ impl WebSocket {
     /// Fires the `on_ws_connect` hooks once the socket is open.
     pub async fn accept(self) -> Result<WebSocketConn> {
         let idle_timeout = self.config.idle_timeout;
+        let handshake_timeout = self
+            .config
+            .handshake_timeout
+            .unwrap_or(DEFAULT_HANDSHAKE_TIMEOUT);
         let transport = match self.upgrade {
             Upgrade::Hyper(on_upgrade) => {
-                let upgraded = on_upgrade.await.map_err(|error| {
-                    Error::internal(format!("websocket upgrade failed: {error}"))
-                })?;
+                // Bound the handshake so a client that stalls after starting the
+                // upgrade cannot hold the pending connection open indefinitely.
+                let upgraded = tokio::time::timeout(handshake_timeout, on_upgrade)
+                    .await
+                    .map_err(|_| Error::internal("websocket upgrade timed out"))?
+                    .map_err(|error| {
+                        Error::internal(format!("websocket upgrade failed: {error}"))
+                    })?;
                 WsTransport::Upgraded(TokioIo::new(upgraded))
             }
             Upgrade::Duplex(duplex) => WsTransport::Duplex(duplex),
@@ -508,6 +617,7 @@ impl WebSocket {
             info: self.info,
             started: Instant::now(),
             close_code: None,
+            _permit: self.permit,
         })
     }
 }
@@ -520,6 +630,8 @@ pub struct WebSocketConn {
     info: WsConnInfo,
     started: Instant,
     close_code: Option<WsCloseCode>,
+    /// Held for the connection's lifetime; releases the per-IP slot on drop.
+    _permit: Option<WsIpPermit>,
 }
 
 impl Drop for WebSocketConn {
@@ -1321,5 +1433,47 @@ mod tests {
         let error = connection_error(tokio_tungstenite::tungstenite::Error::ConnectionClosed);
         assert_eq!(error.code(), "WS_CONNECTION_ERROR");
         assert!(error.message().contains("websocket connection error:"));
+    }
+
+    #[test]
+    fn ws_ip_limiter_caps_per_ip_and_releases_on_drop() {
+        use std::net::Ipv4Addr;
+
+        let limiter = WsIpLimiter::new(2);
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+        let first = limiter.try_acquire(ip).expect("first is under the limit");
+        let _second = limiter.try_acquire(ip).expect("second reaches the limit");
+        assert!(
+            limiter.try_acquire(ip).is_none(),
+            "a third connection from the same IP is rejected"
+        );
+
+        // A different IP has its own budget.
+        let other = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        assert!(limiter.try_acquire(other).is_some());
+
+        // Releasing a permit frees a slot for that IP again.
+        drop(first);
+        assert!(
+            limiter.try_acquire(ip).is_some(),
+            "dropping a connection frees a slot"
+        );
+    }
+
+    #[test]
+    fn route_config_overrides_app_defaults_for_new_limits() {
+        let app = WebSocketConfig::new()
+            .handshake_timeout(Duration::from_secs(5))
+            .max_connections_per_ip(10);
+        let route = WebSocketConfig::new().max_connections_per_ip(3);
+
+        let merged = route.merge(&app);
+        assert_eq!(merged.ip_connection_limit(), Some(3), "route wins");
+        assert_eq!(
+            merged.handshake_timeout,
+            Some(Duration::from_secs(5)),
+            "unset on the route, taken from the app default"
+        );
     }
 }

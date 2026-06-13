@@ -82,12 +82,12 @@ Status legend:
 ## 17. No Per-Client WebSocket Connection Limit (Medium Risk)
 - **Risk:** The WebSocket upgrade path has no limit on the number of concurrent connections from a single client IP.
 - **Vulnerability:** A single client can open thousands of WebSocket connections, exhausting server memory, file descriptors, and task capacity. This is a denial-of-service vector, especially without rate limiting.
-- **Status:** Untested and unimplemented.
+- **Status:** RESOLVED. `WebSocketConfig::max_connections_per_ip` caps concurrent connections per client IP via a shared app-wide counter; the cap is enforced before the upgrade and over-limit clients get `429`. The slot is held by a permit released when the connection ends. Covered by `ws_ip_limiter_caps_per_ip_and_releases_on_drop`.
 
 ## 18. Hub Room Memory Leak (Medium Risk / Resource Exhaustion)
 - **Risk:** The `Hub` ([`realtime.rs:L16-L59`](crates/tork-core/src/realtime.rs)) stores rooms in a `HashMap` behind a `Mutex`. Once created, rooms are never evicted.
 - **Bug:** In a long-running server where rooms are dynamically named (e.g., per-user or per-session rooms), the `HashMap` grows unboundedly. Each room holds a `broadcast::Sender` with a 256-message buffer. Over time this causes unbounded memory growth.
-- **Status:** Untested. No eviction, TTL, or cleanup mechanism exists.
+- **Status:** RESOLVED. `Hub::room` evicts dead rooms (no subscribers and no outstanding `Room` handles, detected via `Arc::strong_count` + `receiver_count`) whenever a new room is created, bounding growth for dynamically named rooms. Covered by `dead_rooms_are_evicted_when_a_new_room_is_created` and `rooms_with_live_handles_or_subscribers_are_kept`.
 
 ## 19. Missing Security Headers Middleware (Medium Risk / Feature Deficit)
 - **Risk:** The framework provides no middleware for standard security headers (`Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Content-Security-Policy`, `Referrer-Policy`).
@@ -97,7 +97,7 @@ Status legend:
 ## 20. WebSocket Upgrade No Handshake Timeout (Medium Risk)
 - **Risk:** The WebSocket upgrade process ([`ws.rs:L461-L488`](crates/tork-core/src/ws.rs)) awaits `on_upgrade.await` without a timeout.
 - **Vulnerability:** A slow or malicious client can initiate a WebSocket upgrade and then stall the TCP connection indefinitely before completing the handshake. The server task waits forever, consuming a connection slot.
-- **Status:** Untested. No timeout on the upgrade future.
+- **Status:** RESOLVED. `WebSocket::accept` bounds `on_upgrade` with a handshake timeout (default 10s, configurable via `WebSocketConfig::handshake_timeout`); a client that stalls the upgrade is dropped instead of holding the slot. Covered by `route_config_overrides_app_defaults_for_new_limits` (config) and the timeout path in `accept`.
 
 ## 21. Graceful Shutdown Drops In-Flight WebSocket Connections (Medium Risk)
 - **Risk:** The server's graceful shutdown ([`server.rs:L76`](crates/tork-core/src/server.rs)) drains HTTP connections with a timeout but does not explicitly close WebSocket connections.

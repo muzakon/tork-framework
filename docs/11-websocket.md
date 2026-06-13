@@ -90,7 +90,11 @@ use std::time::Duration;
 use tork::WebSocketConfig;
 
 App::new().websocket_config(
-    WebSocketConfig::new().max_message_size_kb(64).idle_timeout_secs(120),
+    WebSocketConfig::new()
+        .max_message_size_kb(64)
+        .idle_timeout_secs(120)
+        .handshake_timeout(Duration::from_secs(10))
+        .max_connections_per_ip(20),
 );
 
 #[websocket("/chat/{room}", max_message_size = "64KB", idle_timeout = "60s")]
@@ -100,6 +104,15 @@ pub async fn chat(socket: WebSocket /* ... */) -> tork::Result<()> { /* ... */ }
 `max_message_size` and `max_frame_size` bound incoming data; `idle_timeout` closes
 a connection that has been silent for too long (sizes accept `"64KB"`/`"1MB"`,
 durations accept `"500ms"`/`"60s"`/`"2m"`).
+
+Two limits guard against denial-of-service:
+
+- `handshake_timeout` (default 10 seconds) bounds how long the upgrade may take, so
+  a client that opens the upgrade and then stalls cannot hold a connection slot
+  forever.
+- `max_connections_per_ip` caps how many WebSockets one client IP may hold open at
+  once; further connections from that IP are rejected with `429 Too Many Requests`
+  before the upgrade. This is an application-level setting (`App::websocket_config`).
 
 ## Lifecycle hooks
 
@@ -146,6 +159,10 @@ pub async fn chat(socket: WebSocket, room: String, hub: ChatHub) -> tork::Result
 `room.broadcast(message)` sends to every current subscriber and returns how many
 it reached. (Because `Hub` is a foreign type, wrap it in a local newtype to inject
 it as a resource: `#[derive(Clone)] pub struct ChatHub(pub Hub<ChatMessage>);`.)
+
+A `Hub` is safe for dynamically named rooms (per user or per session): creating a
+new room first evicts any room that has become dead — no subscribers and no
+outstanding `Room` handles — so the registry does not grow without bound.
 
 ## Documenting channels with AsyncAPI
 
