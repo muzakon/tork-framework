@@ -84,6 +84,42 @@ These apply whether or not TLS is enabled (HTTP/2 also works cleartext via the h
 upgrade). The slowloris-bounding request-head read timeout is separate — see
 `App::header_read_timeout`.
 
+## Server options
+
+```rust
+use std::time::Duration;
+
+App::new()
+    .max_request_body_size(8 * 1024 * 1024)   // cap buffered bodies (default 2 MiB)
+    .header_read_timeout(Duration::from_secs(30))  // slowloris guard (on by default)
+    .idle_timeout(Duration::from_secs(60))    // drop inactive connections (off by default)
+    .reuse_port(true);                         // SO_REUSEPORT across processes (Unix)
+```
+
+- **`max_request_body_size`** bounds the JSON, `Valid<T>`, and urlencoded `Form<T>`
+  extractors, rejecting an oversized body with `400` before it is fully buffered.
+  Multipart uploads use their own [`UploadConfig`](12-forms-and-file-uploads.md)
+  limits.
+- **`header_read_timeout`** (default 30s) caps how long a client may take to send
+  the request head, so a slow-header connection cannot tie up a worker. Lift it with
+  `without_header_read_timeout()` only behind a trusted proxy.
+- **`idle_timeout`** is off by default — a legitimately idle WebSocket or quiet SSE
+  stream is normal, and enabling it would close them. Turn it on (well above your SSE
+  heartbeat) only when your routes do not rely on long-lived idle connections.
+- **`reuse_port`** sets `SO_REUSEPORT` (Unix) so several processes can listen on the
+  same address and the kernel load-balances connections across them.
+
+## Unix-domain sockets
+
+Serve over a Unix socket instead of TCP — useful behind a same-host reverse proxy. A
+stale socket file is removed before binding:
+
+```rust
+App::new().include(index).serve_unix("/tmp/my_api.sock").await?;
+```
+
+There is also `serve_unix_with_shutdown(path, future)` for a caller-driven shutdown.
+
 ## Behind a reverse proxy
 
 Terminating TLS at Tork is fully supported, but many deployments terminate TLS at a

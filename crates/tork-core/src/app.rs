@@ -3,11 +3,11 @@
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use http::{HeaderMap, Method, StatusCode, Uri};
-use tokio::net::TcpListener;
 
 use crate::error::{Error, Result};
 use crate::hooks::{
@@ -97,6 +97,9 @@ pub struct App {
     cache: Option<crate::cache::Cache>,
     throttler: Option<crate::throttle::Throttler>,
     max_sse_connections: Option<usize>,
+    max_request_body_size: Option<usize>,
+    reuse_port: bool,
+    idle_timeout: Option<Duration>,
     header_read_timeout: Option<Duration>,
     http1_config: Option<Http1Config>,
     http2_config: Option<Http2Config>,
@@ -138,6 +141,9 @@ impl App {
             cache: None,
             throttler: None,
             max_sse_connections: None,
+            max_request_body_size: None,
+            reuse_port: false,
+            idle_timeout: None,
             header_read_timeout: Some(crate::constants::DEFAULT_HEADER_READ_TIMEOUT),
             http1_config: None,
             http2_config: None,
@@ -366,6 +372,40 @@ impl App {
         self
     }
 
+    /// Closes a connection after this long with no read or write activity.
+    ///
+    /// Bounds slow or abandoned connections (and zombie keep-alive sockets). It is
+    /// off by default, because a legitimately idle long-lived connection — an open
+    /// WebSocket or a quiet Server-Sent Events stream — is normal; enable it only
+    /// when your routes do not rely on long-lived idle connections, or set it
+    /// comfortably above your SSE heartbeat interval.
+    pub fn idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = Some(timeout);
+        self
+    }
+
+    /// Binds the listening socket with `SO_REUSEPORT` (Unix), so several processes
+    /// or instances can listen on the same address and the kernel load-balances new
+    /// connections across them.
+    ///
+    /// Has no effect on non-Unix platforms. Off by default.
+    pub fn reuse_port(mut self, enabled: bool) -> Self {
+        self.reuse_port = enabled;
+        self
+    }
+
+    /// Sets the maximum size, in bytes, of a buffered request body.
+    ///
+    /// Applies to the JSON, `Valid<T>`, and urlencoded `Form<T>` body extractors,
+    /// which enforce the cap incrementally as the body arrives (an oversized body is
+    /// rejected with `400` before it is fully buffered). Multipart uploads have their
+    /// own [`UploadConfig`] limits. Defaults to
+    /// [`MAX_BODY_BYTES`](crate::constants::MAX_BODY_BYTES) (2 MiB).
+    pub fn max_request_body_size(mut self, bytes: usize) -> Self {
+        self.max_request_body_size = Some(bytes);
+        self
+    }
+
     /// Sets how long a client may take to send the complete request head (request
     /// line + headers) after its connection is accepted.
     ///
@@ -531,6 +571,8 @@ impl App {
             cache,
             throttler,
             max_sse_connections,
+            max_request_body_size,
+            idle_timeout,
             header_read_timeout,
             http1_config,
             http2_config,
@@ -561,6 +603,11 @@ impl App {
         // A concurrent-connection cap for SSE streams, when configured.
         if let Some(limit) = max_sse_connections {
             state.insert(crate::sse::SseLimiter::new(limit));
+        }
+
+        // The request-body size cap read by the body extractors, when configured.
+        if let Some(limit) = max_request_body_size {
+            state.insert(crate::extract::body::AppBodyLimit(limit));
         }
 
         // Make the default WebSocket config available to websocket handlers.
@@ -622,6 +669,7 @@ impl App {
             request_logs,
             exception_handlers: Arc::new(exception_handlers),
             ws_shutdown,
+            idle_timeout,
             header_read_timeout,
             http1_config,
             http2_config,
@@ -649,12 +697,68 @@ impl App {
     ///
     /// Like [`serve`](App::serve) but driven by a caller-supplied future instead
     /// of `SIGINT`/`SIGTERM`, for custom graceful shutdown (and for tests).
-    pub async fn serve_with_shutdown<S>(mut self, addr: impl AsRef<str>, shutdown: S) -> Result<()>
+    pub async fn serve_with_shutdown<S>(self, addr: impl AsRef<str>, shutdown: S) -> Result<()>
     where
         S: std::future::Future<Output = ()>,
     {
-        let addr = addr.as_ref();
+        let reuse_port = self.reuse_port;
+        let addr = addr.as_ref().to_owned();
+        self.serve_listener(shutdown, move || async move {
+            let listener = crate::server::bind_tcp_listener(&addr, reuse_port)
+                .await
+                .map_err(|error| Error::internal(format!("failed to bind {addr}: {error}")))?;
+            let local = listener.local_addr().map_err(|error| {
+                Error::internal(format!("failed to read local address: {error}"))
+            })?;
+            Ok((listener, local, None))
+        })
+        .await
+    }
 
+    /// Serves over a Unix-domain socket at `path`, until a `SIGINT`/`SIGTERM`.
+    ///
+    /// Useful behind a reverse proxy on the same host. A stale socket file at
+    /// `path` is removed before binding. Unix only.
+    #[cfg(unix)]
+    pub async fn serve_unix(self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        self.serve_unix_with_shutdown(path, shutdown_signal()).await
+    }
+
+    /// Serves over a Unix-domain socket at `path`, stopping when `shutdown`
+    /// resolves. Unix only.
+    #[cfg(unix)]
+    pub async fn serve_unix_with_shutdown<S>(
+        self,
+        path: impl AsRef<std::path::Path>,
+        shutdown: S,
+    ) -> Result<()>
+    where
+        S: std::future::Future<Output = ()>,
+    {
+        let path = path.as_ref().to_owned();
+        self.serve_listener(shutdown, move || async move {
+            // Remove a stale socket file so re-binding the path succeeds.
+            let _ = std::fs::remove_file(&path);
+            let listener = tokio::net::UnixListener::bind(&path).map_err(|error| {
+                Error::internal(format!("failed to bind {}: {error}", path.display()))
+            })?;
+            // Unix sockets have no `SocketAddr`; readiness hooks get a placeholder.
+            let placeholder: SocketAddr = "0.0.0.0:0".parse().expect("valid placeholder address");
+            Ok((listener, placeholder, Some(path.display().to_string())))
+        })
+        .await
+    }
+
+    /// Shared serve lifecycle: startup, build, bind (via `bind`), readiness, the
+    /// accept loop, and shutdown. `bind` runs *after* startup so the socket is only
+    /// exposed once startup hooks have completed.
+    async fn serve_listener<S, L, F, Fut>(mut self, shutdown: S, bind: F) -> Result<()>
+    where
+        S: std::future::Future<Output = ()>,
+        L: crate::server::IncomingListener,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<(L, SocketAddr, Option<String>)>>,
+    {
         // Install the global logging subscriber first, so the whole lifecycle is
         // logged. The handle is kept alive for the duration of the run.
         // Clone (not take) so `build` can still read it for the request-log flag.
@@ -680,25 +784,27 @@ impl App {
                 .emit();
         }
 
-        let listener = TcpListener::bind(addr)
-            .await
-            .map_err(|error| Error::internal(format!("failed to bind {addr}: {error}")))?;
-        let local = listener
-            .local_addr()
-            .map_err(|error| Error::internal(format!("failed to read local address: {error}")))?;
+        // Bind only after startup, so clients cannot connect before the app is ready.
+        let (listener, ready_addr, unix_display) = bind().await.inspect_err(log_boot_error)?;
 
         for hook in &on_ready {
-            hook(ReadyContext::new(local))
+            hook(ReadyContext::new(ready_addr))
                 .await
                 .inspect_err(log_boot_error)?;
         }
 
-        #[cfg(feature = "tls")]
-        let scheme = if app.tls_acceptor().is_some() { "https" } else { "http" };
-        #[cfg(not(feature = "tls"))]
-        let scheme = "http";
+        let running_on = match unix_display {
+            Some(path) => format!("unix:{path}"),
+            None => {
+                #[cfg(feature = "tls")]
+                let scheme = if app.tls_acceptor().is_some() { "https" } else { "http" };
+                #[cfg(not(feature = "tls"))]
+                let scheme = "http";
+                format!("{scheme}://{ready_addr}")
+            }
+        };
         Logger::framework("Tork")
-            .info(format!("Application is running on {scheme}://{local}"))
+            .info(format!("Application is running on {running_on}"))
             .emit();
 
         run_with_shutdown(app, listener, shutdown).await;
@@ -830,6 +936,8 @@ pub struct AppInner {
     /// Broadcasts a shutdown signal to in-flight WebSocket connections so they
     /// can close cleanly instead of being abruptly dropped.
     ws_shutdown: tokio::sync::watch::Sender<bool>,
+    /// Closes a connection after this long with no read/write activity.
+    idle_timeout: Option<Duration>,
     /// Deadline for a client to send the full request head; bounds slowloris.
     header_read_timeout: Option<Duration>,
     /// HTTP/1 connection tuning applied to the server builder.
@@ -845,6 +953,11 @@ impl AppInner {
     /// Returns the configured request-head read timeout, if any.
     pub(crate) fn header_read_timeout(&self) -> Option<Duration> {
         self.header_read_timeout
+    }
+
+    /// Returns the configured connection idle timeout, if any.
+    pub(crate) fn idle_timeout(&self) -> Option<Duration> {
+        self.idle_timeout
     }
 
     /// Returns the HTTP/1 connection tuning, if any.

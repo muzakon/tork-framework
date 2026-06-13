@@ -13,6 +13,19 @@ use crate::response::Json;
 /// Maximum nesting depth accepted for a buffered JSON payload.
 pub(crate) const MAX_JSON_NESTING: usize = 128;
 
+/// The app-wide request-body size cap, stored in app state by
+/// [`App::max_request_body_size`](crate::App::max_request_body_size).
+#[derive(Clone, Copy)]
+pub(crate) struct AppBodyLimit(pub(crate) usize);
+
+/// Returns the configured request-body cap, falling back to [`MAX_BODY_BYTES`].
+pub(crate) fn configured_body_limit(ctx: &RequestContext) -> usize {
+    ctx.state()
+        .get::<AppBodyLimit>()
+        .map(|limit| limit.0)
+        .unwrap_or(MAX_BODY_BYTES)
+}
+
 /// Deserializes the request body as JSON.
 ///
 /// The body is buffered with a size cap of [`MAX_BODY_BYTES`] to guard against
@@ -31,9 +44,10 @@ where
         ctx: &RequestContext,
     ) -> impl std::future::Future<Output = Result<Self>> + Send {
         let taken = ctx.take_body();
+        let limit = configured_body_limit(ctx);
         async move {
             let body = taken?;
-            let bytes = read_body_capped(body).await?;
+            let bytes = read_body_capped_with(body, limit).await?;
             ensure_json_depth_within_limit(&bytes)?;
             let value = serde_json::from_slice::<T>(&bytes)
                 .map_err(|_| Error::unprocessable("request body is not valid JSON"))?;
@@ -78,18 +92,20 @@ pub(crate) fn ensure_json_depth_within_limit(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Buffers a request body, rejecting payloads larger than [`MAX_BODY_BYTES`].
+/// Buffers a request body, rejecting payloads larger than `limit` bytes (the
+/// app-configured [`max_request_body_size`](crate::App::max_request_body_size), or
+/// [`MAX_BODY_BYTES`] by default).
 ///
-/// The cap is enforced incrementally as frames arrive, so an oversized payload
-/// is rejected without buffering all of it first.
-pub(crate) async fn read_body_capped(mut body: ReqBody) -> Result<Bytes> {
+/// The cap is enforced incrementally as frames arrive, so an oversized payload is
+/// rejected without buffering all of it first.
+pub(crate) async fn read_body_capped_with(mut body: ReqBody, limit: usize) -> Result<Bytes> {
     let mut buffer = BytesMut::new();
 
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(map_body_error)?;
 
         if let Ok(data) = frame.into_data() {
-            if buffer.len() + data.len() > MAX_BODY_BYTES {
+            if buffer.len() + data.len() > limit {
                 return Err(Error::bad_request("request body is too large"));
             }
             buffer.put(data);
@@ -135,7 +151,7 @@ mod tests {
     async fn reads_body_within_limit() {
         let body = box_body(Full::new(Bytes::from_static(b"hello")));
 
-        let bytes = read_body_capped(body).await.unwrap();
+        let bytes = read_body_capped_with(body, MAX_BODY_BYTES).await.unwrap();
         assert_eq!(bytes, Bytes::from_static(b"hello"));
     }
 
@@ -144,7 +160,7 @@ mod tests {
         let oversized = vec![b'x'; MAX_BODY_BYTES + 1];
         let body = box_body(Full::new(Bytes::from(oversized)));
 
-        let error = read_body_capped(body).await.unwrap_err();
+        let error = read_body_capped_with(body, MAX_BODY_BYTES).await.unwrap_err();
         assert_eq!(error.kind(), crate::error::ErrorKind::BadRequest);
         assert_eq!(error.message(), "request body is too large");
     }
@@ -162,7 +178,7 @@ mod tests {
             ]),
         ));
 
-        let error = read_body_capped(body).await.unwrap_err();
+        let error = read_body_capped_with(body, MAX_BODY_BYTES).await.unwrap_err();
         assert_eq!(error.kind(), crate::error::ErrorKind::PayloadTooLarge);
         assert_eq!(error.message(), "request body too large");
     }

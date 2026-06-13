@@ -115,6 +115,34 @@ async fn slowloris_slow_header_client_is_dropped() {
 }
 
 // ---------------------------------------------------------------------------
+// Idle timeout: a connection with no read/write activity is dropped once the
+// configured idle timeout elapses.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn idle_timeout_closes_an_inactive_connection() {
+    let app = App::new()
+        .include(ping)
+        .idle_timeout(Duration::from_millis(300));
+    let client = TestClient::serve(app).bind_random_port().await.unwrap();
+    let addr = client.local_addr().expect("a bound address");
+
+    // Connect and then stay completely silent — no request bytes at all.
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let started = tokio::time::Instant::now();
+    let mut buf = Vec::new();
+    let outcome = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut buf)).await;
+    let elapsed = started.elapsed();
+
+    assert!(outcome.is_ok(), "idle connection was not closed in time");
+    assert!(
+        elapsed >= Duration::from_millis(200),
+        "connection closed in {elapsed:?}, before the idle timeout could fire"
+    );
+
+    client.shutdown().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // Information disclosure: a 5xx must not leak the internal error detail, source
 // chain, secrets, or file paths to the client.
 // ---------------------------------------------------------------------------
@@ -260,6 +288,34 @@ async fn deeply_nested_json_is_rejected_before_parsing() {
     // The server is still alive afterwards.
     let alive = client.get("/items").send().await.unwrap();
     assert!(alive.status() >= 400, "server should still respond");
+
+    client.shutdown().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Configurable body cap: a body larger than max_request_body_size is rejected.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn configured_max_request_body_size_is_enforced() {
+    let client = TestClient::serve(App::new().max_request_body_size(64).include(create_item))
+        .bind_random_port()
+        .await
+        .unwrap();
+
+    // A JSON body well over the 64-byte cap is rejected before it is buffered.
+    let payload = format!(r#"{{"name":"{}"}}"#, "x".repeat(200));
+    let response = client
+        .post("/items")
+        .header("content-type", "application/json")
+        .bytes(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert!(
+        response.text().unwrap().contains("too large"),
+        "expected a body-too-large rejection"
+    );
 
     client.shutdown().await.unwrap();
 }

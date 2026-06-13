@@ -4,7 +4,9 @@ use garde::Validate;
 use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
-use crate::extract::body::{ensure_json_depth_within_limit, read_body_capped};
+use crate::extract::body::{
+    configured_body_limit, ensure_json_depth_within_limit, read_body_capped_with,
+};
 use crate::extract::{FromRequest, RequestContext};
 
 /// Deserializes the JSON request body into `T` and validates it.
@@ -32,8 +34,9 @@ where
         ctx: &RequestContext,
     ) -> impl std::future::Future<Output = Result<Self>> + Send {
         let taken = ctx.take_body();
+        let limit = configured_body_limit(ctx);
         async move {
-            let bytes = read_body_capped(taken?).await?;
+            let bytes = read_body_capped_with(taken?, limit).await?;
             ensure_json_depth_within_limit(&bytes)?;
             let value: T = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::unprocessable("request body is not valid JSON"))?;

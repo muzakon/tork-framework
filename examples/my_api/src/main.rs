@@ -3,10 +3,12 @@
 use std::sync::Arc;
 
 use tork::middleware::{Compression, Cors, RequestId};
+use std::time::Duration;
+
 use tork::{
-    middleware, App, AsyncApi, ErrorContext, HeaderName, HeaderValue, IntoResponse, Logger, Next,
-    OpenApi, PanicEvent, Request, Response, Result, WebSocketConfig, WsConnectInfo,
-    WsDisconnectInfo,
+    middleware, App, AsyncApi, ErrorContext, HeaderName, HeaderValue, Http1Config, Http2Config,
+    IntoResponse, Logger, Next, OpenApi, PanicEvent, Request, Response, Result, WebSocketConfig,
+    WsConnectInfo, WsDisconnectInfo,
 };
 
 use my_api::core::app_state::{AppState, Config};
@@ -51,6 +53,21 @@ async fn main() -> tork::Result<()> {
         .state(config)
         .lifespan::<AppState>()
         .catch_panics()
+        // Server / protocol tuning. The request-head read timeout (slowloris guard)
+        // is on by default; these add an 8 MiB body cap and HTTP/2 + HTTP/1 limits.
+        .max_request_body_size(8 * 1024 * 1024)
+        .header_read_timeout(Duration::from_secs(30))
+        .http2(
+            Http2Config::new()
+                .max_concurrent_streams(256)
+                .keep_alive_interval(Duration::from_secs(20))
+                .keep_alive_timeout(Duration::from_secs(10)),
+        )
+        .http1(Http1Config::new().keep_alive(true))
+        // Terminate TLS here by building with `--features tls` and adding:
+        //     .tls(tork::TlsConfig::from_pem_files("cert.pem", "key.pem")?)
+        // HTTP/2 is then negotiated automatically over ALPN. To serve over a Unix
+        // socket instead of TCP, call `app.serve_unix("/tmp/my_api.sock").await`.
         .websocket_config(
             WebSocketConfig::new()
                 .max_message_size_kb(64)

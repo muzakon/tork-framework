@@ -19,7 +19,6 @@ use serde::de::DeserializeOwned;
 use tempfile::SpooledTempFile;
 
 use crate::error::{Error, Result};
-use crate::extract::body::read_body_capped;
 use crate::extract::{FromRequest, RequestContext};
 
 /// Default cap on the total decoded size of a multipart body.
@@ -422,8 +421,9 @@ where
         ctx: &RequestContext,
     ) -> impl std::future::Future<Output = Result<Self>> + Send {
         let taken = ctx.take_body();
+        let limit = crate::extract::body::configured_body_limit(ctx);
         async move {
-            let bytes = read_body_capped(taken?).await?;
+            let bytes = crate::extract::body::read_body_capped_with(taken?, limit).await?;
             let value: T = serde_urlencoded::from_bytes(&bytes)
                 .map_err(|_| Error::unprocessable("request body is not a valid form"))?;
             value.validate().map_err(Error::from_garde_report)?;

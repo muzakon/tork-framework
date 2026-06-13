@@ -60,6 +60,8 @@ http = "1"
 http-body = "1"
 http-body-util = "0.1.3"
 bytes = "1"
+# Low-level socket control (SO_REUSEPORT for `App::reuse_port`).
+socket2 = { version = "0.6", features = ["all"] }
 
 # TLS termination (optional, behind tork-core's `tls` feature). rustls + ring: pure
 # Rust, no OpenSSL or C toolchain. Defaults are turned off so we pin the ring
