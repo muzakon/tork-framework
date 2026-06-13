@@ -69,6 +69,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"
 
+# In-memory cache with per-entry TTL (async, tokio-friendly).
+moka = { version = "0.12", features = ["future"] }
+
 # Multipart/form-data parsing and file uploads.
 multer = "3.1"
 tempfile = "3.27"

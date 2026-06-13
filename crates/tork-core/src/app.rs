@@ -92,6 +92,7 @@ pub struct App {
     on_ws_disconnect: Vec<WsDisconnectHook>,
     upload_config: Option<UploadConfig>,
     logger_config: Option<LoggerConfig>,
+    cache: Option<crate::cache::Cache>,
 }
 
 impl Default for App {
@@ -125,6 +126,7 @@ impl App {
             on_ws_disconnect: Vec::new(),
             upload_config: None,
             logger_config: None,
+            cache: None,
         }
     }
 
@@ -140,6 +142,16 @@ impl App {
     /// `RUST_LOG` or `info`).
     pub fn logger(mut self, config: LoggerConfig) -> Self {
         self.logger_config = Some(config);
+        self
+    }
+
+    /// Enables caching, making the [`Cache`](crate::Cache) injectable into handlers
+    /// and services.
+    ///
+    /// Pass a configured cache, for example `Cache::in_memory()` for the default
+    /// in-memory store. Without this call, injecting a `Cache` fails.
+    pub fn cache(mut self, cache: crate::cache::Cache) -> Self {
+        self.cache = Some(cache);
         self
     }
 
@@ -408,6 +420,7 @@ impl App {
             on_ws_disconnect,
             upload_config,
             logger_config,
+            cache,
             ..
         } = self;
         // The automatic HTTP request log is on unless the logger config disables it.
@@ -434,6 +447,10 @@ impl App {
         // Make the default upload config available to form/file handlers.
         if let Some(config) = upload_config {
             state.insert(AppUploadConfig(config));
+        }
+        // Make the cache available to handlers and services that inject it.
+        if let Some(cache) = cache {
+            state.insert(cache);
         }
 
         let mut routes = Vec::new();

@@ -12,6 +12,7 @@ pub mod constants;
 
 mod app;
 mod body;
+mod cache;
 mod error;
 mod extract;
 mod hooks;
@@ -49,6 +50,7 @@ pub use ipnet::IpNet;
 pub use resources::Resources;
 pub use server::TorkService;
 pub use body::{BoxError, ReqBody, RespBody, box_body};
+pub use cache::{Cache, CacheStore, MemoryStore};
 pub use error::{Error, ErrorDetail, ErrorKind, Result};
 pub use extract::{
     BearerToken, FromPathParam, FromRequest, LastEventId, PathParams, RequestContext, SseResume,

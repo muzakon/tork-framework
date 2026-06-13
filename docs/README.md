@@ -25,7 +25,8 @@ the previous one and ends with working code.
 13. [Settings](13-settings.md)
 14. [Testing](14-testing.md)
 15. [Logging](15-logging.md)
-16. [Project structure](16-project-structure.md)
+16. [Caching](17-caching.md)
+17. [Project structure](16-project-structure.md)
 
 ## Status
 
