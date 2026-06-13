@@ -614,6 +614,11 @@ impl MultipartForm {
     #[doc(hidden)]
     pub fn take_form_value<T: FromStr>(&mut self, name: &str) -> Result<Option<T>> {
         let Some(pos) = self.texts.iter().position(|(field, _)| field == name) else {
+            if self.files.iter().any(|file| file.name == name) {
+                return Err(Error::unprocessable(format!(
+                    "form field `{name}` is a file, not a text value"
+                )));
+            }
             return Ok(None);
         };
         let (_, value) = self.texts.remove(pos);
@@ -646,6 +651,11 @@ impl MultipartForm {
     #[doc(hidden)]
     pub async fn take_file_bytes(&mut self, name: &str) -> Result<Option<FileBytes>> {
         let Some(pos) = self.files.iter().position(|file| file.name == name) else {
+            if self.texts.iter().any(|(field, _)| field == name) {
+                return Err(Error::unprocessable(format!(
+                    "form field `{name}` is a text value, not a file"
+                )));
+            }
             return Ok(None);
         };
         Ok(Some(file_part_into_bytes(self.files.remove(pos)).await?))

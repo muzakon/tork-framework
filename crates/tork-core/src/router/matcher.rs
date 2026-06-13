@@ -101,12 +101,31 @@ impl Matcher {
                     };
                 }
             }
+
+            if let Some(collapsed) = collapse_double_slashes(path) {
+                if let Ok(matched) = method_router.at(&collapsed) {
+                    let mut params = PathParams::new();
+                    for (name, value) in matched.params.iter() {
+                        params.push(name.to_owned(), value.to_owned());
+                    }
+                    return Match::Found {
+                        route: &self.routes[*matched.value],
+                        params,
+                    };
+                }
+            }
         }
 
         if self.all_paths.at(path).is_ok() {
             Match::MethodNotAllowed
         } else if let Some(normalized) = normalized_request_path(path) {
             if self.all_paths.at(normalized).is_ok() {
+                Match::MethodNotAllowed
+            } else {
+                Match::NotFound
+            }
+        } else if let Some(collapsed) = collapse_double_slashes(path) {
+            if self.all_paths.at(&collapsed).is_ok() {
                 Match::MethodNotAllowed
             } else {
                 Match::NotFound
@@ -134,6 +153,22 @@ fn normalized_request_path(path: &str) -> Option<&str> {
 
     let trimmed = path.trim_end_matches('/');
     Some(if trimmed.is_empty() { "/" } else { trimmed })
+}
+
+/// Collapses consecutive slashes in `path` into a single `/`.
+///
+/// A path like `//api//users` is normalized to `/api/users`. Returns `None`
+/// when the path is already single-slash-normal (the common case).
+fn collapse_double_slashes(path: &str) -> Option<String> {
+    if !path.contains("//") {
+        return None;
+    }
+    let collapsed: String = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(if collapsed.is_empty() { "/".to_owned() } else { collapsed })
 }
 
 #[cfg(test)]

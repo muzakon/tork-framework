@@ -8,7 +8,7 @@
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -30,6 +30,9 @@ use crate::response::{IntoResponse, Response};
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(15);
 /// The heartbeat payload (an SSE comment line).
 const HEARTBEAT_FRAME: &[u8] = b": ping\n\n";
+/// A pre-wrapped `Bytes` view of the heartbeat frame, allocated once instead of
+/// on every heartbeat tick.
+static HEARTBEAT_BYTES: LazyLock<Bytes> = LazyLock::new(|| Bytes::from_static(HEARTBEAT_FRAME));
 /// Header that tells reverse proxies not to buffer the response.
 const X_ACCEL_BUFFERING: &str = "x-accel-buffering";
 
@@ -462,7 +465,7 @@ impl Body for SseBody {
         // The source is idle: send a heartbeat if one is due.
         if let Some(heartbeat) = &mut this.heartbeat {
             if heartbeat.poll_tick(cx).is_ready() {
-                return Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(HEARTBEAT_FRAME)))));
+                return Poll::Ready(Some(Ok(Frame::data(HEARTBEAT_BYTES.clone()))));
             }
         }
 
@@ -484,7 +487,8 @@ mod tests {
     use http::StatusCode;
     use http_body_util::BodyExt;
     use serde_json::json;
-    use std::time::Duration;
+use std::sync::LazyLock;
+use std::time::Duration;
 
     fn encode<T: Serialize>(event: SseEvent<T>, default: Option<&str>) -> String {
         let raw = event.into_raw().expect("serialize");
