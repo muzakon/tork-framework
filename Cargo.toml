@@ -21,7 +21,7 @@ edition = "2021"
 rust-version = "1.96"
 authors = ["muzakon <hasanmuzak@hotmail.com>"]
 license = "MIT"
-repository = "https://github.com/muzakon/tork"
+repository = "https://github.com/tork-rs/tork"
 
 # Single source of truth for dependency versions. Pinned to releases verified
 # against the toolchain in `rust-toolchain.toml`.

@@ -5,12 +5,12 @@ A FastAPI-style backend web framework for Rust, built directly on
 annotation-based routers, dependency injection, and OpenAPI generation, with an
 emphasis on a small, modular core and security-conscious defaults.
 
-Part of the [Tork](https://github.com/muzakon/tork) project, alongside the
-[ORM](https://github.com/muzakon/tork-orm) and the
-[developer CLI](https://github.com/muzakon/tork-cli).
+Part of the [Tork](https://github.com/tork-rs/tork) project, alongside the
+[ORM](https://github.com/tork-rs/tork-orm) and the
+[developer CLI](https://github.com/tork-rs/tork-cli).
 
 The fastest way to start a new service is the CLI: `tork new my-api` scaffolds a
-ready-to-run project (see [tork-cli](https://github.com/muzakon/tork-cli)).
+ready-to-run project (see [tork-cli](https://github.com/tork-rs/tork-cli)).
 
 ## Workspace layout
 
@@ -116,4 +116,4 @@ middleware, lifecycle hooks, Server-Sent Events, WebSockets, forms and uploads, 
 the test client, and logging.
 
 To use the ORM from a Tork handler, see the ORM's
-[framework integration guide](https://github.com/muzakon/tork-orm/blob/main/docs/09-framework-integration.md).
+[framework integration guide](https://github.com/tork-rs/tork-orm/blob/main/docs/09-framework-integration.md).
