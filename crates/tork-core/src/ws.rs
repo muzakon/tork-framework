@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+use tokio::sync::watch;
 use garde::Validate;
 use http::Method;
 use http::header::{
@@ -313,6 +314,11 @@ impl WebSocketConfig {
 #[derive(Clone)]
 pub(crate) struct AppWsConfig(pub(crate) WebSocketConfig);
 
+/// A receiver, shared via the state map, that flips to `true` when the server
+/// begins a graceful shutdown so live WebSocket connections can close cleanly.
+#[derive(Clone)]
+pub(crate) struct WsShutdown(pub(crate) watch::Receiver<bool>);
+
 /// Tracks live WebSocket connections per client IP to cap how many a single
 /// client may hold open. Shared app-wide via the state map.
 #[derive(Clone)]
@@ -521,6 +527,7 @@ pub struct WebSocket {
     hooks: Arc<WsHooks>,
     info: WsConnInfo,
     permit: Option<WsIpPermit>,
+    shutdown: Option<watch::Receiver<bool>>,
 }
 
 impl WebSocket {
@@ -570,12 +577,14 @@ impl WebSocket {
             path: ctx.uri().path().to_owned(),
             request_id,
         };
+        let shutdown = ctx.state().get::<WsShutdown>().map(|s| s.0.clone());
         Ok(Self {
             upgrade,
             config,
             hooks,
             info,
             permit,
+            shutdown,
         })
     }
 
@@ -618,6 +627,8 @@ impl WebSocket {
             started: Instant::now(),
             close_code: None,
             _permit: self.permit,
+            shutdown: self.shutdown,
+            hooks_fired: false,
         })
     }
 }
@@ -632,11 +643,20 @@ pub struct WebSocketConn {
     close_code: Option<WsCloseCode>,
     /// Held for the connection's lifetime; releases the per-IP slot on drop.
     _permit: Option<WsIpPermit>,
+    /// Flips to `true` when the server starts shutting down, so [`recv`](WebSocketConn::recv)
+    /// can close the connection cleanly instead of being abruptly dropped.
+    shutdown: Option<watch::Receiver<bool>>,
+    /// Set once the disconnect hooks have run, so they fire exactly once whether
+    /// the connection closes through [`recv`](WebSocketConn::recv) or [`Drop`].
+    hooks_fired: bool,
 }
 
 impl Drop for WebSocketConn {
     fn drop(&mut self) {
-        if self.hooks.disconnect.is_empty() {
+        // The common close paths fire the hooks inline (awaited, runtime alive).
+        // Drop is only the fallback when the handler dropped the socket without
+        // closing it, e.g. an early return or a panic mid-stream.
+        if self.hooks_fired || self.hooks.disconnect.is_empty() {
             return;
         }
         // Fire the disconnect hooks on a detached task (Drop cannot be async).
@@ -655,6 +675,41 @@ impl Drop for WebSocketConn {
     }
 }
 
+/// The result of one `recv` round: a frame, or a shutdown signal.
+enum RecvStep {
+    Shutdown,
+    Frame(FrameStep),
+}
+
+/// The outcome of awaiting the next frame from the socket.
+enum FrameStep {
+    Message(Message),
+    Error(tokio_tungstenite::tungstenite::Error),
+    /// The idle timeout elapsed.
+    Idle,
+    /// The stream ended.
+    Closed,
+}
+
+/// Awaits the next message from `stream`, honoring an optional idle timeout.
+async fn next_frame(
+    stream: &mut WebSocketStream<WsTransport>,
+    idle_timeout: Option<Duration>,
+) -> FrameStep {
+    let next = match idle_timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, stream.next()).await {
+            Ok(item) => item,
+            Err(_elapsed) => return FrameStep::Idle,
+        },
+        None => stream.next().await,
+    };
+    match next {
+        Some(Ok(message)) => FrameStep::Message(message),
+        Some(Err(error)) => FrameStep::Error(error),
+        None => FrameStep::Closed,
+    }
+}
+
 impl WebSocketConn {
     /// Receives the next message, or `None` once the connection is closed.
     ///
@@ -662,26 +717,82 @@ impl WebSocketConn {
     /// handler may observe them (the protocol layer answers pings on its own).
     pub async fn recv(&mut self) -> Result<Option<WsMessage>> {
         loop {
-            let next = match self.idle_timeout {
-                // An idle period beyond the timeout ends the connection.
-                Some(timeout) => match tokio::time::timeout(timeout, self.stream.next()).await {
-                    Ok(item) => item,
-                    Err(_elapsed) => return Ok(None),
-                },
-                None => self.stream.next().await,
+            // If the server is already shutting down, close cleanly right away.
+            if self.shutdown.as_ref().is_some_and(|rx| *rx.borrow()) {
+                let _ = self.send_close_going_away().await;
+                self.fire_disconnect_hooks().await;
+                return Ok(None);
+            }
+
+            let step = {
+                let frame = next_frame(&mut self.stream, self.idle_timeout);
+                tokio::pin!(frame);
+                match &mut self.shutdown {
+                    // Race the next frame against the shutdown signal.
+                    Some(rx) => tokio::select! {
+                        biased;
+                        _ = rx.changed() => RecvStep::Shutdown,
+                        outcome = &mut frame => RecvStep::Frame(outcome),
+                    },
+                    None => RecvStep::Frame(frame.await),
+                }
             };
-            match next {
-                Some(Ok(message)) => {
+
+            match step {
+                RecvStep::Shutdown => {
+                    // Send a Going Away close so the client disconnects cleanly
+                    // rather than seeing the socket dropped mid-shutdown.
+                    let _ = self.send_close_going_away().await;
+                    self.fire_disconnect_hooks().await;
+                    return Ok(None);
+                }
+                RecvStep::Frame(FrameStep::Idle) | RecvStep::Frame(FrameStep::Closed) => {
+                    self.fire_disconnect_hooks().await;
+                    return Ok(None);
+                }
+                RecvStep::Frame(FrameStep::Error(error)) => return Err(connection_error(error)),
+                RecvStep::Frame(FrameStep::Message(message)) => {
                     if let Some(message) = from_tungstenite(message) {
-                        if let WsMessage::Close(Some(close)) = &message {
-                            self.close_code = Some(close.code);
+                        if let WsMessage::Close(close) = &message {
+                            if let Some(close) = close {
+                                self.close_code = Some(close.code);
+                            }
+                            // The peer initiated the close; fire hooks now while
+                            // the runtime is alive, before the handler drops us.
+                            self.fire_disconnect_hooks().await;
                         }
                         return Ok(Some(message));
                     }
+                    // A control frame the protocol layer handled; keep waiting.
                 }
-                Some(Err(error)) => return Err(connection_error(error)),
-                None => return Ok(None),
             }
+        }
+    }
+
+    /// Sends a `1001 Going Away` close frame (best effort).
+    async fn send_close_going_away(&mut self) -> Result<()> {
+        let close = Message::Close(Some(CloseFrame {
+            code: TgCloseCode::Away,
+            reason: "server shutting down".into(),
+        }));
+        self.stream.send(close).await.map_err(connection_error)
+    }
+
+    /// Runs the `on_ws_disconnect` hooks once, awaited in the connection's own
+    /// task so they cannot be lost to a detached [`Drop`] task during shutdown.
+    async fn fire_disconnect_hooks(&mut self) {
+        if self.hooks_fired || self.hooks.disconnect.is_empty() {
+            return;
+        }
+        self.hooks_fired = true;
+        let duration = self.started.elapsed();
+        for hook in self.hooks.disconnect.iter() {
+            hook(WsDisconnectInfo::new(
+                self.info.clone(),
+                duration,
+                self.close_code,
+            ))
+            .await;
         }
     }
 

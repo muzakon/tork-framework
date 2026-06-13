@@ -8,6 +8,7 @@
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -16,11 +17,13 @@ use futures_util::stream::{BoxStream, StreamExt};
 use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 use http_body::{Body, Frame, SizeHint};
 use serde::Serialize;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant, Interval, Sleep, interval_at, sleep};
 
 use crate::body::{BoxError, RespBody};
 use crate::constants::TEXT_EVENT_STREAM;
 use crate::error::{Error, Result};
+use crate::extract::RequestContext;
 use crate::response::{IntoResponse, Response};
 
 /// Default heartbeat interval, sent as an SSE comment to keep the stream alive.
@@ -280,8 +283,61 @@ impl<T: Serialize + Send + 'static> Sse<T> {
     }
 }
 
+/// A concurrency cap for Server-Sent Events streams.
+///
+/// Each live stream holds one permit for its lifetime; the permit is released when
+/// the [`SseBody`] is dropped. Registered in app state by
+/// [`App::max_sse_connections`](crate::App::max_sse_connections).
+#[derive(Clone)]
+pub(crate) struct SseLimiter {
+    semaphore: Arc<Semaphore>,
+}
+
+impl SseLimiter {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(limit)),
+        }
+    }
+
+    /// Reserves a connection slot, or `None` if the app is already at the cap.
+    fn try_acquire(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.semaphore).try_acquire_owned().ok()
+    }
+}
+
+/// Turns an [`Sse`] into a response, enforcing the app's SSE connection cap.
+///
+/// Used by the `#[sse]` / `#[post_sse]` generated handlers. When the app has a
+/// limit configured and it is exhausted, this returns `503 Service Unavailable`
+/// instead of opening another stream; otherwise the acquired permit is held by the
+/// response body and released when the stream ends.
+#[doc(hidden)]
+pub fn __sse_into_response<T>(ctx: &RequestContext, sse: Sse<T>) -> Result<Response> {
+    let permit = match ctx.state().get::<SseLimiter>() {
+        Some(limiter) => match limiter.try_acquire() {
+            Some(permit) => Some(permit),
+            None => {
+                return Err(Error::service_unavailable(
+                    "the server is at its Server-Sent Events connection limit",
+                ));
+            }
+        },
+        None => None,
+    };
+    Ok(sse.into_response_with_permit(permit))
+}
+
 impl<T> IntoResponse for Sse<T> {
     fn into_response(self) -> Response {
+        self.into_response_with_permit(None)
+    }
+}
+
+impl<T> Sse<T> {
+    /// Builds the streaming response, optionally holding an SSE connection permit
+    /// for the lifetime of the stream.
+    fn into_response_with_permit(self, permit: Option<OwnedSemaphorePermit>) -> Response {
         let Sse { events, config, .. } = self;
 
         let heartbeat = config
@@ -311,6 +367,7 @@ impl<T> IntoResponse for Sse<T> {
             timeout,
             done,
             finished: false,
+            _permit: permit,
         };
 
         let mut response = http::Response::new(RespBody::stream(body));
@@ -342,6 +399,8 @@ struct SseBody {
     timeout: Option<Pin<Box<Sleep>>>,
     done: Option<Bytes>,
     finished: bool,
+    /// Held for the stream's lifetime; releases the SSE connection slot on drop.
+    _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl SseBody {
@@ -585,5 +644,22 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(frame.into_data().unwrap(), Bytes::from_static(HEARTBEAT_FRAME));
+    }
+
+    #[test]
+    fn sse_limiter_caps_concurrent_permits_and_frees_them_on_drop() {
+        let limiter = SseLimiter::new(2);
+
+        let first = limiter.try_acquire().expect("first is under the cap");
+        let second = limiter.try_acquire().expect("second reaches the cap");
+        assert!(limiter.try_acquire().is_none(), "third is over the cap");
+
+        // Dropping a live stream's permit frees its slot for a new connection.
+        drop(first);
+        let third = limiter.try_acquire().expect("a freed slot is reusable");
+
+        drop(second);
+        drop(third);
+        assert!(limiter.try_acquire().is_some());
     }
 }

@@ -50,7 +50,11 @@ All of these live under `tork::middleware`:
   `expose_headers`, `allow_credentials`, `max_age`. Use `allow_origin("*")` to
   allow any origin.
 - `Compression::new().gzip().minimum_size(1000)`: gzip-compresses responses when
-  the client accepts gzip and the body meets the minimum size.
+  the client accepts gzip and the body meets the minimum size. `maximum_size`
+  caps the body eligible for compression (default 8 MiB): larger bodies are sent
+  uncompressed, and a body that advertises a `Content-Length` over the cap is
+  streamed through without being buffered, bounding per-request memory. Use
+  `maximum_size(usize::MAX)` to lift the cap.
 - `SecurityHeaders::new()`: adds a baseline of security headers to every response
   that does not already set them — `Strict-Transport-Security`,
   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and

@@ -191,9 +191,9 @@ fn expand_sse(default_method: &str, args: SseArgs, func: ItemFn) -> syn::Result<
                         #throttle_check
                         #(#bindings)*
                         match #call {
-                            ::core::result::Result::Ok(sse) => ::core::result::Result::Ok(
-                                #krate::IntoResponse::into_response(sse #apply_event),
-                            ),
+                            ::core::result::Result::Ok(sse) => {
+                                #krate::__sse_into_response(&ctx, sse #apply_event)
+                            }
                             ::core::result::Result::Err(error) => {
                                 ::core::result::Result::Err(error)
                             }
@@ -249,7 +249,7 @@ mod tests {
         assert!(tokens.contains("Method :: POST"));
         assert!(tokens.contains(". streaming ()"));
         assert!(tokens.contains(". response_schema :: < Tick > ()"));
-        assert!(tokens.contains("IntoResponse :: into_response"));
+        assert!(tokens.contains("__sse_into_response (& ctx ,"));
         assert!(tokens.contains("\"tick\""));
         assert!(tokens.contains("__extract_path_param"));
     }

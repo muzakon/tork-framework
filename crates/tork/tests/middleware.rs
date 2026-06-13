@@ -332,6 +332,25 @@ async fn compression_gzips_large_responses() {
 }
 
 #[tokio::test]
+async fn compression_skips_bodies_over_the_maximum_size() {
+    use tork::middleware::Compression;
+
+    // The 2000-byte body exceeds the 1500-byte cap, so it is sent uncompressed
+    // (and, advertising a Content-Length, is never buffered for compression).
+    let app = app_with_handler(
+        Compression::new().gzip().minimum_size(1000).maximum_size(1500),
+        large_handler(),
+    );
+    let response = app
+        .handle(get_with_headers(&[("accept-encoding", "gzip")]))
+        .await;
+
+    assert!(response.headers().get("content-encoding").is_none());
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, Bytes::from(vec![b'a'; 2000]));
+}
+
+#[tokio::test]
 async fn compression_skips_without_accept_encoding() {
     use tork::middleware::Compression;
 

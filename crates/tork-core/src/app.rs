@@ -94,6 +94,7 @@ pub struct App {
     logger_config: Option<LoggerConfig>,
     cache: Option<crate::cache::Cache>,
     throttler: Option<crate::throttle::Throttler>,
+    max_sse_connections: Option<usize>,
 }
 
 impl Default for App {
@@ -129,6 +130,7 @@ impl App {
             logger_config: None,
             cache: None,
             throttler: None,
+            max_sse_connections: None,
         }
     }
 
@@ -337,6 +339,17 @@ impl App {
         self
     }
 
+    /// Caps the number of concurrent Server-Sent Events streams the app will serve.
+    ///
+    /// Each SSE connection holds a pinned stream and timers for its whole lifetime
+    /// (often hours), so an unbounded count can exhaust memory. Once the cap is
+    /// reached, further `#[sse]` requests are rejected with `503 Service
+    /// Unavailable` until a stream ends. With no cap set, SSE streams are unbounded.
+    pub fn max_sse_connections(mut self, limit: usize) -> Self {
+        self.max_sse_connections = Some(limit);
+        self
+    }
+
     /// Registers an observe-only hook that runs when a WebSocket opens.
     pub fn on_ws_connect<F, Fut>(mut self, hook: F) -> Self
     where
@@ -453,6 +466,7 @@ impl App {
             logger_config,
             cache,
             throttler,
+            max_sse_connections,
             ..
         } = self;
         // The automatic HTTP request log is on unless the logger config disables it.
@@ -460,6 +474,17 @@ impl App {
             .as_ref()
             .map(|config| config.request_logs)
             .unwrap_or(true);
+
+        // A shutdown channel lets in-flight WebSocket connections close cleanly
+        // when the server stops. The receiver lives in app state; the sender is
+        // held on `AppInner` and flipped by the server on shutdown.
+        let (ws_shutdown, ws_shutdown_rx) = tokio::sync::watch::channel(false);
+        state.insert(crate::ws::WsShutdown(ws_shutdown_rx));
+
+        // A concurrent-connection cap for SSE streams, when configured.
+        if let Some(limit) = max_sse_connections {
+            state.insert(crate::sse::SseLimiter::new(limit));
+        }
 
         // Make the default WebSocket config available to websocket handlers.
         if let Some(config) = ws_config {
@@ -519,6 +544,7 @@ impl App {
             catch_panics,
             request_logs,
             exception_handlers: Arc::new(exception_handlers),
+            ws_shutdown,
         })
     }
 
@@ -716,6 +742,9 @@ pub struct AppInner {
     catch_panics: bool,
     request_logs: bool,
     exception_handlers: Arc<HashMap<TypeId, ExceptionHandlerFn>>,
+    /// Broadcasts a shutdown signal to in-flight WebSocket connections so they
+    /// can close cleanly instead of being abruptly dropped.
+    ws_shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 impl AppInner {
@@ -727,6 +756,13 @@ impl AppInner {
     /// Returns the compiled route matcher.
     pub fn matcher(&self) -> &Matcher {
         &self.matcher
+    }
+
+    /// Signals in-flight WebSocket connections to close cleanly.
+    ///
+    /// Called by the server when graceful shutdown begins; idempotent.
+    pub fn begin_ws_shutdown(&self) {
+        let _ = self.ws_shutdown.send(true);
     }
 
     /// Runs the middleware chain and dispatches the request.

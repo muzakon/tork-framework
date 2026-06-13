@@ -88,6 +88,11 @@ where
         }
     }
 
+    // Tell in-flight WebSocket connections to close cleanly. They run in spawned
+    // upgrade tasks that `GracefulShutdown` does not track, so without this they
+    // would simply be dropped when the runtime stops.
+    app.begin_ws_shutdown();
+
     // Stop accepting, then drain in-flight connections within the timeout.
     drain_with_timeout(graceful.shutdown(), tokio::time::sleep(GRACEFUL_SHUTDOWN_TIMEOUT)).await;
 }

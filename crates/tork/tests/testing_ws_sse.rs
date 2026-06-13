@@ -1,6 +1,6 @@
 //! Integration tests for the in-process test client's WebSocket and SSE support.
 
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use serde_json::json;
 use tork::testing::TestClient;
 use tork::{
@@ -217,6 +217,26 @@ async fn real_port_http_and_websocket() {
     client.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn graceful_shutdown_closes_live_websockets() {
+    let app = App::new().include(ws_echo);
+    let client = TestClient::serve(app).bind_random_port().await.unwrap();
+
+    let mut ws = client.websocket("/ws").connect().await.unwrap();
+    ws.send_text("hi").await.unwrap();
+    assert_eq!(ws.receive_text().await.unwrap(), "hi");
+
+    // Begin graceful shutdown while the socket is still connected.
+    let shutdown = tokio::spawn(async move { client.shutdown().await });
+
+    // The server should close the live connection with `1001 Going Away`
+    // instead of dropping it abruptly.
+    let close = ws.receive_close().await.unwrap();
+    assert_eq!(close.code, WsCloseCode::GoingAway);
+
+    shutdown.await.unwrap().unwrap();
+}
+
 #[api_model]
 struct Tick {
     n: i64,
@@ -229,6 +249,33 @@ async fn events() -> tork::Result<Sse<Tick>> {
         Ok(Tick { n: 2 }),
     ]);
     Ok(Sse::new(items).no_heartbeat())
+}
+
+#[sse("/forever", event = "tick")]
+async fn events_forever() -> tork::Result<Sse<Tick>> {
+    // One event, then the stream stays pending forever so the connection (and the
+    // SSE connection-limit permit it holds) remains open.
+    let items = stream::once(async { Ok::<Tick, tork::Error>(Tick { n: 1 }) })
+        .chain(stream::pending::<tork::Result<Tick>>());
+    Ok(Sse::new(items).no_heartbeat())
+}
+
+#[tokio::test]
+async fn sse_connection_limit_rejects_over_the_cap() {
+    let app = App::new().max_sse_connections(1).include(events_forever);
+    let client = TestClient::serve(app).bind_random_port().await.unwrap();
+
+    // The first stream takes the single slot and holds it open.
+    let mut first = client.get("/forever").sse().await.unwrap();
+    let event = first.next_event().await.unwrap().expect("first event");
+    assert_eq!(event.json::<Tick>().unwrap().n, 1);
+
+    // A second stream is refused with 503 while the first is still connected.
+    let response = client.get("/forever").send().await.unwrap();
+    assert_eq!(response.status(), 503);
+
+    drop(first);
+    client.shutdown().await.unwrap();
 }
 
 #[tokio::test]

@@ -92,6 +92,8 @@ pub use settings::{SecretString, SettingsLoader};
 #[doc(hidden)]
 pub use testing::__take_override;
 pub use sse::{Sse, SseEvent};
+#[doc(hidden)]
+pub use sse::__sse_into_response;
 pub use state::{AppStateRef, State, StateMap};
 pub use ws::{
     WebSocket, WebSocketConfig, WebSocketConn, WsClose, WsCloseCode, WsConnectInfo,

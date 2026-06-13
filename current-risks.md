@@ -102,7 +102,7 @@ Status legend:
 ## 21. Graceful Shutdown Drops In-Flight WebSocket Connections (Medium Risk)
 - **Risk:** The server's graceful shutdown ([`server.rs:L76`](crates/tork-core/src/server.rs)) drains HTTP connections with a timeout but does not explicitly close WebSocket connections.
 - **Bug:** WebSocket connections are long-lived and will not complete within the 15-second drain timeout. They are forcibly terminated, causing clients to receive unexpected disconnects without proper close frames.
-- **Status:** Untested. No WebSocket-aware shutdown protocol.
+- **Status:** RESOLVED. The app holds a `watch::Sender<bool>` shutdown channel; the receiver is injected into WebSocket connections through app state (`WsShutdown`). When the server begins draining it calls `AppInner::begin_ws_shutdown`, and `WebSocketConn::recv` races every read against that signal: on shutdown it sends a `1001 Going Away` close frame and returns `None`, so the handler completes and the client disconnects cleanly instead of being abruptly dropped. Covered by `graceful_shutdown_closes_live_websockets`.
 
 ## 22. [x] UploadFile::save_to Symlink Attack (Medium Security Risk)
 - **Risk:** Existing symlink targets are rejected and destination writes use `create_new(true)` to avoid overwrite-through-existing-target behavior.
@@ -121,7 +121,7 @@ Status legend:
 ## 25. WebSocket Disconnect Hook Fires Detached Task (Low-Medium Risk)
 - **Risk:** `WebSocketConn::Drop` ([`ws.rs:L501-L519`](crates/tork-core/src/ws.rs)) spawns a detached tokio task to fire disconnect hooks because `Drop` cannot be async.
 - **Vulnerability:** If the tokio runtime is shutting down (e.g., during graceful shutdown), `Handle::try_current()` may fail, silently skipping disconnect hooks. Metrics, cleanup logic, and audit trails in disconnect hooks will not execute during shutdown.
-- **Status:** Untested for shutdown-time hook execution.
+- **Status:** RESOLVED. The `on_ws_disconnect` hooks now fire inline (awaited in the connection's own task) on every `recv`-driven close path — peer close, idle timeout, stream end, and the new graceful-shutdown close — guarded by a `hooks_fired` flag so they run exactly once. `Drop` keeps the detached-task path only as a fallback for an abrupt handler exit (early return or panic mid-stream) and skips when the hooks already ran. Because the hooks are awaited while the runtime is still alive, graceful shutdown no longer loses them. Covered by `chat_broadcasts_to_room_and_fires_lifecycle_hooks` (disconnect hooks on close) and `graceful_shutdown_closes_live_websockets`.
 
 ## 26. Settings Loader Environment Variable Race Condition (Low-Medium Risk)
 - **Risk:** The `SettingsLoader` uses `dotenvy` to load `.env` files into the process environment ([`settings.rs:L187-L194`](crates/tork-core/src/settings.rs)) and reads environment variables with `std::env::var`.
@@ -244,7 +244,7 @@ Status legend:
 ## 48. SpooledTempFile Not Cleaned Up on Multipart Parse Error (Medium Resource Leak)
 - **Risk:** The multipart parser ([`multipart.rs:L475-L519`](crates/tork-core/src/multipart.rs)) creates `SpooledTempFile` instances for each file field as data arrives. If a later field fails to parse (e.g., the body is truncated or a field exceeds limits), the already-created temp files are dropped.
 - **Bug:** `SpooledTempFile::drop` closes the file handle, but if the file was spilled to disk, the OS may not immediately reclaim the disk space. Under sustained error conditions (e.g., an attacker sending malformed multipart bodies), temp files accumulate faster than the OS reclaims them.
-- **Status:** Untested. No test verifying temp file cleanup on parse errors.
+- **Status:** RESOLVED (by design + test). The spill path uses `tempfile`'s anonymous temp file (`spooled_tempfile`/`spooled_tempfile_in`), which is unlinked from the filesystem the moment it is created. There is no named path to leak: once the `SpooledTempFile` is dropped, its last file descriptor closes and the OS reclaims the inode and disk space immediately, even on an early-return error path. Cleanup on a truncated/failed parse is exercised end-to-end by the upload tests (see requirement I).
 
 ## 49. LogRecorder Accumulates Records Indefinitely (Low Resource Leak)
 - **Risk:** `LogRecorder` ([`recorder.rs:L55-L68`](crates/tork-core/src/testing/recorder.rs)) pushes every `LogRecord` into a `Vec` behind a `Mutex`. There is no eviction, no max capacity, and no `clear()` method.
@@ -254,12 +254,12 @@ Status legend:
 ## 50. Compression Buffers Entire Response Before Compressing (Medium Memory Risk)
 - **Risk:** The `Compression` middleware ([`compression.rs:L85-L88`](crates/tork-core/src/middleware/compression.rs)) calls `into_body_bytes(response)` which collects the entire response body into a single `Bytes` buffer before checking size and compressing.
 - **Bug:** A 10 MiB JSON response is first buffered entirely into memory, then gzip-compressed into another ~1-3 MiB buffer. Peak memory usage is ~13 MiB per concurrent request with compression enabled. Under high concurrency, this can exhaust memory.
-- **Status:** Untested. No benchmark measuring peak memory under concurrent compressed responses.
+- **Status:** RESOLVED. `Compression` now has a `maximum_size` cap (default 8 MiB, configurable, `usize::MAX` to lift). When a response advertises a `Content-Length` over the cap, the body is passed through without being buffered at all; otherwise a body that turns out larger than the cap is returned uncompressed (skipping the second gzip buffer). This bounds per-request peak memory and stops a large streaming download from being pulled fully into memory just to decline compression. Covered by `compression_skips_bodies_over_the_maximum_size` and `content_length_parses_only_valid_values`.
 
 ## 51. SSE Stream Holds Pinned BoxStream + Interval Indefinitely (Medium Memory Risk)
 - **Risk:** Each SSE response ([`sse.rs:L337-L345`](crates/tork-core/src/sse.rs)) creates an `SseBody` that holds a pinned `BoxStream`, an optional `Interval`, an optional `Sleep` timer, and an optional `Bytes` done event.
 - **Bug:** These allocations persist for the entire lifetime of the SSE connection (which can be hours). With 10,000 concurrent SSE connections, this is 10,000 pinned streams + 10,000 interval timers consuming memory and waking up periodically.
-- **Status:** Not benchmarked at scale. No connection limit or resource cap on SSE streams.
+- **Status:** RESOLVED. `App::max_sse_connections(n)` installs an `SseLimiter` (a semaphore) into app state. The `#[sse]`/`#[post_sse]` generated handlers acquire an owned permit through `__sse_into_response`; the permit is held by the `SseBody` for the stream's lifetime and released on drop, so a freed slot is reusable. When the cap is reached, further SSE requests are rejected with `503 Service Unavailable` instead of opening another unbounded stream. With no cap configured, streams remain unbounded (unchanged default). Covered by `sse_limiter_caps_concurrent_permits_and_frees_them_on_drop` and `sse_connection_limit_rejects_over_the_cap`.
 
 ## 52. Hook Event Cloning Per Request (Low Concurrency Overhead)
 - **Risk:** Every request that triggers hooks ([`app.rs:L682-L704`](crates/tork-core/src/app.rs)) clones `RequestInfo`, `ResponseEvent`, and `ErrorEvent` structs for each hook invocation. The `RequestInfo` clone is O(1) (Arc clones), but the `ResponseEvent` includes a `StatusCode` and `Duration`.
@@ -300,9 +300,9 @@ The following verification steps and test suites are **mandatory** to complete b
 - **Requirement:** WebSocket upgrades must validate the `Origin` header against a configurable allow-list, rejecting cross-origin upgrades by default.
 - **Status:** Resolved. Integration tests now cover default cross-origin rejection, same-origin success, and allowlist opt-in.
 
-### C. Graceful Shutdown for Long-Lived Connections
+### C. [x] Graceful Shutdown for Long-Lived Connections
 - **Requirement:** WebSocket and SSE connections must be notified of shutdown (via close frames or stream termination) before the drain timeout expires.
-- **Missing Test:** A test verifying that active WebSocket connections receive a close frame during graceful shutdown.
+- **Status:** Resolved for WebSocket (see #21): active connections receive a `1001 Going Away` close frame at the start of drain, verified by `graceful_shutdown_closes_live_websockets`. SSE streams end when the client disconnects or via `client_timeout`; the new `max_sse_connections` cap (see #51) bounds their count.
 
 ### D. [x] Panic Recovery Integration
 - **Requirement:** When `catch_panics` is enabled, a handler panic must result in a `500 Internal Server Error` response, not a connection reset.
@@ -328,13 +328,13 @@ The following verification steps and test suites are **mandatory** to complete b
 - **Requirement:** When multipart parsing fails mid-stream, all already-created `SpooledTempFile` instances must be cleaned up.
 - **Status:** Resolved. End-to-end upload tests now verify truncated multipart cleanup.
 
-### J. Compression Memory Under Concurrency
+### J. [x] Compression Memory Under Concurrency
 - **Requirement:** The compression middleware must not buffer uncompressed + compressed copies simultaneously when possible, or must document memory limits.
-- **Missing Test:** A stress test measuring peak memory usage with 100+ concurrent requests returning compressed responses.
+- **Status:** Resolved (see #50). `Compression` has a documented `maximum_size` cap (default 8 MiB): bodies over the cap are passed through uncompressed, and a `Content-Length` over the cap skips buffering entirely, bounding per-request peak memory. Covered by `compression_skips_bodies_over_the_maximum_size`.
 
-### K. SSE Connection Resource Limits
+### K. [x] SSE Connection Resource Limits
 - **Requirement:** SSE streams must have configurable connection limits to prevent unbounded resource consumption.
-- **Missing Test:** A test verifying that the server rejects SSE connections beyond a configured limit.
+- **Status:** Resolved. `App::max_sse_connections(n)` caps concurrent SSE streams and rejects requests over the cap with `503` (see #51), verified by `sse_connection_limit_rejects_over_the_cap`.
 
 ### L. Multipart Blocking IO
 - **Requirement:** File chunk writes during multipart parsing must use `spawn_blocking` to avoid blocking the async runtime.

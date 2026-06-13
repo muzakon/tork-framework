@@ -32,9 +32,11 @@ pub async fn echo(socket: WebSocket) -> tork::Result<()> {
 }
 ```
 
-`recv` returns `Ok(None)` once the peer closes. `send`, `send_text`, and
-`send_binary` write messages back. The WebSocket wire protocol is handled for
-you; you never see the framing.
+`recv` returns `Ok(None)` once the peer closes. It also returns `Ok(None)` when
+the server begins a graceful shutdown: Tork first sends the client a `1001 Going
+Away` close frame so the loop ends cleanly instead of the connection being dropped
+mid-flight. `send`, `send_text`, and `send_binary` write messages back. The
+WebSocket wire protocol is handled for you; you never see the framing.
 
 ## Typed messages
 

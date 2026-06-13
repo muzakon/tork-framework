@@ -94,6 +94,20 @@ The defaults are sensible for production: a 15 second heartbeat (call
 `X-Accel-Buffering: no` so reverse proxies do not buffer the stream. The
 compression middleware automatically skips `text/event-stream` responses.
 
+## Limiting concurrent streams
+
+Each open SSE stream holds a pinned stream and its timers for its whole lifetime,
+which can be hours, so an unbounded number of them can exhaust memory. Cap the
+concurrent count on the app:
+
+```rust
+App::new().max_sse_connections(10_000)
+```
+
+Once the cap is reached, further SSE requests are rejected with
+`503 Service Unavailable` until an existing stream ends and frees a slot. With no
+cap set, SSE streams are unbounded.
+
 ## Resuming with Last-Event-ID
 
 When a browser reconnects after a drop, it sends the id of the last event it saw

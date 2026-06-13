@@ -18,15 +18,24 @@ use crate::router::BoxFuture;
 /// Content-coding token for gzip.
 const GZIP: &str = "gzip";
 
+/// Default upper bound on a body eligible for compression (8 MiB).
+///
+/// Compressing buffers the whole body in memory and produces a second buffer for
+/// the gzip output, so a very large response can multiply peak memory per request.
+/// Bodies above this size are passed through uncompressed; when a `Content-Length`
+/// advertises the size, they are not even buffered.
+const DEFAULT_MAXIMUM_SIZE: usize = 8 * 1024 * 1024;
+
 /// Compresses response bodies when the client supports it.
 ///
 /// When gzip is enabled, the client's `Accept-Encoding` includes gzip, the
-/// response has no existing `Content-Encoding`, and the body is at least
-/// `minimum_size` bytes, the body is gzip-compressed and the relevant headers
-/// are set.
+/// response has no existing `Content-Encoding`, and the body is between
+/// `minimum_size` and `maximum_size` bytes, the body is gzip-compressed and the
+/// relevant headers are set.
 pub struct Compression {
     gzip: bool,
     minimum_size: usize,
+    maximum_size: usize,
 }
 
 impl Compression {
@@ -35,6 +44,7 @@ impl Compression {
         Self {
             gzip: false,
             minimum_size: 0,
+            maximum_size: DEFAULT_MAXIMUM_SIZE,
         }
     }
 
@@ -49,6 +59,16 @@ impl Compression {
         self.minimum_size = bytes;
         self
     }
+
+    /// Sets the maximum body size (in bytes) eligible for compression.
+    ///
+    /// Bodies larger than this are sent uncompressed to bound per-request memory;
+    /// when the response advertises a `Content-Length` over this limit, the body is
+    /// streamed through without being buffered. Use `usize::MAX` to lift the cap.
+    pub fn maximum_size(mut self, bytes: usize) -> Self {
+        self.maximum_size = bytes;
+        self
+    }
 }
 
 impl Default for Compression {
@@ -61,6 +81,7 @@ impl Middleware for Compression {
     fn handle(&self, request: Request, next: Next) -> BoxFuture<'static, Result<Response>> {
         let gzip_enabled = self.gzip;
         let minimum_size = self.minimum_size;
+        let maximum_size = self.maximum_size;
         let accepts_gzip = request
             .headers()
             .get(ACCEPT_ENCODING)
@@ -91,8 +112,17 @@ impl Middleware for Compression {
                 return Ok(response);
             }
 
+            // If the response advertises a length over the cap, pass it through
+            // without buffering: this is the case that would otherwise pull a large
+            // streaming body fully into memory just to decline to compress it.
+            if content_length(response.headers()).is_some_and(|length| length > maximum_size) {
+                return Ok(response);
+            }
+
             let (mut parts, bytes) = into_body_bytes(response).await;
-            if bytes.len() < minimum_size {
+            // Out of the eligible window: too small to be worth it, or large enough
+            // that compressing would add a second big buffer for little gain.
+            if bytes.len() < minimum_size || bytes.len() > maximum_size {
                 return Ok(Response::from_parts(parts, RespBody::new(bytes)));
             }
 
@@ -136,6 +166,14 @@ fn append_vary_accept_encoding(headers: &mut http::HeaderMap) {
     }
 }
 
+/// Parses the response's `Content-Length` header, if present and valid.
+fn content_length(headers: &http::HeaderMap) -> Option<usize> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
 /// Reports whether the response is a Server-Sent Events stream.
 ///
 /// Such a body is unbounded and must not be buffered for compression.
@@ -176,6 +214,16 @@ mod tests {
         assert!(!is_event_stream(&response_with_content_type("application/json")));
         // A response without a content type is not treated as an event stream.
         assert!(!is_event_stream(&http::Response::new(RespBody::new(Bytes::new()))));
+    }
+
+    #[test]
+    fn content_length_parses_only_valid_values() {
+        let mut headers = http::HeaderMap::new();
+        assert_eq!(content_length(&headers), None);
+        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("1024"));
+        assert_eq!(content_length(&headers), Some(1024));
+        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("not-a-number"));
+        assert_eq!(content_length(&headers), None);
     }
 
     #[test]
