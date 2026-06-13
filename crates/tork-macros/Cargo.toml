@@ -16,8 +16,6 @@ syn.workspace = true
 quote.workspace = true
 proc-macro2.workspace = true
 
-[dev-dependencies]
-trybuild.workspace = true
-tork.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+# No dev-dependency on the `tork` facade: that would be a publish-blocking cycle
+# (tork depends on tork-macros). The macro UI / integration tests live in the
+# `tork` crate, which already depends on this one.

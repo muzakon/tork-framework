@@ -2542,6 +2542,7 @@ dependencies = [
  "tork-core",
  "tork-macros",
  "tork-openapi",
+ "trybuild",
 ]
 
 [[package]]
@@ -2596,11 +2597,7 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "serde",
- "serde_json",
  "syn",
- "tork",
- "trybuild",
 ]
 
 [[package]]

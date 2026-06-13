@@ -32,6 +32,9 @@ redis = ["tork-core/redis"]
 tls = ["tork-core/tls"]
 
 [dev-dependencies]
+# trybuild drives the macro UI tests (tests/ui), moved here from tork-macros so the
+# macro crate need not dev-depend on this facade.
+trybuild = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
