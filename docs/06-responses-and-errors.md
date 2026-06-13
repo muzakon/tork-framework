@@ -98,3 +98,12 @@ Err(Error::internal("database password is wrong").with_source(db_error))
 
 This keeps internal failures from leaking to clients while preserving the
 information you need to debug them.
+
+## Streaming responses
+
+Most responses are fully buffered. For frame-at-a-time output, `RespBody::stream`
+returns a streaming body (Server-Sent Events use this). A streaming body has no
+inherent size limit, so for a generated download you can cap the total bytes with
+`RespBody::stream_capped(body, max_bytes)`: the response errors once it exceeds the
+limit, so a runaway producer cannot stream without end. Leave SSE on the uncapped
+`stream`, since event streams are intentionally open-ended.

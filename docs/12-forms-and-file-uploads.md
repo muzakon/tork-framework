@@ -176,10 +176,16 @@ App::new()
             .max_body_size_mb(32)       // total request size
             .max_file_size_mb(16)       // per file
             .memory_threshold(1 << 20)  // spool to disk past 1 MB
+            .temp_dir("/var/tmp")       // where spilled files land
             .max_files(16),
     )
     // ...
 ```
+
+Set `temp_dir` to a real disk-backed directory in containers where the default
+`/tmp` is a memory-backed `tmpfs` — otherwise large uploads that spill "to disk"
+actually stay in RAM and can trigger an out-of-memory kill. Spool writes run off
+the async runtime so a large upload spilling to disk does not block other requests.
 
 Override the limits for a single route with `upload(...)` on the route attribute.
 Route values merge over the application defaults:

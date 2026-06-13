@@ -41,7 +41,7 @@ Status legend:
 ## 8. No Response Body Size Limit (Medium Risk)
 - **Risk:** The `RespBody` type ([`body.rs:L31-L97`](crates/tork-core/src/body.rs)) has no size limit enforcement. A handler returning `RespBody::stream(...)` can stream an unbounded amount of data to the client.
 - **Vulnerability:** While the request body has `MAX_BODY_BYTES` (2 MiB), the response side has no equivalent protection. An endpoint streaming data (file download, SSE) could exhaust server memory and bandwidth, affecting all other connections.
-- **Status:** Untested. No server-side response body cap exists.
+- **Status:** RESOLVED (opt-in). `RespBody::stream_capped(body, max_bytes)` wraps a streaming body and errors the response once it emits more than the limit, so a runaway generated download cannot stream without end. SSE stays on the intentionally-unbounded `stream`. Covered by `capped_stream_errors_once_it_exceeds_the_limit`.
 
 ## 9. [x] CORS Missing `Vary` Headers for Preflight Negotiation (Medium Security Risk)
 - **Risk:** Preflight responses now include `Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers`.
@@ -73,7 +73,7 @@ Status legend:
 ## 15. Multipart `temp_dir` Configuration Not Propagated (Medium Risk)
 - **Risk:** `UploadConfig` exposes a `temp_dir` field ([`multipart.rs:L88-L91`](crates/tork-core/src/multipart.rs)), but the actual `SpooledTempFile` creation uses the system default temp directory, ignoring this setting.
 - **Bug:** Declaring `temp_dir("/mnt/fast-ssd")` has no effect. In containerized environments where the default `/tmp` is a memory-backed `tmpfs`, large uploads spill to RAM instead of disk, causing OOM kills.
-- **Status:** Untested. The `temp_dir` field is dead configuration.
+- **Status:** RESOLVED. `temp_dir` now flows through `ResolvedConfig` into `tempfile::spooled_tempfile_in`, so spilled uploads land in the configured directory (avoiding `tmpfs` OOM in containers). Covered by the upload e2e tests over the spool path.
 
 ## 16. [x] BodyLimit Middleware Bypass via Chunked Transfer Encoding (Medium Risk)
 - **Risk:** `BodyLimit` now consumes and bounds request bodies regardless of transfer encoding before the handler runs.
@@ -279,7 +279,7 @@ Status legend:
 ## 55. Blocking IO in Multipart Spool Write (Medium Concurrency Risk)
 - **Risk:** The multipart parser ([`multipart.rs:L497-L499`](crates/tork-core/src/multipart.rs)) writes file chunks to `SpooledTempFile` synchronously inside an async context (within the `while let Some(chunk)` loop). The `write_all` call is blocking IO.
 - **Bug:** When the temp file spills to disk, `write_all` performs synchronous disk IO on the tokio runtime thread. Under high concurrency, this blocks the runtime thread and degrades throughput for all concurrent requests.
-- **Status:** Untested. The `UploadFile::with_storage` method correctly uses `spawn_blocking` for reads, but the initial spool writes in `MultipartForm::parse` do not.
+- **Status:** RESOLVED. `MultipartForm::parse` now buffers chunks and flushes them to the spool via `spawn_blocking` (`spool_flush`), batching at a 256 KB threshold, so disk writes no longer block the async runtime. The final flush also rewinds off-runtime.
 
 ## 56. Settings Loader Allocates Multiple Figment Instances (Low Memory Risk)
 - **Risk:** The `SettingsLoader::load` method ([`settings.rs:L184-L229`](crates/tork-core/src/settings.rs)) creates multiple `Figment` instances, merges TOML files, env providers, and secrets, then deserializes into a `serde_json::Value` intermediary before extracting the final typed value.

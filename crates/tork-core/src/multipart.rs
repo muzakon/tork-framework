@@ -30,6 +30,9 @@ const DEFAULT_MAX_FILE_SIZE: usize = 8 * 1024 * 1024;
 const DEFAULT_MEMORY_THRESHOLD: usize = 1024 * 1024;
 /// Default cap on the number of file parts in one request.
 const DEFAULT_MAX_FILES: usize = 32;
+/// How many buffered bytes accumulate before flushing to the spool file. Bounds
+/// in-memory buffering while amortizing the cost of moving writes off-runtime.
+const SPOOL_FLUSH_THRESHOLD: usize = 256 * 1024;
 
 /// Limits and temp-file behavior for multipart uploads.
 ///
@@ -109,6 +112,7 @@ impl UploadConfig {
             max_file_size: self.max_file_size.unwrap_or(DEFAULT_MAX_FILE_SIZE),
             memory_threshold: self.memory_threshold.unwrap_or(DEFAULT_MEMORY_THRESHOLD),
             max_files: self.max_files.unwrap_or(DEFAULT_MAX_FILES),
+            temp_dir: self.temp_dir.clone(),
         }
     }
 }
@@ -119,6 +123,20 @@ struct ResolvedConfig {
     max_file_size: usize,
     memory_threshold: usize,
     max_files: usize,
+    temp_dir: Option<PathBuf>,
+}
+
+impl ResolvedConfig {
+    /// Creates a spooled temp file, spilling to the configured directory if set.
+    ///
+    /// Honors `temp_dir` so that, in containers where the default `/tmp` is a
+    /// memory-backed `tmpfs`, large uploads spill to real disk instead of RAM.
+    fn new_spool(&self) -> SpooledTempFile {
+        match &self.temp_dir {
+            Some(dir) => tempfile::spooled_tempfile_in(self.memory_threshold, dir),
+            None => SpooledTempFile::new(self.memory_threshold),
+        }
+    }
 }
 
 /// The application-wide default upload configuration, stored in the state map.
@@ -550,8 +568,11 @@ impl MultipartForm {
                     return Err(Error::bad_request("too many file fields")
                         .with_code("TOO_MANY_FILES"));
                 }
-                let mut storage = SpooledTempFile::new(resolved.memory_threshold);
+                let mut storage = resolved.new_spool();
                 let mut size: u64 = 0;
+                // Buffer chunks and flush them to the spool on a blocking thread,
+                // so writes that spill to disk do not block the async runtime.
+                let mut buffer: Vec<u8> = Vec::new();
                 while let Some(chunk) = field.chunk().await.map_err(parse_error)? {
                     size += chunk.len() as u64;
                     total += chunk.len();
@@ -562,13 +583,13 @@ impl MultipartForm {
                     if total > resolved.max_body_size {
                         return Err(Error::payload_too_large("request body is too large"));
                     }
-                    storage
-                        .write_all(&chunk)
-                        .map_err(|error| Error::internal(format!("spool write failed: {error}")))?;
+                    buffer.extend_from_slice(&chunk);
+                    if buffer.len() >= SPOOL_FLUSH_THRESHOLD {
+                        storage = spool_flush(storage, std::mem::take(&mut buffer), false).await?;
+                    }
                 }
-                storage
-                    .seek(SeekFrom::Start(0))
-                    .map_err(|error| Error::internal(format!("spool seek failed: {error}")))?;
+                // Flush the tail and rewind for reading, on a blocking thread.
+                storage = spool_flush(storage, buffer, true).await?;
                 files.push(FilePart {
                     name,
                     filename,
@@ -715,6 +736,30 @@ fn file_part_into_upload(part: FilePart) -> UploadFile {
 /// Maps a multer error to a `400 Bad Request`.
 fn parse_error(error: multer::Error) -> Error {
     Error::bad_request(format!("multipart parse error: {error}"))
+}
+
+/// Writes `data` to the spool file on a blocking thread, optionally rewinding it
+/// for reading afterward, and returns the storage.
+///
+/// Spool writes can hit the disk once a file spills past the memory threshold, so
+/// they run via `spawn_blocking` rather than on the async runtime thread.
+async fn spool_flush(
+    mut storage: SpooledTempFile,
+    data: Vec<u8>,
+    rewind: bool,
+) -> Result<SpooledTempFile> {
+    tokio::task::spawn_blocking(move || -> std::io::Result<SpooledTempFile> {
+        if !data.is_empty() {
+            storage.write_all(&data)?;
+        }
+        if rewind {
+            storage.seek(SeekFrom::Start(0))?;
+        }
+        Ok(storage)
+    })
+    .await
+    .map_err(|error| Error::internal(format!("spool worker failed: {error}")))?
+    .map_err(|error| Error::internal(format!("spool write failed: {error}")))
 }
 
 #[cfg(test)]
