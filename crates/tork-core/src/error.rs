@@ -90,6 +90,28 @@ impl ErrorKind {
             ErrorKind::GatewayTimeout => "GATEWAY_TIMEOUT",
         }
     }
+
+    /// Returns the kind that matches an HTTP status, if one does.
+    ///
+    /// Used by [`Error::http`] to pick a default machine code for an explicit
+    /// status. Statuses without a named kind return `None`.
+    fn from_status(status: StatusCode) -> Option<ErrorKind> {
+        match status {
+            StatusCode::BAD_REQUEST => Some(ErrorKind::BadRequest),
+            StatusCode::UNAUTHORIZED => Some(ErrorKind::Unauthorized),
+            StatusCode::FORBIDDEN => Some(ErrorKind::Forbidden),
+            StatusCode::NOT_FOUND => Some(ErrorKind::NotFound),
+            StatusCode::METHOD_NOT_ALLOWED => Some(ErrorKind::MethodNotAllowed),
+            StatusCode::CONFLICT => Some(ErrorKind::Conflict),
+            StatusCode::PAYLOAD_TOO_LARGE => Some(ErrorKind::PayloadTooLarge),
+            StatusCode::UNPROCESSABLE_ENTITY => Some(ErrorKind::Unprocessable),
+            StatusCode::TOO_MANY_REQUESTS => Some(ErrorKind::TooManyRequests),
+            StatusCode::INTERNAL_SERVER_ERROR => Some(ErrorKind::Internal),
+            StatusCode::SERVICE_UNAVAILABLE => Some(ErrorKind::ServiceUnavailable),
+            StatusCode::GATEWAY_TIMEOUT => Some(ErrorKind::GatewayTimeout),
+            _ => None,
+        }
+    }
 }
 
 /// A framework error that can be turned into an HTTP error response.
@@ -101,6 +123,9 @@ impl ErrorKind {
 #[derive(Debug)]
 pub struct Error {
     kind: ErrorKind,
+    /// Explicit HTTP status, set by [`Error::http`]. Overrides `kind.status()`
+    /// for the response while `kind` still supplies the default machine code.
+    status: Option<StatusCode>,
     code: Option<&'static str>,
     message: String,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
@@ -142,12 +167,36 @@ impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
+            status: None,
             code: None,
             message: message.into(),
             source: None,
             source_type: None,
             details: Vec::new(),
         }
+    }
+
+    /// Creates an error with an explicit HTTP status code.
+    ///
+    /// Use this for a status outside the named constructors (for example `418`).
+    /// The status sets the response status and reason phrase; the machine `code`
+    /// defaults from the nearest [`ErrorKind`] and can be overridden with
+    /// [`Error::with_code`]. An out-of-range value falls back to `500`.
+    ///
+    /// ```
+    /// # use tork_core::Error;
+    /// let error = Error::http(418, "I'm a teapot").with_code("TEAPOT");
+    /// ```
+    pub fn http(status: u16, message: impl Into<String>) -> Self {
+        let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let kind = ErrorKind::from_status(status).unwrap_or(if status.is_server_error() {
+            ErrorKind::Internal
+        } else {
+            ErrorKind::BadRequest
+        });
+        let mut error = Self::new(kind, message);
+        error.status = Some(status);
+        error
     }
 
     /// Creates a `400 Bad Request` error.
@@ -325,6 +374,55 @@ impl Error {
     }
 }
 
+/// Generates a named constructor for each remaining standard HTTP error status.
+///
+/// Each builds on [`Error::http`] (so the explicit status drives the response)
+/// and pins the conventional machine `code`. The status-specific kinds with
+/// distinct framework behavior (the ones above) are written by hand instead.
+macro_rules! http_status_constructors {
+    ($($name:ident, $code:literal, $machine:literal, $reason:literal;)*) => {
+        impl Error {
+            $(
+                #[doc = concat!("Creates a `", stringify!($code), " ", $reason, "` error.")]
+                pub fn $name(message: impl Into<String>) -> Self {
+                    Self::http($code, message).with_code($machine)
+                }
+            )*
+        }
+    };
+}
+
+http_status_constructors! {
+    payment_required, 402, "PAYMENT_REQUIRED", "Payment Required";
+    not_acceptable, 406, "NOT_ACCEPTABLE", "Not Acceptable";
+    proxy_authentication_required, 407, "PROXY_AUTHENTICATION_REQUIRED", "Proxy Authentication Required";
+    request_timeout, 408, "REQUEST_TIMEOUT", "Request Timeout";
+    gone, 410, "GONE", "Gone";
+    length_required, 411, "LENGTH_REQUIRED", "Length Required";
+    precondition_failed, 412, "PRECONDITION_FAILED", "Precondition Failed";
+    uri_too_long, 414, "URI_TOO_LONG", "URI Too Long";
+    unsupported_media_type, 415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type";
+    range_not_satisfiable, 416, "RANGE_NOT_SATISFIABLE", "Range Not Satisfiable";
+    expectation_failed, 417, "EXPECTATION_FAILED", "Expectation Failed";
+    im_a_teapot, 418, "IM_A_TEAPOT", "I'm a teapot";
+    misdirected_request, 421, "MISDIRECTED_REQUEST", "Misdirected Request";
+    locked, 423, "LOCKED", "Locked";
+    failed_dependency, 424, "FAILED_DEPENDENCY", "Failed Dependency";
+    too_early, 425, "TOO_EARLY", "Too Early";
+    upgrade_required, 426, "UPGRADE_REQUIRED", "Upgrade Required";
+    precondition_required, 428, "PRECONDITION_REQUIRED", "Precondition Required";
+    request_header_fields_too_large, 431, "REQUEST_HEADER_FIELDS_TOO_LARGE", "Request Header Fields Too Large";
+    unavailable_for_legal_reasons, 451, "UNAVAILABLE_FOR_LEGAL_REASONS", "Unavailable For Legal Reasons";
+    not_implemented, 501, "NOT_IMPLEMENTED", "Not Implemented";
+    bad_gateway, 502, "BAD_GATEWAY", "Bad Gateway";
+    http_version_not_supported, 505, "HTTP_VERSION_NOT_SUPPORTED", "HTTP Version Not Supported";
+    variant_also_negotiates, 506, "VARIANT_ALSO_NEGOTIATES", "Variant Also Negotiates";
+    insufficient_storage, 507, "INSUFFICIENT_STORAGE", "Insufficient Storage";
+    loop_detected, 508, "LOOP_DETECTED", "Loop Detected";
+    not_extended, 510, "NOT_EXTENDED", "Not Extended";
+    network_authentication_required, 511, "NETWORK_AUTHENTICATION_REQUIRED", "Network Authentication Required";
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.code(), self.message)
@@ -363,7 +461,7 @@ const FALLBACK_ERROR_BODY: &[u8] = br#"{"status":500,"code":"INTERNAL_SERVER_ERR
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let status = self.kind.status();
+        let status = self.status.unwrap_or_else(|| self.kind.status());
         let trace_id = generate_trace_id();
 
         // Never leak internal detail on server errors: log the real cause (with
@@ -538,6 +636,66 @@ mod tests {
         );
         // A trace id is still present so the operator can correlate logs.
         assert!(body["traceId"].as_str().unwrap().starts_with("req-"));
+    }
+
+    #[tokio::test]
+    async fn http_uses_an_explicit_status_with_a_derived_title() {
+        let response = Error::http(418, "I'm a teapot").into_response();
+        assert_eq!(response.status(), StatusCode::from_u16(418).unwrap());
+
+        let body = body_json(response).await;
+        assert_eq!(body["status"], 418);
+        assert_eq!(body["title"], "I'm a teapot");
+        assert_eq!(body["message"], "I'm a teapot");
+    }
+
+    #[tokio::test]
+    async fn http_matches_a_known_kind_code_and_allows_override() {
+        // A known status reuses that kind's machine code.
+        let response = Error::http(404, "gone").into_response();
+        let body = body_json(response).await;
+        assert_eq!(body["code"], "NOT_FOUND");
+
+        // An explicit code still wins.
+        let response = Error::http(418, "teapot").with_code("TEAPOT").into_response();
+        let body = body_json(response).await;
+        assert_eq!(body["code"], "TEAPOT");
+    }
+
+    #[tokio::test]
+    async fn extended_status_constructors_set_status_code_and_title() {
+        let cases = [
+            (Error::im_a_teapot("no coffee"), 418, "IM_A_TEAPOT", "I'm a teapot"),
+            (
+                Error::unavailable_for_legal_reasons("blocked"),
+                451,
+                "UNAVAILABLE_FOR_LEGAL_REASONS",
+                "Unavailable For Legal Reasons",
+            ),
+            (Error::too_early("retry later"), 425, "TOO_EARLY", "Too Early"),
+            (Error::bad_gateway("upstream"), 502, "BAD_GATEWAY", "Bad Gateway"),
+        ];
+        for (error, status, code, title) in cases {
+            let is_server = status >= 500;
+            let response = error.into_response();
+            assert_eq!(response.status().as_u16(), status);
+            let body = body_json(response).await;
+            assert_eq!(body["status"], status);
+            assert_eq!(body["code"], code);
+            // Server errors redact the message but still carry the right status/title.
+            if !is_server {
+                assert_eq!(body["title"], title);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn http_server_status_is_redacted() {
+        let response = Error::http(503, "upstream pool exhausted: secret-host").into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(response).await;
+        assert_eq!(body["message"], INTERNAL_ERROR_MESSAGE);
+        assert!(!serde_json::to_string(&body).unwrap().contains("secret-host"));
     }
 
     #[tokio::test]
