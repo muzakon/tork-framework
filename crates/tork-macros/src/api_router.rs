@@ -20,6 +20,9 @@ struct ApiRouterArgs {
     /// The router-level `throttle`, captured as the tokens following the key
     /// (either `= "name"` or `(...)`) so it can be re-injected into each route.
     throttle: Option<TokenStream>,
+    /// The router-level `security` list, captured as `[ ... ]` so it can be
+    /// re-injected into each HTTP route as `__router_security`.
+    security: Option<TokenStream>,
 }
 
 impl Parse for ApiRouterArgs {
@@ -28,6 +31,7 @@ impl Parse for ApiRouterArgs {
             prefix: None,
             tags: Vec::new(),
             throttle: None,
+            security: None,
         };
 
         while !input.is_empty() {
@@ -69,6 +73,12 @@ impl Parse for ApiRouterArgs {
                     bracketed!(content in input);
                     let items = Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?;
                     args.tags = items.into_iter().collect();
+                }
+                "security" => {
+                    let content;
+                    bracketed!(content in input);
+                    let inner: TokenStream = content.parse()?;
+                    args.security = Some(quote! { [#inner] });
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -159,6 +169,22 @@ fn expand_module(args: ApiRouterArgs, module: ItemMod) -> syn::Result<TokenStrea
         }
     }
 
+    // Inject the router-level security into each HTTP route as a hidden
+    // `__router_security`, applied only when the route declares none of its own.
+    // SSE and WebSocket routes are skipped, since they do not document OpenAPI
+    // security requirements.
+    if let Some(security) = &args.security {
+        for item in &mut items {
+            if let Item::Fn(func) = item {
+                for attr in &mut func.attrs {
+                    if is_http_route_attr(attr) {
+                        inject_router_security(attr, security);
+                    }
+                }
+            }
+        }
+    }
+
     let krate = krate();
 
     let prefix_call = match &args.prefix {
@@ -221,6 +247,14 @@ fn inject_router_throttle(attr: &mut Attribute, throttle: &TokenStream) {
     }
 }
 
+/// Appends a hidden `__router_security = [ ... ]` argument to a route attribute.
+fn inject_router_security(attr: &mut Attribute, security: &TokenStream) {
+    if let Meta::List(list) = &mut attr.meta {
+        let existing = &list.tokens;
+        list.tokens = quote! { #existing, __router_security = #security };
+    }
+}
+
 /// Returns `true` if `attr` is one of the route or SSE macros.
 ///
 /// Matches on the final path segment, so both `#[get]` and `#[tork::get]` are
@@ -233,6 +267,21 @@ fn is_route_attr(attr: &Attribute) -> bool {
             matches!(
                 segment.ident.to_string().as_str(),
                 "get" | "post" | "put" | "patch" | "delete" | "sse" | "post_sse" | "websocket"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Returns `true` if `attr` is one of the HTTP method route macros (not SSE or
+/// WebSocket), which are the routes that carry OpenAPI security requirements.
+fn is_http_route_attr(attr: &Attribute) -> bool {
+    attr.path()
+        .segments
+        .last()
+        .map(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "get" | "post" | "put" | "patch" | "delete"
             )
         })
         .unwrap_or(false)
@@ -261,6 +310,26 @@ mod tests {
         let mut attr: Attribute = parse_quote!(#[get("/users/{id}")]);
         inject_prefix_hint(&mut attr, "/api");
         assert!(quote!(#attr).to_string().contains("__prefix = \"/api\""));
+    }
+
+    #[test]
+    fn api_router_parses_security_and_injects_it_into_http_routes() {
+        let args: ApiRouterArgs = parse_quote!(prefix = "/api", security = ["bearerAuth"]);
+        assert!(args.security.is_some());
+
+        // A bracket list capture is re-injected onto an HTTP route only.
+        let security = args.security.unwrap();
+        let mut get_attr: Attribute = parse_quote!(#[get("/")]);
+        inject_router_security(&mut get_attr, &security);
+        assert!(quote!(#get_attr)
+            .to_string()
+            .contains("__router_security = [\"bearerAuth\"]"));
+
+        // SSE and WebSocket attrs are not HTTP routes, so security is not injected.
+        let sse_attr: Attribute = parse_quote!(#[tork::sse("/stream")]);
+        assert!(!is_http_route_attr(&sse_attr));
+        let get_only: Attribute = parse_quote!(#[get("/")]);
+        assert!(is_http_route_attr(&get_only));
     }
 
     #[test]

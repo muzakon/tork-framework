@@ -121,6 +121,17 @@ pub enum RequestBodyKind {
     Multipart,
 }
 
+/// A single OpenAPI security requirement: a scheme name and the scopes it
+/// requires. The scopes are empty for non-OAuth2 schemes such as HTTP bearer or
+/// an API key.
+#[derive(Clone, Debug)]
+pub struct SecurityRequirement {
+    /// The name of a security scheme registered on the OpenAPI document.
+    pub scheme: String,
+    /// The OAuth2 scopes required, empty for bearer and API-key schemes.
+    pub scopes: Vec<String>,
+}
+
 /// Introspection metadata for a route, used to build the OpenAPI document.
 #[derive(Clone, Debug)]
 pub struct RouteMeta {
@@ -150,6 +161,10 @@ pub struct RouteMeta {
     pub ws_incoming: Option<SchemaThunk>,
     /// Schema generator for the messages a WebSocket sends, if declared.
     pub ws_outgoing: Option<SchemaThunk>,
+    /// OpenAPI security requirements for this operation. Empty means the
+    /// operation is public (it inherits the document's top-level security,
+    /// which is currently none).
+    pub security: Vec<SecurityRequirement>,
 }
 
 impl Default for RouteMeta {
@@ -167,6 +182,7 @@ impl Default for RouteMeta {
             websocket: false,
             ws_incoming: None,
             ws_outgoing: None,
+            security: Vec::new(),
         }
     }
 }
@@ -228,6 +244,20 @@ impl Route {
     /// Sets the default success status code.
     pub fn status_code(mut self, status_code: StatusCode) -> Self {
         self.meta.status_code = status_code;
+        self
+    }
+
+    /// Declares that this route requires the named security `scheme` with the
+    /// given `scopes` (empty for bearer or API-key schemes). Repeatable; a
+    /// scheme already present is left unchanged.
+    pub fn security(mut self, scheme: impl Into<String>, scopes: &[&str]) -> Self {
+        let scheme = scheme.into();
+        if !self.meta.security.iter().any(|req| req.scheme == scheme) {
+            self.meta.security.push(SecurityRequirement {
+                scheme,
+                scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            });
+        }
         self
     }
 

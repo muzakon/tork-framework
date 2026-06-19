@@ -43,6 +43,12 @@ struct RouteArgs {
     /// parameters declared in the prefix are classified correctly. Not part of
     /// the public attribute surface.
     prefix_hint: Option<LitStr>,
+    /// OpenAPI security requirements, from `security = [...]`. Each entry is a
+    /// scheme name and its required scopes.
+    security: Vec<(LitStr, Vec<LitStr>)>,
+    /// The enclosing router's `security`, injected by `#[api_router]` as
+    /// `__router_security`. Used only when the route declares none of its own.
+    router_security: Vec<(LitStr, Vec<LitStr>)>,
 }
 
 /// A parsed `throttle` policy from a route or router attribute.
@@ -137,6 +143,38 @@ pub(crate) fn parse_throttle(input: ParseStream) -> syn::Result<RouteThrottle> {
             })
         }
     }
+}
+
+/// Parses a `security = [...]` list. Each element is either a bare scheme name
+/// (`"bearerAuth"`) or a scheme with scopes (`bearerAuth(scopes = ["a", "b"])`).
+fn parse_security_list(input: ParseStream) -> syn::Result<Vec<(LitStr, Vec<LitStr>)>> {
+    let mut out = Vec::new();
+    while !input.is_empty() {
+        if input.peek(LitStr) {
+            let name: LitStr = input.parse()?;
+            out.push((name, Vec::new()));
+        } else {
+            let ident: Ident = input.parse()?;
+            let content;
+            parenthesized!(content in input);
+            let key: Ident = content.parse()?;
+            if key != "scopes" {
+                return Err(syn::Error::new(key.span(), "expected `scopes = [...]`"));
+            }
+            content.parse::<Token![=]>()?;
+            let scopes_content;
+            bracketed!(scopes_content in content);
+            let scopes =
+                Punctuated::<LitStr, Token![,]>::parse_terminated(&scopes_content)?;
+            let name = LitStr::new(&ident.to_string(), ident.span());
+            out.push((name, scopes.into_iter().collect()));
+        }
+        if input.is_empty() {
+            break;
+        }
+        input.parse::<Token![,]>()?;
+    }
+    Ok(out)
 }
 
 /// Builds the rate-limit check emitted in a handler wrapper, before the body.
@@ -272,6 +310,8 @@ impl Parse for RouteArgs {
             throttle: None,
             router_throttle: None,
             prefix_hint: None,
+            security: Vec::new(),
+            router_security: Vec::new(),
         };
 
         while !input.is_empty() {
@@ -317,6 +357,16 @@ impl Parse for RouteArgs {
                     bracketed!(content in input);
                     let items = Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?;
                     args.tags = items.into_iter().collect();
+                }
+                "security" => {
+                    let content;
+                    bracketed!(content in input);
+                    args.security = parse_security_list(&content)?;
+                }
+                "__router_security" => {
+                    let content;
+                    bracketed!(content in input);
+                    args.router_security = parse_security_list(&content)?;
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -462,6 +512,18 @@ fn expand_route(method: &str, args: RouteArgs, func: ItemFn) -> syn::Result<Toke
     builder = quote! { #builder #request_meta };
     if let Some(schema_ty) = &response_schema_ty {
         builder = quote! { #builder.response_schema::<#schema_ty>() };
+    }
+
+    // OpenAPI security requirements. A route's own `security` wins over the
+    // router-injected `__router_security`.
+    let security = if args.security.is_empty() {
+        &args.router_security
+    } else {
+        &args.security
+    };
+    for (name, scopes) in security {
+        let scope_lits = scopes.iter();
+        builder = quote! { #builder.security(#name, &[#(#scope_lits),*]) };
     }
 
     // Scoped, route-level observability hooks, by function path.
@@ -881,6 +943,41 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("unknown route attribute"));
+    }
+
+    #[test]
+    fn route_args_parse_security_with_and_without_scopes() {
+        let args: RouteArgs = parse_str(
+            "\"/x\", security = [\"bearerAuth\", admin(scopes = [\"users:read\", \"users:write\"])]",
+        )
+        .unwrap();
+        assert_eq!(args.security.len(), 2);
+        assert_eq!(args.security[0].0.value(), "bearerAuth");
+        assert!(args.security[0].1.is_empty());
+        assert_eq!(args.security[1].0.value(), "admin");
+        assert_eq!(args.security[1].1.len(), 2);
+        assert_eq!(args.security[1].1[1].value(), "users:write");
+
+        // A route's own security wins over the injected router security.
+        let args: RouteArgs = parse_str(
+            "\"/x\", security = [\"bearerAuth\"], __router_security = [\"apiKeyAuth\"]",
+        )
+        .unwrap();
+        assert_eq!(args.security[0].0.value(), "bearerAuth");
+        assert_eq!(args.router_security[0].0.value(), "apiKeyAuth");
+    }
+
+    #[test]
+    fn route_impl_emits_security_chain() {
+        let args: RouteArgs = parse_quote!("/me", security = ["bearerAuth"]);
+        let func: ItemFn = parse_quote!(
+            pub async fn me() -> tork::Result<&'static str> {
+                Ok("ok")
+            }
+        );
+        let tokens = expand_route("GET", args, func).unwrap().to_string();
+        assert!(tokens.contains(". security ("));
+        assert!(tokens.contains("bearerAuth"));
     }
 
     #[test]

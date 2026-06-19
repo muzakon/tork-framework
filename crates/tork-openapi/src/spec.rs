@@ -32,6 +32,7 @@ pub struct OpenApi {
     json_path: String,
     docs_path: Option<String>,
     guard: Option<DocGuard>,
+    security_schemes: Vec<(String, Value)>,
 }
 
 impl Default for OpenApi {
@@ -50,6 +51,7 @@ impl OpenApi {
             json_path: DEFAULT_JSON_PATH.to_owned(),
             docs_path: None,
             guard: None,
+            security_schemes: Vec::new(),
         }
     }
 
@@ -111,6 +113,39 @@ impl OpenApi {
         F: Fn(&RequestContext) -> bool + Send + Sync + 'static,
     {
         self.guard = Some(Arc::new(predicate));
+        self
+    }
+
+    /// Registers an HTTP bearer (JWT) security scheme named `bearerAuth`.
+    ///
+    /// Routes that declare `security = ["bearerAuth"]` then require it, and the
+    /// documentation UI shows an "Authorize" button where a reader pastes a
+    /// bearer token.
+    pub fn bearer_auth(self) -> Self {
+        self.security_scheme(
+            "bearerAuth",
+            json!({ "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }),
+        )
+    }
+
+    /// Registers an API-key security scheme named `name`, carried in the request
+    /// header `header`.
+    pub fn api_key_auth(self, name: impl Into<String>, header: impl Into<String>) -> Self {
+        let header = header.into();
+        self.security_scheme(name, json!({ "type": "apiKey", "in": "header", "name": header }))
+    }
+
+    /// Registers a security scheme by `name` with a raw OpenAPI scheme object.
+    ///
+    /// Use this for schemes the convenience methods do not cover, such as an
+    /// OAuth2 flow. Registering the same name again replaces the definition.
+    pub fn security_scheme(mut self, name: impl Into<String>, scheme: Value) -> Self {
+        let name = name.into();
+        if let Some(slot) = self.security_schemes.iter_mut().find(|(n, _)| *n == name) {
+            slot.1 = scheme;
+        } else {
+            self.security_schemes.push((name, scheme));
+        }
         self
     }
 
@@ -262,6 +297,21 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
             json!({ status: Value::Object(response) }),
         );
 
+        if !meta.security.is_empty() {
+            // Every scheme on this route goes into one requirement object, which
+            // OpenAPI reads as "all of these are required" (a logical AND).
+            let requirement: Map<String, Value> = meta
+                .security
+                .iter()
+                .map(|req| {
+                    let scopes: Vec<String> =
+                        req.scopes.iter().map(|scope| sanitize_doc_text(scope)).collect();
+                    (sanitize_doc_text(&req.scheme), json!(scopes))
+                })
+                .collect();
+            operation.insert("security".to_owned(), json!([Value::Object(requirement)]));
+        }
+
         let entry = paths
             .entry(path)
             .or_insert_with(|| Value::Object(Map::new()));
@@ -286,10 +336,23 @@ fn build_document(api: &OpenApi, routes: &[Route]) -> Value {
         "paths": Value::Object(paths),
     });
 
-    // Emit every collected model schema under components.schemas.
+    // Emit collected model schemas under components.schemas and any registered
+    // security schemes under components.securitySchemes.
+    let mut components = Map::new();
     let definitions = generator.take_definitions(true);
     if !definitions.is_empty() {
-        document["components"] = json!({ "schemas": Value::Object(definitions) });
+        components.insert("schemas".to_owned(), Value::Object(definitions));
+    }
+    if !api.security_schemes.is_empty() {
+        let schemes: Map<String, Value> = api
+            .security_schemes
+            .iter()
+            .map(|(name, scheme)| (name.clone(), scheme.clone()))
+            .collect();
+        components.insert("securitySchemes".to_owned(), Value::Object(schemes));
+    }
+    if !components.is_empty() {
+        document["components"] = Value::Object(components);
     }
 
     document
@@ -440,6 +503,92 @@ mod tests {
             &operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
         assert_eq!(request_ref, "#/components/schemas/Sample");
         assert_eq!(response_ref, "#/components/schemas/Sample");
+    }
+
+    #[test]
+    fn bearer_auth_registers_a_security_scheme() {
+        let routes = vec![Route::new(Method::GET, "/me", dummy_handler())];
+        let document = OpenApi::new().bearer_auth().build_document(&routes);
+
+        let scheme = &document["components"]["securitySchemes"]["bearerAuth"];
+        assert_eq!(scheme["type"], "http");
+        assert_eq!(scheme["scheme"], "bearer");
+        assert_eq!(scheme["bearerFormat"], "JWT");
+    }
+
+    #[test]
+    fn operation_security_is_emitted() {
+        let routes =
+            vec![Route::new(Method::GET, "/me", dummy_handler()).security("bearerAuth", &[])];
+        let document = OpenApi::new().bearer_auth().build_document(&routes);
+
+        let security = &document["paths"]["/me"]["get"]["security"];
+        assert!(security[0]["bearerAuth"].is_array());
+        assert_eq!(security[0]["bearerAuth"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn operation_security_carries_scopes() {
+        let routes = vec![Route::new(Method::GET, "/users", dummy_handler())
+            .security("bearerAuth", &["users:read", "users:write"])];
+        let document = OpenApi::new().bearer_auth().build_document(&routes);
+
+        let scopes = &document["paths"]["/users"]["get"]["security"][0]["bearerAuth"];
+        assert_eq!(scopes[0], "users:read");
+        assert_eq!(scopes[1], "users:write");
+    }
+
+    #[test]
+    fn multiple_schemes_form_one_requirement_object() {
+        let routes = vec![Route::new(Method::GET, "/admin", dummy_handler())
+            .security("bearerAuth", &[])
+            .security("apiKeyAuth", &[])];
+        let document = OpenApi::new()
+            .bearer_auth()
+            .api_key_auth("apiKeyAuth", "X-API-Key")
+            .build_document(&routes);
+
+        let security = document["paths"]["/admin"]["get"]["security"]
+            .as_array()
+            .unwrap();
+        assert_eq!(security.len(), 1);
+        let requirement = security[0].as_object().unwrap();
+        assert!(requirement.contains_key("bearerAuth"));
+        assert!(requirement.contains_key("apiKeyAuth"));
+    }
+
+    #[test]
+    fn schemes_and_schemas_coexist() {
+        let routes = vec![Route::new(Method::POST, "/samples", dummy_handler())
+            .request_schema::<Sample>()
+            .security("bearerAuth", &[])];
+        let document = OpenApi::new().bearer_auth().build_document(&routes);
+
+        assert!(document["components"]["schemas"]["Sample"].is_object());
+        assert!(document["components"]["securitySchemes"]["bearerAuth"].is_object());
+    }
+
+    #[test]
+    fn no_security_means_no_security_key_and_no_components() {
+        let routes = vec![Route::new(Method::GET, "/public", dummy_handler())];
+        let document = OpenApi::new().build_document(&routes);
+
+        assert!(document["paths"]["/public"]["get"].get("security").is_none());
+        assert!(document.get("components").is_none());
+    }
+
+    #[test]
+    fn re_registering_a_scheme_replaces_it() {
+        let routes = vec![Route::new(Method::GET, "/me", dummy_handler())];
+        let document = OpenApi::new()
+            .security_scheme("bearerAuth", json!({ "type": "http", "scheme": "basic" }))
+            .bearer_auth()
+            .build_document(&routes);
+
+        assert_eq!(
+            document["components"]["securitySchemes"]["bearerAuth"]["scheme"],
+            "bearer"
+        );
     }
 
     #[test]

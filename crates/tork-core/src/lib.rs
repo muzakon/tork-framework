@@ -90,7 +90,10 @@ pub use response::{
     __finish, __finish_into, bytes_response, json_response, IntoResponse, Json, Response,
 };
 pub use router::matcher::{Match, Matcher};
-pub use router::{BoxFuture, HandlerFn, RequestBodyKind, Route, RouteMeta, Router, SchemaThunk};
+pub use router::{
+    BoxFuture, HandlerFn, RequestBodyKind, Route, RouteMeta, Router, SchemaThunk,
+    SecurityRequirement,
+};
 pub use settings::{SecretString, SettingsLoader};
 pub use security::constant_time_eq;
 #[cfg(feature = "tls")]

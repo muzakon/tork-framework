@@ -16,6 +16,11 @@ async fn events() -> tork::Result<Health> {
     Ok(Health { ok: true })
 }
 
+#[get("/me", security = ["bearerAuth"])]
+async fn me() -> tork::Result<Health> {
+    Ok(Health { ok: true })
+}
+
 #[tokio::test]
 async fn docs_and_spec_routes_are_served_through_the_framework_pipeline() {
     let client = TestClient::new(
@@ -50,6 +55,40 @@ async fn docs_and_spec_routes_are_served_through_the_framework_pipeline() {
     let asyncapi = client.get("/events.json").send().await.unwrap();
     assert_eq!(asyncapi.status(), 200);
     assert!(asyncapi.text().unwrap().contains("\"asyncapi\":\"3.0.0\""));
+
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn openapi_document_includes_security_scheme_and_operation_security() {
+    let client = TestClient::new(
+        App::new()
+            .include(me)
+            .openapi(
+                OpenApi::new()
+                    .bearer_auth()
+                    .json("/schema.json")
+                    .docs("/docs"),
+            )
+            .build_test()
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let body = client.get("/schema.json").send().await.unwrap();
+    assert_eq!(body.status(), 200);
+    let document: serde_json::Value = serde_json::from_str(&body.text().unwrap()).unwrap();
+
+    // The bearer scheme is registered, so the docs UI renders an Authorize button.
+    let scheme = &document["components"]["securitySchemes"]["bearerAuth"];
+    assert_eq!(scheme["type"], "http");
+    assert_eq!(scheme["scheme"], "bearer");
+
+    // The protected operation declares it requires the scheme.
+    let security = &document["paths"]["/me"]["get"]["security"];
+    assert!(security[0]["bearerAuth"].is_array());
 
     client.shutdown().await.unwrap();
 }
