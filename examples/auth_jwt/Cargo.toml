@@ -1,0 +1,23 @@
+[package]
+name = "auth_jwt"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Example showing JWT authentication and authorization with the Tork web framework."
+
+[dependencies]
+tork = { path = "../../crates/tork" }
+# garde's derive references `::garde` directly, so #[api_model] models need it.
+garde = { workspace = true }
+# serde derives for the JWT claims (serde is routed through the tork facade for
+# #[api_model], but the claims are a plain serde struct).
+serde = { workspace = true }
+tokio = { workspace = true }
+# JWT encode/decode and Argon2 password hashing are external crates, the same way
+# FastAPI leaves these to PyJWT and pwdlib. The framework stays out of them.
+jsonwebtoken = "9"
+argon2 = { version = "0.5", features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
